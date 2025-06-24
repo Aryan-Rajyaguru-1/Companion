@@ -1,0 +1,16 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run DeepCompanion",
+			"type": "shell",
+			"command": "/home/aryan/Documents/Companion deepthink/.venv/bin/python",
+			"args": [
+				"main.py"
+			],
+			"group": "build",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
