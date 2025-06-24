@@ -61,6 +61,9 @@ class DeepCompanion:
         }
         self.chat_history = self.chat_histories[self.current_model_key]
         
+        # Initialize model wrapper for enhanced flow
+        self.model_wrapper = ModelWrapper(self)
+        
         # Create GUI
         self.create_menu()
         self.create_widgets()
@@ -105,11 +108,13 @@ class DeepCompanion:
         """Show about dialog"""
         about_text = """🤖 Companion proto-2.1 (Deepthink) v2.1
 
-A modern GUI for local AI model interaction
+A modern GUI for local AI model interaction with enhanced model wrapper
 
 Features:
 • Three specialized modes with dedicated icons
-• Real-time streaming responses with visual indicators
+• Enhanced streaming with smooth output flow
+• Intelligent response buffering and performance metrics
+• Model-specific optimizations and error handling
 • Separate chat histories per mode
 • Code-specific tools and formatting
 • Keyboard shortcuts for efficiency
@@ -120,15 +125,22 @@ Modes:
 💻 Code Mode - CodeGemma 2B for everyday coding (default)
 🧠 Advanced Mode - CodeQwen 7B for complex programming
 
+Enhanced Features:
+• 🚀 Intelligent response streaming with performance metrics
+• ⚡ Model-specific thinking animations and status updates
+• 🔧 Advanced error handling with helpful suggestions
+• 📊 Real-time response performance monitoring
+• 🎯 Context-aware message preparation and optimization
+
 Visual Indicators:
-• 🤔💭⚡✨ - AI thinking animation
-• 💻⚡ - Default coding mode
-• 🧠🔬 - Advanced coding mode
+• 🤔💭⚡✨🧐💡 - Enhanced thinking animations per mode
+• 💻⚡🔧⚙️🚀 - Code mode indicators
+• 🧠🔬⚡💡🎯🔍 - Advanced mode indicators
 
 Optimized for Intel i7-7600U with 8GB RAM
 
 Built with Python & tkinter
-Powered by Ollama"""
+Powered by Ollama with enhanced model wrapper"""
         
         messagebox.showinfo("About Companion proto-2.1 (Deepthink)", about_text)
     
@@ -632,26 +644,43 @@ Usage Tips:
         return 'break'
     
     def on_text_change(self, event):
-        """Update character counter"""
+        """Update character counter with enhanced time estimation"""
         text = self.message_entry.get("1.0", tk.END).strip()
         char_count = len(text)
+        word_count = len(text.split()) if text else 0
         
-        # Estimate response time based on message length and current model
+        # Enhanced response time estimation using wrapper
         if char_count > 0:
-            if self.current_model_key == "code":
-                # CodeGemma 2B - Default coding, fast responses
-                estimated_time = max(2, min(8, char_count // 30))
-                speed_indicator = "💻"
-            elif self.current_model_key == "code_advanced":
-                # CodeQwen 7B - Advanced coding, slower but detailed
-                estimated_time = max(8, min(25, char_count // 15))
-                speed_indicator = "🧠"
-            else:
-                # Think mode - DeepSeek R1, analytical responses
-                estimated_time = max(3, min(15, char_count // 20))
-                speed_indicator = "🤔"
+            config = self.model_wrapper.get_model_config(self.current_model_key)
             
-            self.char_label.config(text=f"{char_count} chars (~{estimated_time}s {speed_indicator})")
+            # More sophisticated time estimation based on content type and model
+            if self.current_model_key == "code":
+                # Code mode - faster responses, but varies by complexity
+                base_time = 2
+                complexity_factor = word_count * 0.1  # Code complexity
+                estimated_time = max(2, min(12, base_time + complexity_factor))
+                speed_indicator = "💻⚡"
+            elif self.current_model_key == "code_advanced":
+                # Advanced mode - more detailed responses
+                base_time = 5
+                complexity_factor = word_count * 0.15
+                estimated_time = max(5, min(30, base_time + complexity_factor))
+                speed_indicator = "🧠🔬"
+            else:
+                # Think mode - analytical responses
+                base_time = 3
+                complexity_factor = word_count * 0.12
+                estimated_time = max(3, min(20, base_time + complexity_factor))
+                speed_indicator = "🤔💭"
+            
+            # Add context about message complexity
+            complexity_hint = ""
+            if word_count > 50:
+                complexity_hint = " (complex)"
+            elif word_count > 20:
+                complexity_hint = " (detailed)"
+            
+            self.char_label.config(text=f"{char_count} chars, {word_count} words (~{estimated_time:.0f}s {speed_indicator}){complexity_hint}")
         else:
             self.char_label.config(text="0 chars")
     
@@ -868,33 +897,20 @@ How can I assist you today?"""
         self.set_thinking_state(True)
         self.start_thinking_animation()
         
-        # Send to Ollama in background thread
-        threading.Thread(target=self.get_ollama_response, args=(message,), daemon=True).start()
+        # Send to Ollama in background thread using wrapper
+        threading.Thread(target=self.model_wrapper.get_ollama_response_wrapped, args=(message,), daemon=True).start()
     
     def start_thinking_animation(self):
-        """Start animated thinking indicator"""
+        """Start enhanced thinking animation using wrapper"""
         self.thinking_dots = 0
-        self.animate_thinking()
-    
-    def animate_thinking(self):
-        """Animate the thinking indicator"""
-        if hasattr(self, 'thinking_dots'):
-            dots = "." * (self.thinking_dots % 4)
-            self.update_status(f"🤔 AI is thinking{dots}", "blue")
-            
-            # Animate thinking icon
-            thinking_emojis = ["🤔", "💭", "⚡", "✨"]
-            emoji = thinking_emojis[self.thinking_dots % len(thinking_emojis)]
-            self.thinking_icon.config(text=emoji, foreground="#3498db")
-            
-            self.thinking_dots += 1
-            # Schedule next animation frame
-            self.root.after(500, self.animate_thinking)
+        self.model_wrapper.animate_thinking_enhanced(self.current_model_key)
     
     def stop_thinking_animation(self):
         """Stop the thinking animation"""
         if hasattr(self, 'thinking_dots'):
             delattr(self, 'thinking_dots')
+        # Stop wrapper streaming
+        self.model_wrapper.is_streaming = False
         # Clear thinking state
         self.set_thinking_state(False)
     
@@ -1038,6 +1054,342 @@ How can I assist you today?"""
         # Update status
         model_name = self.models[self.current_model_key]["display_name"]
         self.update_status(f"🗑️ Cleared chat for {model_name}", "blue")
+
+class ModelWrapper:
+    """Unified wrapper for all AI models with enhanced flow and output handling"""
+    
+    def __init__(self, parent):
+        self.parent = parent
+        self.response_buffer = ""
+        self.chunk_buffer = ""
+        self.is_streaming = False
+        self.response_metrics = {
+            'start_time': None,
+            'first_token_time': None,
+            'total_tokens': 0,
+            'chunks_received': 0
+        }
+        
+        # Model-specific configurations for optimal performance
+        self.model_configs = {
+            "conversation": {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_predict": 2048,
+                "repeat_penalty": 1.1,
+                "top_k": 40,
+                "chunk_size": 8,  # Characters per UI update
+                "update_interval": 50,  # ms between updates
+                "thinking_style": ["🤔", "💭", "⚡", "✨", "🧐", "💡"]
+            },
+            "code": {
+                "temperature": 0.2,
+                "top_p": 0.7,
+                "num_predict": 2048,
+                "repeat_penalty": 1.1,
+                "top_k": 20,
+                "stop": ["\n\n\n", "```\n\n"],
+                "chunk_size": 4,  # Faster updates for code
+                "update_interval": 30,
+                "thinking_style": ["💻", "⚡", "🔧", "⚙️", "🚀"]
+            },
+            "code_advanced": {
+                "temperature": 0.3,
+                "top_p": 0.8,
+                "num_predict": 4096,
+                "repeat_penalty": 1.1,
+                "top_k": 40,
+                "chunk_size": 6,
+                "update_interval": 40,
+                "thinking_style": ["🧠", "🔬", "⚡", "💡", "🎯", "🔍"]
+            }
+        }
+    
+    def get_model_config(self, model_key):
+        """Get optimized configuration for specific model"""
+        return self.model_configs.get(model_key, self.model_configs["conversation"])
+    
+    def prepare_context(self, message, chat_history, max_context=10):
+        """Prepare conversation context with intelligent truncation"""
+        messages = []
+        
+        # Add system message for better responses based on model
+        model_key = self.parent.current_model_key
+        if model_key == "code":
+            system_msg = {
+                "role": "system", 
+                "content": "You are a helpful coding assistant. Provide clear, concise code examples with brief explanations. Format code using markdown code blocks."
+            }
+            messages.append(system_msg)
+        elif model_key == "code_advanced":
+            system_msg = {
+                "role": "system", 
+                "content": "You are an expert programming assistant. Provide detailed explanations, best practices, and well-documented code. Include error handling and optimization suggestions when relevant."
+            }
+            messages.append(system_msg)
+        elif model_key == "conversation":
+            system_msg = {
+                "role": "system", 
+                "content": "You are a thoughtful AI assistant focused on reasoning and analysis. Think step by step and provide clear explanations for your conclusions."
+            }
+            messages.append(system_msg)
+        
+        # Add recent chat history with smart truncation
+        if chat_history:
+            # Keep recent messages but ensure we don't exceed context window
+            recent_messages = chat_history[-max_context:] if len(chat_history) > max_context else chat_history
+            for msg in recent_messages:
+                messages.append(msg)
+        
+        # Add current message
+        messages.append({"role": "user", "content": message})
+        
+        return messages
+    
+    def smooth_streaming_update(self, new_content):
+        """Handle smooth streaming updates with buffering"""
+        if not new_content:
+            return
+        
+        self.chunk_buffer += new_content
+        config = self.get_model_config(self.parent.current_model_key)
+        
+        # Update metrics
+        self.response_metrics['chunks_received'] += 1
+        self.response_metrics['total_tokens'] += len(new_content.split())
+        
+        # Record first token time
+        if self.response_metrics['first_token_time'] is None:
+            self.response_metrics['first_token_time'] = datetime.now()
+        
+        # Update UI in chunks for smoother experience
+        if len(self.chunk_buffer) >= config['chunk_size']:
+            content_to_display = self.chunk_buffer
+            self.chunk_buffer = ""
+            
+            # Schedule UI update
+            self.parent.root.after(0, lambda content=content_to_display: 
+                                 self.parent.update_streaming_message(content))
+    
+    def animate_thinking_enhanced(self, model_key):
+        """Enhanced thinking animation based on model type"""
+        config = self.get_model_config(model_key)
+        thinking_icons = config['thinking_style']
+        
+        def animate():
+            if hasattr(self.parent, 'thinking_dots') and self.is_streaming:
+                # Cycle through model-specific thinking icons
+                icon_index = self.parent.thinking_dots % len(thinking_icons)
+                current_icon = thinking_icons[icon_index]
+                
+                # Update thinking icon with smooth transition
+                self.parent.thinking_icon.config(text=current_icon, foreground="#3498db")
+                
+                # Update status with contextual message
+                if model_key == "code":
+                    status_msg = f"💻 Coding{('.' * (self.parent.thinking_dots % 4))}"
+                elif model_key == "code_advanced":
+                    status_msg = f"🧠 Analyzing{('.' * (self.parent.thinking_dots % 4))}"
+                else:
+                    status_msg = f"🤔 Thinking{('.' * (self.parent.thinking_dots % 4))}"
+                
+                self.parent.update_status(status_msg, "blue")
+                self.parent.thinking_dots += 1
+                
+                # Schedule next animation
+                self.parent.root.after(config['update_interval'], animate)
+        
+        animate()
+    
+    def calculate_response_metrics(self):
+        """Calculate and return response performance metrics"""
+        if not self.response_metrics['start_time']:
+            return None
+        
+        total_time = (datetime.now() - self.response_metrics['start_time']).total_seconds()
+        first_token_time = None
+        
+        if self.response_metrics['first_token_time']:
+            first_token_time = (self.response_metrics['first_token_time'] - 
+                              self.response_metrics['start_time']).total_seconds()
+        
+        tokens_per_second = (self.response_metrics['total_tokens'] / total_time) if total_time > 0 else 0
+        
+        return {
+            'total_time': total_time,
+            'first_token_time': first_token_time,
+            'total_tokens': self.response_metrics['total_tokens'],
+            'tokens_per_second': tokens_per_second,
+            'chunks_received': self.response_metrics['chunks_received']
+        }
+    
+    def reset_metrics(self):
+        """Reset response metrics for new request"""
+        self.response_metrics = {
+            'start_time': datetime.now(),
+            'first_token_time': None,
+            'total_tokens': 0,
+            'chunks_received': 0
+        }
+        self.response_buffer = ""
+        self.chunk_buffer = ""
+    
+    def format_response_status(self, metrics, model_display):
+        """Format final response status with performance info"""
+        if not metrics:
+            return f"✅ {model_display} responded"
+        
+        status_parts = [f"✅ {model_display}"]
+        
+        # Add timing info
+        if metrics['total_time']:
+            status_parts.append(f"({metrics['total_time']:.1f}s")
+            
+            if metrics['tokens_per_second'] > 0:
+                status_parts.append(f"@ {metrics['tokens_per_second']:.1f} tok/s)")
+            else:
+                status_parts.append(")")
+        
+        # Add performance indicator
+        if metrics['tokens_per_second'] > 15:
+            status_parts.append("⚡")
+        elif metrics['tokens_per_second'] > 8:
+            status_parts.append("🚀")
+        else:
+            status_parts.append("💫")
+        
+        return " ".join(status_parts)
+
+    def handle_response_error(self, error, error_type="general"):
+        """Enhanced error handling with user-friendly messages"""
+        error_messages = {
+            "timeout": {
+                "title": "⏰ Request Timeout",
+                "message": "The model took too long to respond. This can happen with complex requests.",
+                "suggestions": ["Try a shorter message", "Switch to a faster model", "Check your connection"]
+            },
+            "connection": {
+                "title": "❌ Connection Error", 
+                "message": "Unable to connect to Ollama. Make sure it's running.",
+                "suggestions": ["Start Ollama service", "Check if models are loaded", "Verify port 11434 is accessible"]
+            },
+            "model_not_found": {
+                "title": "🔍 Model Not Available",
+                "message": "The selected model is not available in Ollama.",
+                "suggestions": ["Pull the model using 'ollama pull'", "Switch to an available model", "Check model status"]
+            },
+            "general": {
+                "title": "❌ Unexpected Error",
+                "message": str(error),
+                "suggestions": ["Try again", "Check Ollama status", "Restart the application if needed"]
+            }
+        }
+        
+        error_info = error_messages.get(error_type, error_messages["general"])
+        
+        # Display user-friendly error
+        error_display = f"{error_info['title']}\n\n{error_info['message']}"
+        if error_info.get('suggestions'):
+            error_display += f"\n\n💡 Suggestions:\n" + "\n".join([f"• {s}" for s in error_info['suggestions']])
+        
+        self.parent.root.after(0, lambda: self.parent.add_message_to_chat(
+            "System", error_display, "assistant"))
+        self.parent.root.after(0, lambda: self.parent.update_status(error_info['title'], "red"))
+
+    def get_ollama_response_wrapped(self, message):
+        """Enhanced wrapper for Ollama API calls with smooth streaming"""
+        try:
+            self.reset_metrics()
+            self.is_streaming = True
+            
+            # Prepare optimized context
+            messages = self.prepare_context(message, self.parent.chat_history)
+            
+            # Get model-specific configuration
+            config = self.get_model_config(self.parent.current_model_key)
+            
+            # Prepare optimized payload
+            payload = {
+                "model": self.parent.model_name,
+                "messages": messages,
+                "stream": True,
+                "options": {k: v for k, v in config.items() 
+                           if k not in ['chunk_size', 'update_interval', 'thinking_style']}
+            }
+            
+            # Start enhanced thinking animation
+            self.animate_thinking_enhanced(self.parent.current_model_key)
+            
+            # Make streaming request
+            response = requests.post(
+                f"{self.parent.ollama_url}/api/chat",
+                json=payload,
+                timeout=120,
+                stream=True
+            )
+            
+            if response.status_code == 200:
+                ai_response = ""
+                
+                # Initialize streaming display
+                self.parent.root.after(0, lambda: self.parent.add_streaming_message_start())
+                
+                # Process streaming response with enhanced handling
+                for line in response.iter_lines():
+                    if line and self.is_streaming:
+                        try:
+                            chunk = json.loads(line.decode('utf-8'))
+                            if 'message' in chunk and 'content' in chunk['message']:
+                                new_content = chunk['message']['content']
+                                ai_response += new_content
+                                
+                                # Use smooth streaming update
+                                self.smooth_streaming_update(new_content)
+                            
+                            if chunk.get('done', False):
+                                break
+                                
+                        except json.JSONDecodeError:
+                            continue
+                
+                # Flush any remaining buffer
+                if self.chunk_buffer:
+                    self.parent.root.after(0, lambda content=self.chunk_buffer: 
+                                         self.parent.update_streaming_message(content))
+                
+                # Finalize response
+                if ai_response.strip():
+                    # Add to history
+                    self.parent.chat_history.append({"role": "assistant", "content": ai_response})
+                    self.parent.chat_histories[self.parent.current_model_key] = self.parent.chat_history.copy()
+                    
+                    # Calculate and display metrics
+                    metrics = self.calculate_response_metrics()
+                    model_display = self.parent.models[self.parent.current_model_key]["display_name"]
+                    status_message = self.format_response_status(metrics, model_display)
+                    
+                    self.parent.root.after(0, lambda: self.parent.update_status(status_message, "green"))
+                    self.parent.root.after(0, self.parent.finalize_streaming_message)
+                else:
+                    self.handle_response_error("Empty response received", "general")
+                    
+            elif response.status_code == 404:
+                self.handle_response_error(f"Model {self.parent.model_name} not found", "model_not_found")
+            else:
+                self.handle_response_error(f"HTTP {response.status_code}", "connection")
+                
+        except requests.exceptions.Timeout:
+            self.handle_response_error("Request timeout", "timeout")
+        except requests.exceptions.ConnectionError:
+            self.handle_response_error("Connection failed", "connection")
+        except Exception as e:
+            self.handle_response_error(e, "general")
+        finally:
+            self.is_streaming = False
+            # Re-enable UI
+            self.parent.root.after(0, self.parent.stop_thinking_animation)
+            self.parent.root.after(0, lambda: self.parent.send_button.config(
+                state="normal", text="Send\n(Enter)"))
 
 def main():
     """Main function to run the application"""
