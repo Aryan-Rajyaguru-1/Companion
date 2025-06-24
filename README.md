@@ -1,19 +1,32 @@
-# DeepCompanion v2.0 🤖
+# DeepCompanion v2.1 🤖
 
-A modern, beautiful GUI chat interface for interacting with multiple Ollama AI models locally. Now supports both conversation and code generation modes with dual-model architecture!
+A modern, beautiful GUI chat interface for interacting with multiple Ollama AI models locally. Now supports four specialized modes with enhanced model wrapper for smooth flow and output!
 
 ![Python](https://img.shields.io/badge/python-v3.7+-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-## ✨ New in v2.0
+## ✨ New in v2.1
 
-### 🔄 **Dual-Model Support**
-- **💬 Conversation Mode**: DeepSeek R1 1.5B for general discussions and reasoning
-- **💻 Code Mode (Fast)**: CodeGemma 2B for quick code generation (optimized for performance)
-- **🧠 Code Mode (Advanced)**: CodeQwen 7B for complex programming tasks
-- **Seamless switching** between models with separate chat histories
-- **Model-specific optimizations** for better performance
+### 🔄 **Four-Model Architecture**
+- **💬 Chat Mode**: Llama 3.2 3B for natural conversation and general assistance (default)
+- **🤔 Think Mode**: DeepSeek R1 1.5B for analytical thinking and reasoning
+- **💻 Code Mode**: CodeGemma 2B for quick code generation and debugging
+- **🧠 Advanced Mode**: CodeQwen 7B for complex programming tasks and detailed explanations
+
+### 🚀 **Enhanced Model Wrapper**
+- **Intelligent streaming** with smooth response buffering
+- **Model-specific optimizations** for performance and quality
+- **Real-time performance metrics** (tokens/sec, response timing)
+- **Advanced error handling** with user-friendly suggestions
+- **Context-aware message preparation** with system prompts
+
+### 🎯 **Improved User Experience**
+- **Default Chat Mode** for natural LLM-like conversation
+- **Visual status indicators** with model-specific animations
+- **Enhanced character counter** with intelligent time estimation
+- **Four dedicated mode buttons** with intuitive icons
+- **Separate chat histories** for each model
 
 ### 🛠️ **Code Generation Features**
 - **Syntax highlighting** for code blocks in chat
@@ -33,16 +46,16 @@ A modern, beautiful GUI chat interface for interacting with multiple Ollama AI m
 ## Features ✨
 
 - **Modern Chat Interface**: Clean, intuitive design with dark theme
-- **Dual-Model Architecture**: Switch between conversation and code generation modes
-- **Performance Optimized**: Fast CodeGemma 2B for quick responses, advanced CodeQwen 7B for complex tasks
-- **Real-time Streaming**: Live response generation with typing indicators
+- **Four-Model Architecture**: Switch between chat, thinking, coding, and advanced modes
+- **Enhanced Model Wrapper**: Smooth streaming, performance metrics, and error handling
+- **Real-time Streaming**: Live response generation with model-specific animations
 - **Connection Monitoring**: Automatic detection of Ollama service and model status
 - **Separate Chat Histories**: Each model maintains its own conversation context
-- **Code Tools**: Copy, format, and highlight code blocks
+- **Code Tools**: Copy, format, and highlight code blocks (in code modes)
 - **Keyboard Shortcuts**: 
   - `Enter` to send messages
   - `Ctrl+Enter` for new lines
-  - `Ctrl+1/2/3` for model switching
+  - `Ctrl+1/2/3/4` for model switching
   - `Ctrl+L` to clear chat
   - `Ctrl+C` to copy selection or last code block
   - `F1` for help
@@ -56,7 +69,8 @@ Before running DeepCompanion v2.0, ensure you have:
 1. **Python 3.7+** installed on your system
 2. **Ollama** installed and running
 3. **AI models** pulled and available:
-   - DeepSeek R1 1.5B (conversation)
+   - Llama 3.2 3B (natural conversation) - **New default mode**
+   - DeepSeek R1 1.5B (analytical thinking)
    - CodeGemma 2B (fast code generation) - **Recommended for Intel i7-7600U**
    - CodeQwen 7B (advanced code generation) - Optional for complex tasks
 
@@ -69,7 +83,8 @@ If you haven't already set up Ollama with the models:
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull required models
-ollama pull deepseek-r1:1.5b    # 1.1 GB - Conversation & reasoning
+ollama pull llama3.2:3b         # 2.0 GB - Natural conversation (new default)
+ollama pull deepseek-r1:1.5b    # 1.1 GB - Analytical thinking & reasoning
 ollama pull codegemma:2b        # 1.6 GB - Fast code generation (recommended)
 
 # Optional: Pull advanced code model for complex tasks
@@ -82,7 +97,7 @@ ollama list
 **Hardware Requirements:**
 - **CPU**: Intel i7-7600U or equivalent (2+ cores recommended)
 - **RAM**: 8GB+ (4GB available for models recommended)
-- **Storage**: ~3GB free space for recommended models (~7GB for all models)
+- **Storage**: ~5GB free space for recommended models (~9GB for all models)
 - **OS**: Linux, Windows, or macOS
 
 ## Installation 🚀
@@ -115,27 +130,31 @@ ollama list
 2. **Wait for connection**: The app will automatically connect to Ollama and verify available models
 
 3. **Choose your mode**:
-   - **💬 Conversation Mode**: For general discussions, questions, analysis
-   - **💻 Code Mode (Fast)**: For quick programming tasks, debugging, simple scripts
-   - **🧠 Code Mode (Advanced)**: For complex algorithms, large codebases, detailed explanations
+   - **💬 Chat Mode**: For natural conversation, questions, and general assistance (default)
+   - **🤔 Think Mode**: For analytical thinking, reasoning, and problem-solving
+   - **💻 Code Mode**: For quick programming tasks, debugging, simple scripts
+   - **🧠 Advanced Mode**: For complex algorithms, large codebases, detailed explanations
 
 4. **Start chatting**: Type your message and press Enter to send
 
 ### Model Switching
 
-- **Click model buttons** at the top to switch between modes
-- **Keyboard shortcuts**: `Ctrl+1` (Conversation), `Ctrl+2` (Code Fast), `Ctrl+3` (Code Advanced)
+- **Click mode buttons** at the top to switch between the four modes
+- **Keyboard shortcuts**: `Ctrl+1` (Chat), `Ctrl+2` (Think), `Ctrl+3` (Code), `Ctrl+4` (Advanced)
 - Each model maintains **separate chat history**
 - Status indicators show model availability: ✅ Ready, ❌ Missing, ⏳ Checking
 
 ### Performance Tips
 
-- **Start with CodeGemma 2B** (Fast mode) for most coding tasks - optimized for your hardware
-- **Switch to CodeQwen 7B** (Advanced mode) only when you need more sophisticated responses
+- **Start with Chat Mode** for general conversations and assistance
+- **Use Think Mode** for analytical tasks and problem-solving
+- **Switch to Code Mode** for most programming tasks - optimized for your hardware
+- **Use Advanced Mode** only when you need sophisticated programming responses
 - **Response times on Intel i7-7600U**:
+  - Llama 3.2 3B: ~3-8 seconds
+  - DeepSeek R1: ~3-8 seconds
   - CodeGemma 2B: ~2-5 seconds
   - CodeQwen 7B: ~10-30 seconds
-  - DeepSeek R1: ~3-8 seconds
 
 ### Code Mode Features
 
@@ -153,9 +172,10 @@ When in Code Mode, you'll see additional tools:
 |----------|--------|
 | `Enter` | Send message |
 | `Ctrl+Enter` | New line in input |
-| `Ctrl+1` | Switch to Conversation mode |
-| `Ctrl+2` | Switch to Code mode (Fast) |
-| `Ctrl+3` | Switch to Code mode (Advanced) |
+| `Ctrl+1` | Switch to Chat mode (Llama 3.2) |
+| `Ctrl+2` | Switch to Think mode (DeepSeek R1) |
+| `Ctrl+3` | Switch to Code mode (CodeGemma 2B) |
+| `Ctrl+4` | Switch to Advanced mode (CodeQwen 7B) |
 | `Ctrl+L` | Clear current chat |
 | `Ctrl+C` | Copy selection or last code block |
 | `F1` | Show help dialog |
@@ -166,25 +186,31 @@ The application uses these default settings:
 
 - **Ollama URL**: `http://localhost:11434`
 - **Models**: 
-  - Conversation: `deepseek-r1:1.5b`
-  - Code (Fast): `codegemma:2b`
-  - Code (Advanced): `codeqwen:7b`
+  - Chat: `llama3.2:3b`
+  - Think: `deepseek-r1:1.5b`
+  - Code: `codegemma:2b`
+  - Advanced: `codeqwen:7b`
 - **Timeout**: 120 seconds for API requests
 
 ### Model Parameters
 
-**Conversation Mode:**
-- Temperature: 0.7 (creative responses)
+**Chat Mode (Llama 3.2 3B):**
+- Temperature: 0.8 (natural conversation)
 - Top-p: 0.9
 - Max tokens: 2048
 
-**Code Mode (Fast - CodeGemma 2B):**
+**Think Mode (DeepSeek R1):**
+- Temperature: 0.7 (analytical responses)
+- Top-p: 0.9
+- Max tokens: 2048
+
+**Code Mode (CodeGemma 2B):**
 - Temperature: 0.2 (focused, quick responses)
 - Top-p: 0.7
 - Max tokens: 2048
 - Top-k: 20 (optimized for speed)
 
-**Code Mode (Advanced - CodeQwen 7B):**
+**Advanced Mode (CodeQwen 7B):**
 - Temperature: 0.3 (precise code generation)
 - Top-p: 0.8
 - Max tokens: 4096

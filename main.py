@@ -29,9 +29,15 @@ class DeepCompanion:
         
         # Model configuration - Support for multiple models
         self.models = {
+            "chat": {
+                "name": "llama3.2:3b",
+                "display_name": "Llama 3.2 (Chat)",
+                "description": "Natural conversation and general assistance",
+                "emoji": "💬"
+            },
             "conversation": {
                 "name": "deepseek-r1:1.5b",
-                "display_name": "DeepSeek R1 (Conversation)",
+                "display_name": "DeepSeek R1 (Think)",
                 "description": "AI thinking and reasoning mode",
                 "emoji": "🤔"
             },
@@ -49,12 +55,13 @@ class DeepCompanion:
             }
         }
         
-        # Current model selection - default to normal coding
-        self.current_model_key = "code"
+        # Current model selection - default to chat for normal conversation
+        self.current_model_key = "chat"
         self.model_name = self.models[self.current_model_key]["name"]
         
         # Chat history (separate for each model)
         self.chat_histories = {
+            "chat": [],
             "conversation": [],
             "code": [],
             "code_advanced": []
@@ -86,9 +93,10 @@ class DeepCompanion:
         # Models menu
         models_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Modes", menu=models_menu)
-        models_menu.add_command(label="🤔 Think Mode", command=lambda: self.switch_model("conversation"), accelerator="Ctrl+1")
-        models_menu.add_command(label="💻 Code Mode", command=lambda: self.switch_model("code"), accelerator="Ctrl+2")
-        models_menu.add_command(label="🧠 Advanced Code", command=lambda: self.switch_model("code_advanced"), accelerator="Ctrl+3")
+        models_menu.add_command(label="💬 Chat Mode", command=lambda: self.switch_model("chat"), accelerator="Ctrl+1")
+        models_menu.add_command(label="🤔 Think Mode", command=lambda: self.switch_model("conversation"), accelerator="Ctrl+2")
+        models_menu.add_command(label="💻 Code Mode", command=lambda: self.switch_model("code"), accelerator="Ctrl+3")
+        models_menu.add_command(label="🧠 Advanced Code", command=lambda: self.switch_model("code_advanced"), accelerator="Ctrl+4")
         models_menu.add_separator()
         models_menu.add_command(label="Check Model Status", command=self.check_model_availability)
         
@@ -121,8 +129,9 @@ Features:
 • Interactive status icons and animations
 
 Modes:
+💬 Chat Mode - Llama 3.2 3B for natural conversation & assistance
 🤔 Think Mode - DeepSeek R1 1.5B for reasoning & analysis
-💻 Code Mode - CodeGemma 2B for everyday coding (default)
+💻 Code Mode - CodeGemma 2B for everyday coding
 🧠 Advanced Mode - CodeQwen 7B for complex programming
 
 Enhanced Features:
@@ -133,6 +142,7 @@ Enhanced Features:
 • 🎯 Context-aware message preparation and optimization
 
 Visual Indicators:
+• 💬💭⚡✨🧐💡 - Natural chat indicators
 • 🤔💭⚡✨🧐💡 - Enhanced thinking animations per mode
 • 💻⚡🔧⚙️🚀 - Code mode indicators
 • 🧠🔬⚡💡🎯🔍 - Advanced mode indicators
@@ -211,9 +221,19 @@ Powered by Ollama with enhanced model wrapper"""
         mode_frame = ttk.Frame(main_frame)
         mode_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Mode selection with icons instead of tabs
+        # Mode selection with icons instead of tabs - now 4 models
         modes_container = ttk.Frame(mode_frame)
         modes_container.pack(anchor=tk.CENTER)
+        
+        # Chat mode button (Llama 3.2 - default)
+        self.chat_button = ttk.Button(
+            modes_container,
+            text="💬 Chat",
+            command=lambda: self.switch_model("chat"),
+            style='ActiveModel.TButton',
+            width=10
+        )
+        self.chat_button.pack(side=tk.LEFT, padx=(0, 8))
         
         # Think mode button (DeepSeek R1)
         self.think_button = ttk.Button(
@@ -221,19 +241,19 @@ Powered by Ollama with enhanced model wrapper"""
             text="🤔 Think",
             command=lambda: self.switch_model("conversation"),
             style='Model.TButton',
-            width=12
+            width=10
         )
-        self.think_button.pack(side=tk.LEFT, padx=(0, 10))
+        self.think_button.pack(side=tk.LEFT, padx=(0, 8))
         
-        # Code mode button (CodeGemma - default)
+        # Code mode button (CodeGemma)
         self.code_button = ttk.Button(
             modes_container,
             text="💻 Code",
             command=lambda: self.switch_model("code"),
-            style='ActiveModel.TButton',
-            width=12
+            style='Model.TButton',
+            width=10
         )
-        self.code_button.pack(side=tk.LEFT, padx=(0, 10))
+        self.code_button.pack(side=tk.LEFT, padx=(0, 8))
         
         # Advanced coding button (CodeQwen)
         self.advanced_button = ttk.Button(
@@ -241,7 +261,7 @@ Powered by Ollama with enhanced model wrapper"""
             text="🧠 Advanced",
             command=lambda: self.switch_model("code_advanced"),
             style='Model.TButton',
-            width=12
+            width=10
         )
         self.advanced_button.pack(side=tk.LEFT)
         
@@ -267,6 +287,12 @@ Powered by Ollama with enhanced model wrapper"""
         # Model availability indicators with icons
         self.model_status_frame = ttk.Frame(status_frame)
         self.model_status_frame.pack(side=tk.LEFT, padx=(20, 0))
+        
+        self.chat_status = ttk.Label(self.model_status_frame, 
+                                   text="💬 ⏳", 
+                                   style='Status.TLabel',
+                                   font=('Arial', 8))
+        self.chat_status.pack(side=tk.LEFT, padx=(0, 5))
         
         self.think_status = ttk.Label(self.model_status_frame, 
                                      text="🤔 ⏳", 
@@ -329,9 +355,10 @@ Powered by Ollama with enhanced model wrapper"""
         self.message_entry.bind('<KeyRelease>', self.on_text_change)
         
         # Additional keyboard shortcuts
-        self.root.bind('<Control-1>', lambda e: self.switch_model("conversation"))
-        self.root.bind('<Control-2>', lambda e: self.switch_model("code"))
-        self.root.bind('<Control-3>', lambda e: self.switch_model("code_advanced"))
+        self.root.bind('<Control-1>', lambda e: self.switch_model("chat"))
+        self.root.bind('<Control-2>', lambda e: self.switch_model("conversation"))
+        self.root.bind('<Control-3>', lambda e: self.switch_model("code"))
+        self.root.bind('<Control-4>', lambda e: self.switch_model("code_advanced"))
         self.root.bind('<Control-l>', lambda e: self.clear_chat())
         self.root.bind('<Control-c>', self.copy_selection_or_code)
         self.root.bind('<F1>', self.show_help)
@@ -411,7 +438,10 @@ Powered by Ollama with enhanced model wrapper"""
         self.speed_icon.config(text="", foreground="gray")
         
         # Update model-specific icons
-        if self.current_model_key == "conversation":
+        if self.current_model_key == "chat":
+            self.coding_icon.config(text="💬", foreground="#27ae60")  # Chat icon
+            self.speed_icon.config(text="💭", foreground="green")      # Conversation speed
+        elif self.current_model_key == "conversation":
             self.coding_icon.config(text="🤔", foreground="#3498db")  # Think icon
             self.speed_icon.config(text="💭", foreground="blue")      # Thinking speed
         elif self.current_model_key == "code":
@@ -539,18 +569,20 @@ General:
 • Ctrl+C - Copy selection or last code block
 
 Mode Switching:
-• Ctrl+1 - Think mode (DeepSeek R1 - reasoning & analysis)
-• Ctrl+2 - Code mode (CodeGemma 2B - default coding)
-• Ctrl+3 - Advanced mode (CodeQwen 7B - complex coding)
+• Ctrl+1 - Chat mode (Llama 3.2 - natural conversation)
+• Ctrl+2 - Think mode (DeepSeek R1 - reasoning & analysis)
+• Ctrl+3 - Code mode (CodeGemma 2B - default coding)
+• Ctrl+4 - Advanced mode (CodeQwen 7B - complex coding)
 
 Features:
 • Copy Code button - Copy last code block
 • Format Input button - Basic code formatting
 
 Usage Tips:
-• Start with Code mode 💻 for most programming tasks
+• Start with Chat mode 💬 for general conversations
 • Use Think mode 🤔 for analysis and problem-solving
-• Switch to Advanced mode 🧠 for complex algorithms
+• Switch to Code mode 💻 for most programming tasks
+• Use Advanced mode 🧠 for complex algorithms
 • Each mode maintains separate chat history
 """
         
@@ -595,12 +627,15 @@ Usage Tips:
     def update_mode_buttons(self):
         """Update the styling of mode selection buttons"""
         # Reset all buttons to normal style
+        self.chat_button.configure(style='Model.TButton')
         self.think_button.configure(style='Model.TButton')
         self.code_button.configure(style='Model.TButton')
         self.advanced_button.configure(style='Model.TButton')
         
         # Highlight active button
-        if self.current_model_key == "conversation":
+        if self.current_model_key == "chat":
+            self.chat_button.configure(style='ActiveModel.TButton')
+        elif self.current_model_key == "conversation":
             self.think_button.configure(style='ActiveModel.TButton')
         elif self.current_model_key == "code":
             self.code_button.configure(style='ActiveModel.TButton')
@@ -654,7 +689,13 @@ Usage Tips:
             config = self.model_wrapper.get_model_config(self.current_model_key)
             
             # More sophisticated time estimation based on content type and model
-            if self.current_model_key == "code":
+            if self.current_model_key == "chat":
+                # Chat mode - natural conversation, moderate speed
+                base_time = 2.5
+                complexity_factor = word_count * 0.1
+                estimated_time = max(2, min(15, base_time + complexity_factor))
+                speed_indicator = "💬⚡"
+            elif self.current_model_key == "code":
                 # Code mode - faster responses, but varies by complexity
                 base_time = 2
                 complexity_factor = word_count * 0.1  # Code complexity
@@ -718,7 +759,9 @@ Usage Tips:
                         if model_info['name'] in model_names:
                             available_models.append(model_info['display_name'])
                             # Update individual model status
-                            if model_key == "conversation":
+                            if model_key == "chat":
+                                self.root.after(0, lambda: self.chat_status.config(text="💬 ✅", foreground="green"))
+                            elif model_key == "conversation":
                                 self.root.after(0, lambda: self.think_status.config(text="🤔 ✅", foreground="green"))
                             elif model_key == "code":
                                 self.root.after(0, lambda: self.code_status.config(text="💻 ✅", foreground="green"))
@@ -727,7 +770,9 @@ Usage Tips:
                         else:
                             missing_models.append(model_info['display_name'])
                             # Update individual model status
-                            if model_key == "conversation":
+                            if model_key == "chat":
+                                self.root.after(0, lambda: self.chat_status.config(text="💬 ❌", foreground="red"))
+                            elif model_key == "conversation":
                                 self.root.after(0, lambda: self.think_status.config(text="🤔 ❌", foreground="red"))
                             elif model_key == "code":
                                 self.root.after(0, lambda: self.code_status.config(text="💻 ❌", foreground="red"))
@@ -744,6 +789,7 @@ Usage Tips:
             except Exception as e:
                 self.root.after(0, lambda: self.update_status(f"❌ Error checking models: {str(e)}", "red"))
                 # Set all model indicators to error
+                self.root.after(0, lambda: self.chat_status.config(text="💬 ❌", foreground="red"))
                 self.root.after(0, lambda: self.think_status.config(text="🤔 ❌", foreground="red"))
                 self.root.after(0, lambda: self.code_status.config(text="💻 ❌", foreground="red"))
                 self.root.after(0, lambda: self.advanced_status.config(text="🧠 ❌", foreground="red"))
@@ -758,7 +804,14 @@ Usage Tips:
         """Add model-specific welcome message to chat"""
         current_model = self.models[self.current_model_key]
         
-        if self.current_model_key == "conversation":
+        if self.current_model_key == "chat":
+            welcome_msg = f"""💬 Welcome to Chat Mode!
+
+{current_model['emoji']} **Llama 3.2** is ready for natural conversation!
+
+What would you like to chat about today?"""
+        
+        elif self.current_model_key == "conversation":
             welcome_msg = f"""🤔 Welcome to Think Mode!
 
 {current_model['emoji']} **DeepSeek R1** is ready to help you think through problems!
@@ -1072,6 +1125,16 @@ class ModelWrapper:
         
         # Model-specific configurations for optimal performance
         self.model_configs = {
+            "chat": {
+                "temperature": 0.8,
+                "top_p": 0.9,
+                "num_predict": 2048,
+                "repeat_penalty": 1.1,
+                "top_k": 40,
+                "chunk_size": 6,  # Characters per UI update
+                "update_interval": 40,  # ms between updates
+                "thinking_style": ["💬", "💭", "⚡", "✨", "🗣️", "💡"]
+            },
             "conversation": {
                 "temperature": 0.7,
                 "top_p": 0.9,
@@ -1115,7 +1178,13 @@ class ModelWrapper:
         
         # Add system message for better responses based on model
         model_key = self.parent.current_model_key
-        if model_key == "code":
+        if model_key == "chat":
+            system_msg = {
+                "role": "system", 
+                "content": "You are a helpful, friendly AI assistant for natural conversation. Be engaging, informative, and conversational. Respond naturally and help with a wide range of topics."
+            }
+            messages.append(system_msg)
+        elif model_key == "code":
             system_msg = {
                 "role": "system", 
                 "content": "You are a helpful coding assistant. Provide clear, concise code examples with brief explanations. Format code using markdown code blocks."
@@ -1186,7 +1255,9 @@ class ModelWrapper:
                 self.parent.thinking_icon.config(text=current_icon, foreground="#3498db")
                 
                 # Update status with contextual message
-                if model_key == "code":
+                if model_key == "chat":
+                    status_msg = f"💬 Chatting{('.' * (self.parent.thinking_dots % 4))}"
+                elif model_key == "code":
                     status_msg = f"💻 Coding{('.' * (self.parent.thinking_dots % 4))}"
                 elif model_key == "code_advanced":
                     status_msg = f"🧠 Analyzing{('.' * (self.parent.thinking_dots % 4))}"
