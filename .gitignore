@@ -77,3 +77,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Setup scripts (optional - remove if you want to include them)
+# github-setup.sh
