@@ -249,10 +249,10 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Download URLs (you can update these with actual download links)
         const downloadUrls = {
-            Windows: 'https://github.com/Aryan-Rajyaguru-1/companion/releases/latest/download/companion-windows.exe',
-            macOS: 'https://github.com/Aryan-Rajyaguru-1/companion/releases/latest/download/companion-macos.dmg',
-            Linux: 'https://github.com/Aryan-Rajyaguru-1/companion/releases/latest/download/companion-linux.deb',
-            source: 'https://github.com/Aryan-Rajyaguru-1/companion'
+            Windows: 'https://github.com/Aryan-Rajyaguru-1/Companion/releases/latest/download/companion-windows.exe',
+            macOS: 'https://github.com/Aryan-Rajyaguru-1/Companion/releases/latest/download/companion-macos.dmg',
+            Linux: 'https://github.com/Aryan-Rajyaguru-1/Companion/releases/latest/download/companion-linux.deb',
+            source: 'https://github.com/Aryan-Rajyaguru-1/Companion'
         };
         
         // Add click handlers to download buttons
@@ -430,12 +430,12 @@ document.addEventListener('DOMContentLoaded', function() {
         // Add event listeners
         document.getElementById('startDownload').addEventListener('click', function() {
             // Since we don't have actual release files yet, redirect to GitHub for now
-            window.open('https://github.com/Aryan-Rajyaguru-1/companion', '_blank');
+            window.open('https://github.com/Aryan-Rajyaguru-1/Companion', '_blank');
             document.body.removeChild(modalOverlay);
         });
         
         document.getElementById('viewSource').addEventListener('click', function() {
-            window.open('https://github.com/Aryan-Rajyaguru-1/companion', '_blank');
+            window.open('https://github.com/Aryan-Rajyaguru-1/Companion', '_blank');
             document.body.removeChild(modalOverlay);
         });
         
