@@ -1,12 +1,19 @@
-# DeepCompanion v2.1 🤖
+# Companion v3.0 🤖
 
-A modern, beautiful GUI chat interface for interacting with multiple Ollama AI models locally. Now supports four specialized modes with enhanced model wrapper for smooth flow and output!
+A modern, beautiful GUI chat interface for interacting with multiple Ollama AI models locally and cloud models via OpenRouter. Now supports four specialized modes with enhanced model wrapper for smooth flow and output!
 
 ![Python](https://img.shields.io/badge/python-v3.7+-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-## ✨ New in v2.1
+## ✨ New in v3.0
+
+### 🌐 **Complete Web Interface**
+- **Interactive Demo**: Real-time chat interface with AI models
+- **Smart Download System**: OS detection and platform-specific instructions  
+- **Professional Website**: Features, documentation, and support pages
+- **Backend API**: FastAPI server for AI model inference
+- **Testing Suite**: Comprehensive model evaluation interface
 
 ### 🔄 **Four-Model Architecture**
 - **💬 Chat Mode**: Llama 3.2 3B for natural conversation and general assistance (default)
@@ -330,3 +337,11 @@ If you encounter issues or have questions:
 ---
 
 **Happy chatting with your AI companion!** 🎉
+
+## 📞 Contact & Support
+
+- **📧 Email**: aryanrajyaguru2007@gmail.com
+- **📱 Phone**: +91 76002 30560
+- **👨‍💻 Developer**: Rajyaguru Aryan
+- **🐛 Bug Reports**: [GitHub Issues](https://github.com/Aryan-Rajyaguru-1/Companion/issues)
+- **💡 Feature Requests**: [GitHub Discussions](https://github.com/Aryan-Rajyaguru-1/Companion/discussions)
