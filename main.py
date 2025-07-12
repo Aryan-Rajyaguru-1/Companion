@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Companion proto-2.1 (Deepthink) - A modern GUI for Ollama AI models
-A beautiful chat interface for interacting with local AI models
+Companion proto-3.0 (Deepthink) - A modern GUI for local and cloud AI models
+A beautiful chat interface for interacting with local Ollama and cloud OpenRouter models
 """
 
 import tkinter as tk
@@ -14,69 +14,118 @@ import sys
 import os
 import re
 
-class DeepCompanion:
+# Import OpenRouter integration
+try:
+    from openrouter_client import OpenRouterClient, OpenRouterModelWrapper
+    from config import OPENROUTER_CONFIG, APP_CONFIG, list_available_models
+    CLOUD_MODELS_AVAILABLE = True
+except ImportError:
+    CLOUD_MODELS_AVAILABLE = False
+    APP_CONFIG = {
+        "title": "Companion v3.0 - Local AI Chat",
+        "version": "3.0.0", 
+        "description": "Modern GUI for local Ollama models",
+        "author": "Companion Team"
+    }
+    print("⚠️ Cloud models not available - OpenRouter integration not found")
+
+class Companion:
     def __init__(self, root):
         self.root = root
-        self.root.title("Companion proto-2.1 (Deepthink) - AI Chat Interface")
-        self.root.geometry("900x700")
-        self.root.minsize(600, 500)
+        self.root.title("Companion proto-3.0 (Deepthink) - AI Chat Interface")
+        self.root.geometry("1000x750")
+        self.root.minsize(700, 600)
         
         # Configure style
         self.setup_styles()
         
-        # Ollama configuration
+        # API configurations
         self.ollama_url = "http://localhost:11434"
         
-        # Model configuration - Support for multiple models
-        self.models = {
+        # Local Ollama models configuration
+        self.local_models = {
             "chat": {
                 "name": "llama3.2:3b",
-                "display_name": "Llama 3.2 (Chat)",
+                "display_name": "Llama 3.2 (Local)",
                 "description": "Natural conversation and general assistance",
-                "emoji": "💬"
+                "emoji": "💬",
+                "provider": "ollama"
             },
             "conversation": {
                 "name": "deepseek-r1:1.5b",
-                "display_name": "DeepSeek R1 (Think)",
+                "display_name": "DeepSeek R1 (Local)",
                 "description": "AI thinking and reasoning mode",
-                "emoji": "🤔"
+                "emoji": "🤔",
+                "provider": "ollama"
             },
             "code": {
                 "name": "codegemma:2b", 
-                "display_name": "CodeGemma 2B (Code)",
+                "display_name": "CodeGemma 2B (Local)",
                 "description": "Default coding assistant",
-                "emoji": "💻"
+                "emoji": "💻",
+                "provider": "ollama"
             },
             "code_advanced": {
                 "name": "codeqwen:7b", 
-                "display_name": "CodeQwen 7B (Advanced)",
+                "display_name": "CodeQwen 7B (Local)",
                 "description": "Advanced coding with detailed explanations",
-                "emoji": "🧠"
+                "emoji": "🧠",
+                "provider": "ollama"
             }
         }
         
-        # Current model selection - default to chat for normal conversation
+        # Cloud OpenRouter models configuration
+        self.cloud_models = {}
+        if CLOUD_MODELS_AVAILABLE:
+            try:
+                cloud_model_configs = list_available_models()
+                for model_id, config in cloud_model_configs.items():
+                    key = f"cloud_{config['category']}_{len(self.cloud_models)}"
+                    self.cloud_models[key] = {
+                        "name": model_id,
+                        "display_name": config["display_name"],
+                        "description": config["description"],
+                        "emoji": config["emoji"],
+                        "provider": "openrouter",
+                        "category": config["category"]
+                    }
+            except Exception as e:
+                print(f"⚠️ Error loading cloud models: {e}")
+                self.cloud_models = {}
+        
+        # Combine all models
+        self.models = {}
+        self.models.update(self.local_models)
+        self.models.update(self.cloud_models)
+        
+        # Current model selection - default to local chat
         self.current_model_key = "chat"
         self.model_name = self.models[self.current_model_key]["name"]
+        self.current_provider = self.models[self.current_model_key]["provider"]
         
         # Chat history (separate for each model)
-        self.chat_histories = {
-            "chat": [],
-            "conversation": [],
-            "code": [],
-            "code_advanced": []
-        }
+        self.chat_histories = {key: [] for key in self.models.keys()}
         self.chat_history = self.chat_histories[self.current_model_key]
         
-        # Initialize model wrapper for enhanced flow
+        # Initialize model wrappers
         self.model_wrapper = ModelWrapper(self)
+        if CLOUD_MODELS_AVAILABLE:
+            try:
+                self.openrouter_wrapper = OpenRouterModelWrapper(self)
+            except Exception as e:
+                print(f"⚠️ Error initializing OpenRouter wrapper: {e}")
+                self.openrouter_wrapper = None
+        else:
+            self.openrouter_wrapper = None
         
         # Create GUI
         self.create_menu()
         self.create_widgets()
         
-        # Check Ollama connection on startup
+        # Check connections on startup
         self.check_ollama_connection()
+        if CLOUD_MODELS_AVAILABLE:
+            threading.Thread(target=self.check_openrouter_connection_async, daemon=True).start()
     
     def create_menu(self):
         """Create menu bar"""
@@ -114,356 +163,479 @@ class DeepCompanion:
     
     def show_about(self):
         """Show about dialog"""
-        about_text = """🤖 Companion proto-2.1 (Deepthink) v2.1
+        about_text = f"""🤖 {APP_CONFIG['title']} v{APP_CONFIG['version']}
 
-A modern GUI for local AI model interaction with enhanced model wrapper
+{APP_CONFIG['description']}
 
-Features:
-• Three specialized modes with dedicated icons
-• Enhanced streaming with smooth output flow
-• Intelligent response buffering and performance metrics
-• Model-specific optimizations and error handling
-• Separate chat histories per mode
-• Code-specific tools and formatting
-• Keyboard shortcuts for efficiency
-• Interactive status icons and animations
+🚀 Dual Provider Support:
+• 🏠 Local Models (Ollama): Fast, private, offline capable
+• ☁️ Cloud Models (OpenRouter): Advanced capabilities, latest models
 
-Modes:
-💬 Chat Mode - Llama 3.2 3B for natural conversation & assistance
-🤔 Think Mode - DeepSeek R1 1.5B for reasoning & analysis
+📱 Local Models Available:
+💬 Chat Mode - Llama 3.2 3B for natural conversation
+🤔 Think Mode - DeepSeek R1 1.5B for reasoning & analysis  
 💻 Code Mode - CodeGemma 2B for everyday coding
 🧠 Advanced Mode - CodeQwen 7B for complex programming
 
-Enhanced Features:
-• 🚀 Intelligent response streaming with performance metrics
-• ⚡ Model-specific thinking animations and status updates
-• 🔧 Advanced error handling with helpful suggestions
+☁️ Cloud Models Available ({len(self.cloud_models)} models):
+🧠 DeepSeek R1 - Advanced reasoning and step-by-step analysis
+⚡ Gemini 2.5 Flash - Google's fast multimodal AI
+🤖 GPT-4o - OpenAI's most advanced multimodal model
+💻 Mistral Devstral - Specialized for code generation
+🚀 GPT-4.1 - Enhanced GPT-4 with improved capabilities
+🔍 Perplexity Sonar - Deep research with real-time web search
+
+✨ Enhanced Features:
+• 🔄 Seamless switching between local and cloud models
 • 📊 Real-time response performance monitoring
-• 🎯 Context-aware message preparation and optimization
+• 🎯 Context-aware message preparation
+• 🚀 Intelligent streaming with smooth output
+• 💾 Separate chat histories per model
+• ⌨️ Comprehensive keyboard shortcuts
+• � Advanced error handling and recovery
 
-Visual Indicators:
-• 💬💭⚡✨🧐💡 - Natural chat indicators
-• 🤔💭⚡✨🧐💡 - Enhanced thinking animations per mode
-• 💻⚡🔧⚙️🚀 - Code mode indicators
-• 🧠🔬⚡💡🎯🔍 - Advanced mode indicators
+🎨 Visual Indicators:
+• Model-specific thinking animations
+• Performance metrics and speed indicators
+• Connection status for both providers
+• Real-time token streaming
 
-Optimized for Intel i7-7600U with 8GB RAM
+⌨️ Keyboard Shortcuts:
+• Enter - Send message
+• Ctrl+Enter - New line
+• Ctrl+L - Clear chat
+• Ctrl+1-4 - Switch local models
+• F1 - Show help
 
 Built with Python & tkinter
-Powered by Ollama with enhanced model wrapper"""
+Powered by Ollama (local) + OpenRouter (cloud)
+{APP_CONFIG['author']}"""
         
-        messagebox.showinfo("About Companion proto-2.1 (Deepthink)", about_text)
+        messagebox.showinfo(f"About {APP_CONFIG['title']}", about_text)
     
     def setup_styles(self):
-        """Configure custom styles for the application"""
+        """Configure modern Grok-inspired styles for the application"""
         style = ttk.Style()
         
         # Configure the theme
         style.theme_use('clam')
         
-        # Custom colors
-        bg_color = "#2c3e50"
-        fg_color = "#ecf0f1"
-        accent_color = "#3498db"
-        secondary_color = "#34495e"
+        # Grok-inspired color palette - dark theme with vibrant accents
+        bg_color = "#0A0A0A"          # Deep black background
+        card_bg = "#1A1A1A"          # Card/panel background
+        fg_color = "#FFFFFF"          # Primary text (white)
+        secondary_fg = "#A0A0A0"      # Secondary text (light gray)
+        accent_color = "#00D9FF"      # Bright cyan accent (Grok's signature color)
+        accent_hover = "#00B8D4"      # Darker cyan for hover
+        success_color = "#00E676"     # Success green
+        warning_color = "#FFB74D"     # Warning orange
+        error_color = "#FF5252"       # Error red
+        border_color = "#333333"      # Subtle borders
         
-        # Configure styles
+        # Title styling - larger, more prominent
         style.configure('Title.TLabel', 
                        background=bg_color, 
-                       foreground=accent_color, 
-                       font=('Arial', 16, 'bold'))
+                       foreground=fg_color, 
+                       font=('SF Pro Display', 24, 'bold'))
         
+        # Subtitle for mode descriptions
+        style.configure('Subtitle.TLabel', 
+                       background=bg_color, 
+                       foreground=secondary_fg, 
+                       font=('SF Pro Text', 11))
+        
+        # Status labels
         style.configure('Status.TLabel', 
                        background=bg_color, 
-                       foreground=fg_color, 
-                       font=('Arial', 9))
+                       foreground=secondary_fg, 
+                       font=('SF Pro Text', 10))
         
+        # Primary action button (Send)
         style.configure('Send.TButton', 
                        background=accent_color, 
                        foreground='white', 
-                       font=('Arial', 10, 'bold'))
+                       font=('SF Pro Text', 11, 'bold'),
+                       borderwidth=0,
+                       focuscolor='none',
+                       relief='flat')
         
         style.map('Send.TButton',
-                 background=[('active', '#2980b9')])
-                 
+                 background=[('active', accent_hover),
+                           ('pressed', '#0097A7')])
+        
+        # Model selection buttons - inactive state
         style.configure('Model.TButton', 
-                       background=secondary_color, 
-                       foreground=fg_color, 
-                       font=('Arial', 9))
+                       background=card_bg, 
+                       foreground=secondary_fg, 
+                       font=('SF Pro Text', 10, 'normal'),
+                       borderwidth=1,
+                       relief='flat',
+                       focuscolor='none')
         
         style.map('Model.TButton',
-                 background=[('active', '#4a5f7a')])
+                 background=[('active', '#2A2A2A'),
+                           ('pressed', '#333333')],
+                 foreground=[('active', fg_color)])
         
+        # Active model button
         style.configure('ActiveModel.TButton', 
                        background=accent_color, 
                        foreground='white', 
-                       font=('Arial', 9, 'bold'))
+                       font=('SF Pro Text', 10, 'bold'),
+                       borderwidth=0,
+                       relief='flat',
+                       focuscolor='none')
         
         style.map('ActiveModel.TButton',
-                 background=[('active', '#2980b9')])
+                 background=[('active', accent_hover),
+                           ('pressed', '#0097A7')])
+        
+        # Cloud model buttons
+        style.configure('Cloud.TButton', 
+                       background='#1E1E3A', 
+                       foreground='#E0E0FF', 
+                       font=('SF Pro Text', 10, 'normal'),
+                       borderwidth=1,
+                       relief='flat',
+                       focuscolor='none')
+        
+        style.map('Cloud.TButton',
+                 background=[('active', '#2A2A4A'),
+                           ('pressed', '#333366')],
+                 foreground=[('active', '#FFFFFF')])
+        
+        # Clear button
+        style.configure('Clear.TButton', 
+                       background='#333333', 
+                       foreground=fg_color, 
+                       font=('SF Pro Text', 10),
+                       borderwidth=0,
+                       relief='flat',
+                       focuscolor='none')
+        
+        style.map('Clear.TButton',
+                 background=[('active', '#444444'),
+                           ('pressed', '#555555')])
+        
+        # Notebook (tabs) styling
+        style.configure('TNotebook', 
+                       background=bg_color,
+                       borderwidth=0,
+                       tabmargins=[0, 5, 0, 0])
+        
+        style.configure('TNotebook.Tab', 
+                       background=card_bg,
+                       foreground=secondary_fg,
+                       padding=[20, 10],
+                       font=('SF Pro Text', 11, 'normal'),
+                       borderwidth=0)
+        
+        style.map('TNotebook.Tab',
+                 background=[('selected', accent_color),
+                           ('active', '#2A2A2A')],
+                 foreground=[('selected', 'white'),
+                           ('active', fg_color)])
+        
+        # Frame styling
+        style.configure('TFrame', background=bg_color)
         
         # Configure root background
         self.root.configure(bg=bg_color)
     
     def create_widgets(self):
-        """Create and layout the GUI widgets"""
-        # Main container
+        """Create and layout the modern Grok-inspired GUI widgets"""
+        # Main container with padding
         main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=24, pady=24)
         
-        # Title
-        title_label = ttk.Label(main_frame, 
-                               text="🤖 Companion proto-2.1 (Deepthink)", 
+        # Header section with modern typography
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 32))
+        
+        # Main title with Grok-style branding
+        title_label = ttk.Label(header_frame, 
+                               text="🚀 Companion", 
                                style='Title.TLabel')
-        title_label.pack(pady=(0, 10))
+        title_label.pack(anchor=tk.W)
         
-        # Mode selector frame with icons (replace model tabs)
-        mode_frame = ttk.Frame(main_frame)
-        mode_frame.pack(fill=tk.X, pady=(0, 10))
+        # Subtitle
+        subtitle_label = ttk.Label(header_frame, 
+                                 text="AI Chat Interface • Local & Cloud Models • Powered by Ollama & OpenRouter", 
+                                 style='Subtitle.TLabel')
+        subtitle_label.pack(anchor=tk.W, pady=(8, 0))
         
-        # Mode selection with icons instead of tabs - now 4 models
-        modes_container = ttk.Frame(mode_frame)
-        modes_container.pack(anchor=tk.CENTER)
+        # Provider tabs with modern card design
+        provider_card = ttk.Frame(main_frame)
+        provider_card.pack(fill=tk.X, pady=(0, 24))
         
-        # Chat mode button (Llama 3.2 - default)
+        # Create notebook for local/cloud switching with modern styling
+        self.provider_notebook = ttk.Notebook(provider_card)
+        self.provider_notebook.pack(fill=tk.X)
+        
+        # Local models tab
+        local_tab = ttk.Frame(self.provider_notebook)
+        self.provider_notebook.add(local_tab, text="🏠 Local Models")
+        
+        # Local models grid with improved spacing
+        local_container = ttk.Frame(local_tab)
+        local_container.pack(fill=tk.X, pady=16)
+        
+        # Create a grid layout for local model buttons
+        local_buttons_frame = ttk.Frame(local_container)
+        local_buttons_frame.pack(anchor=tk.CENTER)
+        
+        # Chat mode button - redesigned
         self.chat_button = ttk.Button(
-            modes_container,
-            text="💬 Chat",
+            local_buttons_frame,
+            text="💬 Chat Mode\nLlama 3.2",
             command=lambda: self.switch_model("chat"),
             style='ActiveModel.TButton',
-            width=10
+            width=16
         )
-        self.chat_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.chat_button.grid(row=0, column=0, padx=8, pady=8, sticky="ew")
         
-        # Think mode button (DeepSeek R1)
+        # Think mode button
         self.think_button = ttk.Button(
-            modes_container,
-            text="🤔 Think",
+            local_buttons_frame,
+            text="🤔 Think Mode\nDeepSeek R1",
             command=lambda: self.switch_model("conversation"),
             style='Model.TButton',
-            width=10
+            width=16
         )
-        self.think_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.think_button.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
         
-        # Code mode button (CodeGemma)
+        # Code mode button
         self.code_button = ttk.Button(
-            modes_container,
-            text="💻 Code",
+            local_buttons_frame,
+            text="💻 Code Mode\nCodeGemma",
             command=lambda: self.switch_model("code"),
             style='Model.TButton',
-            width=10
+            width=16
         )
-        self.code_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.code_button.grid(row=1, column=0, padx=8, pady=8, sticky="ew")
         
-        # Advanced coding button (CodeQwen)
+        # Advanced coding button
         self.advanced_button = ttk.Button(
-            modes_container,
-            text="🧠 Advanced",
+            local_buttons_frame,
+            text="🧠 Advanced\nCodeQwen",
             command=lambda: self.switch_model("code_advanced"),
             style='Model.TButton',
-            width=10
+            width=16
         )
-        self.advanced_button.pack(side=tk.LEFT)
+        self.advanced_button.grid(row=1, column=1, padx=8, pady=8, sticky="ew")
         
-        # Current mode description
+        # Cloud models tab
+        if CLOUD_MODELS_AVAILABLE and self.cloud_models:
+            cloud_tab = ttk.Frame(self.provider_notebook)
+            self.provider_notebook.add(cloud_tab, text="☁️ Cloud Models")
+            
+            # Cloud models container with modern card layout
+            cloud_container = ttk.Frame(cloud_tab)
+            cloud_container.pack(fill=tk.X, pady=16)
+            
+            # Cloud models grid
+            cloud_grid = ttk.Frame(cloud_container)
+            cloud_grid.pack(anchor=tk.CENTER)
+            
+            # Create cloud model buttons in a responsive grid
+            self.cloud_buttons = {}
+            row, col = 0, 0
+            max_cols = 3
+            
+            for model_key, model_info in self.cloud_models.items():
+                btn_text = f"{model_info['emoji']} {model_info['display_name'].split()[0]}\n{model_info['category'].title()}"
+                btn = ttk.Button(
+                    cloud_grid,
+                    text=btn_text,
+                    command=lambda k=model_key: self.switch_model(k),
+                    style='Cloud.TButton',
+                    width=18
+                )
+                btn.grid(row=row, column=col, padx=8, pady=8, sticky="ew")
+                self.cloud_buttons[model_key] = btn
+                
+                col += 1
+                if col >= max_cols:
+                    col = 0
+                    row += 1
+        
+        # Status and info section with modern card design
+        status_card = ttk.Frame(main_frame)
+        status_card.pack(fill=tk.X, pady=(0, 24))
+        
+        # Current mode info with modern typography
         current_model = self.models[self.current_model_key]
-        self.mode_desc_label = ttk.Label(
-            mode_frame, 
-            text=current_model['description'], 
+        self.mode_info_frame = ttk.Frame(status_card)
+        self.mode_info_frame.pack(fill=tk.X, pady=(0, 16))
+        
+        self.current_mode_label = ttk.Label(
+            self.mode_info_frame, 
+            text=f"Active: {current_model['emoji']} {current_model['display_name']}", 
             style='Status.TLabel',
-            font=('Arial', 9, 'italic')
+            font=('SF Pro Text', 12, 'bold')
         )
-        self.mode_desc_label.pack(anchor=tk.CENTER, pady=(5, 0))
+        self.current_mode_label.pack(anchor=tk.W)
         
-        # Status frame
-        status_frame = ttk.Frame(main_frame)
-        status_frame.pack(fill=tk.X, pady=(10, 10))
+        self.mode_desc_label = ttk.Label(
+            self.mode_info_frame, 
+            text=current_model['description'], 
+            style='Subtitle.TLabel'
+        )
+        self.mode_desc_label.pack(anchor=tk.W, pady=(4, 0))
         
-        self.status_label = ttk.Label(status_frame, 
-                                     text="Connecting to Ollama...", 
+        # Connection status with modern indicators
+        connection_frame = ttk.Frame(status_card)
+        connection_frame.pack(fill=tk.X)
+        
+        self.status_label = ttk.Label(connection_frame, 
+                                     text="� Initializing connections...", 
                                      style='Status.TLabel')
         self.status_label.pack(side=tk.LEFT)
         
-        # Model availability indicators with icons
-        self.model_status_frame = ttk.Frame(status_frame)
-        self.model_status_frame.pack(side=tk.LEFT, padx=(20, 0))
+        # Model status indicators (redesigned)
+        self.model_status_frame = ttk.Frame(connection_frame)
+        self.model_status_frame.pack(side=tk.RIGHT)
         
-        self.chat_status = ttk.Label(self.model_status_frame, 
-                                   text="💬 ⏳", 
-                                   style='Status.TLabel',
-                                   font=('Arial', 8))
-        self.chat_status.pack(side=tk.LEFT, padx=(0, 5))
+        self.status_indicators = {}
+        status_models = [("chat", "💬"), ("conversation", "🤔"), ("code", "💻"), ("code_advanced", "🧠")]
         
-        self.think_status = ttk.Label(self.model_status_frame, 
-                                     text="🤔 ⏳", 
-                                     style='Status.TLabel',
-                                     font=('Arial', 8))
-        self.think_status.pack(side=tk.LEFT, padx=(0, 5))
+        for i, (model_key, emoji) in enumerate(status_models):
+            indicator = ttk.Label(self.model_status_frame, 
+                                text=f"{emoji} ⏳", 
+                                style='Status.TLabel',
+                                font=('SF Pro Text', 10))
+            indicator.pack(side=tk.LEFT, padx=(12, 0))
+            self.status_indicators[model_key] = indicator
         
-        self.code_status = ttk.Label(self.model_status_frame, 
-                                    text="💻 ⏳", 
-                                    style='Status.TLabel',
-                                    font=('Arial', 8))
-        self.code_status.pack(side=tk.LEFT, padx=(0, 5))
+        # Chat display with modern styling
+        chat_frame = ttk.Frame(main_frame)
+        chat_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 24))
         
-        self.advanced_status = ttk.Label(self.model_status_frame, 
-                                        text="🧠 ⏳", 
-                                        style='Status.TLabel',
-                                        font=('Arial', 8))
-        self.advanced_status.pack(side=tk.LEFT)
-        
-        self.active_mode_label = ttk.Label(status_frame, 
-                                          text=f"Mode: {current_model['emoji']} {current_model['display_name'].split()[0]}", 
-                                          style='Status.TLabel')
-        self.active_mode_label.pack(side=tk.RIGHT)
-        
-        # Chat display area
         self.chat_display = scrolledtext.ScrolledText(
-            main_frame,
+            chat_frame,
             wrap=tk.WORD,
-            width=80,
-            height=25,
-            font=('Consolas', 10),
-            bg="#34495e",
-            fg="#ecf0f1",
-            insertbackground="#ecf0f1",
-            selectbackground="#3498db",
-            selectforeground="white",
-            state=tk.DISABLED
+            width=90,
+            height=28,
+            font=('SF Mono', 11),
+            bg="#0A0A0A",           # Deep black background
+            fg="#FFFFFF",           # White text
+            insertbackground="#00D9FF",  # Cyan cursor
+            selectbackground="#00D9FF",  # Cyan selection
+            selectforeground="#000000",  # Black selected text
+            state=tk.DISABLED,
+            borderwidth=0,
+            relief='flat',
+            padx=20,
+            pady=20
         )
-        self.chat_display.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.chat_display.pack(fill=tk.BOTH, expand=True)
         
-        # Input frame
-        input_frame = ttk.Frame(main_frame)
-        input_frame.pack(fill=tk.X)
+        # Input section with modern design
+        input_section = ttk.Frame(main_frame)
+        input_section.pack(fill=tk.X)
         
-        # Message input
+        # Input container
+        input_container = ttk.Frame(input_section)
+        input_container.pack(fill=tk.X, pady=(0, 16))
+        
+        # Message input with modern styling
         self.message_entry = tk.Text(
-            input_frame,
-            height=3,
-            font=('Arial', 10),
-            bg="#ecf0f1",
-            fg="#2c3e50",
-            insertbackground="#2c3e50",
-            wrap=tk.WORD
+            input_container,
+            height=4,
+            font=('SF Pro Text', 12),
+            bg="#1A1A1A",           # Dark gray background
+            fg="#FFFFFF",           # White text
+            insertbackground="#00D9FF",  # Cyan cursor
+            wrap=tk.WORD,
+            borderwidth=0,
+            relief='flat',
+            padx=16,
+            pady=12
         )
-        self.message_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        self.message_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 16))
         
-        # Bind Enter key (Ctrl+Enter for new line)
+        # Button container
+        button_container = ttk.Frame(input_container)
+        button_container.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Send button with modern styling
+        self.send_button = ttk.Button(
+            button_container,
+            text="Send ↗",
+            command=self.send_message,
+            style='Send.TButton',
+            width=12
+        )
+        self.send_button.pack(fill=tk.X, pady=(0, 8))
+        
+        # Clear button
+        clear_button = ttk.Button(
+            button_container,
+            text="Clear",
+            command=self.clear_chat,
+            style='Clear.TButton',
+            width=12
+        )
+        clear_button.pack(fill=tk.X)
+        
+        # Footer with stats and shortcuts
+        footer_frame = ttk.Frame(input_section)
+        footer_frame.pack(fill=tk.X)
+        
+        # Character counter and shortcuts
+        self.stats_label = ttk.Label(footer_frame, 
+                                   text="0 characters • Press Enter to send • Ctrl+L to clear", 
+                                   style='Status.TLabel')
+        self.stats_label.pack(side=tk.LEFT)
+        
+        # Performance indicator
+        self.perf_label = ttk.Label(footer_frame, text="", style='Status.TLabel')
+        self.perf_label.pack(side=tk.RIGHT)
+        
+        # Bind events
         self.message_entry.bind('<Return>', self.on_enter_pressed)
         self.message_entry.bind('<Control-Return>', self.insert_newline)
         self.message_entry.bind('<KeyRelease>', self.on_text_change)
         
-        # Additional keyboard shortcuts
+        # Keyboard shortcuts
         self.root.bind('<Control-1>', lambda e: self.switch_model("chat"))
         self.root.bind('<Control-2>', lambda e: self.switch_model("conversation"))
         self.root.bind('<Control-3>', lambda e: self.switch_model("code"))
         self.root.bind('<Control-4>', lambda e: self.switch_model("code_advanced"))
         self.root.bind('<Control-l>', lambda e: self.clear_chat())
-        self.root.bind('<Control-c>', self.copy_selection_or_code)
         self.root.bind('<F1>', self.show_help)
-        
-        # Icon status frame below input
-        icon_frame = ttk.Frame(input_frame)
-        icon_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(2, 0))
-        
-        # Character counter
-        self.char_label = ttk.Label(icon_frame, text="0 chars", style='Status.TLabel', font=('Arial', 8))
-        self.char_label.pack(side=tk.LEFT)
-        
-        # Thinking indicator
-        self.thinking_icon = ttk.Label(icon_frame, text="", style='Status.TLabel', font=('Arial', 12))
-        self.thinking_icon.pack(side=tk.LEFT, padx=(10, 5))
-        
-        # Advanced coding mode indicator
-        self.coding_icon = ttk.Label(icon_frame, text="", style='Status.TLabel', font=('Arial', 12))
-        self.coding_icon.pack(side=tk.LEFT, padx=(5, 0))
-        
-        # Speed indicator
-        self.speed_icon = ttk.Label(icon_frame, text="", style='Status.TLabel', font=('Arial', 10))
-        self.speed_icon.pack(side=tk.RIGHT)
-        
-        # Update icons based on current model
-        self.update_status_icons()
-        
-        # Send button
-        self.send_button = ttk.Button(
-            input_frame,
-            text="Send\n(Enter)",
-            command=self.send_message,
-            style='Send.TButton'
-        )
-        self.send_button.pack(side=tk.RIGHT)
-        
-        # Clear button
-        clear_button = ttk.Button(
-            input_frame,
-            text="Clear\nChat",
-            command=self.clear_chat
-        )
-        clear_button.pack(side=tk.RIGHT, padx=(5, 0))
-        
-        # Code-specific buttons (only visible in code mode)
-        self.code_buttons_frame = ttk.Frame(input_frame)
-        
-        # Copy last code button
-        self.copy_code_button = ttk.Button(
-            self.code_buttons_frame,
-            text="Copy\nCode",
-            command=self.copy_last_code_block,
-            style='Model.TButton'
-        )
-        self.copy_code_button.pack(side=tk.RIGHT, padx=(0, 5))
-        
-        # Format code button
-        self.format_code_button = ttk.Button(
-            self.code_buttons_frame,
-            text="Format\nInput",
-            command=self.format_input_text,
-            style='Model.TButton'
-        )
-        self.format_code_button.pack(side=tk.RIGHT, padx=(0, 5))
-        
-        # Update button visibility based on current model
-        self.update_code_buttons_visibility()
         
         # Focus on message entry
         self.message_entry.focus()
         
     def update_status_icons(self):
         """Update status icons based on current model and state"""
-        # Clear all icons first
-        self.thinking_icon.config(text="", foreground="gray")
-        self.coding_icon.config(text="", foreground="gray")
-        self.speed_icon.config(text="", foreground="gray")
+        # Update performance label based on current model
+        current_model = self.models[self.current_model_key]
+        provider = current_model.get("provider", "ollama")
         
-        # Update model-specific icons
-        if self.current_model_key == "chat":
-            self.coding_icon.config(text="💬", foreground="#27ae60")  # Chat icon
-            self.speed_icon.config(text="💭", foreground="green")      # Conversation speed
-        elif self.current_model_key == "conversation":
-            self.coding_icon.config(text="🤔", foreground="#3498db")  # Think icon
-            self.speed_icon.config(text="💭", foreground="blue")      # Thinking speed
-        elif self.current_model_key == "code":
-            self.coding_icon.config(text="💻", foreground="#f39c12") # Normal coding icon
-            self.speed_icon.config(text="⚡", foreground="green")      # Fast speed
-        elif self.current_model_key == "code_advanced":
-            self.coding_icon.config(text="🧠", foreground="#e74c3c") # Advanced coding icon
-            self.speed_icon.config(text="🔬", foreground="orange")     # Research/detailed mode
+        if provider == "ollama":
+            if self.current_model_key == "chat":
+                self.perf_label.config(text="💬 Local Chat", foreground="#00E676")
+            elif self.current_model_key == "conversation":
+                self.perf_label.config(text="🤔 Local Think", foreground="#00D9FF")
+            elif self.current_model_key == "code":
+                self.perf_label.config(text="💻 Local Code", foreground="#FFB74D")
+            elif self.current_model_key == "code_advanced":
+                self.perf_label.config(text="🧠 Local Advanced", foreground="#BB86FC")
+        else:
+            self.perf_label.config(text="☁️ Cloud Model", foreground="#00D9FF")
     
     def set_thinking_state(self, is_thinking=False):
-        """Update thinking icon to show AI processing state"""
+        """Update performance indicator to show AI processing state"""
         if is_thinking:
-            self.thinking_icon.config(text="🤔", foreground="#3498db")
+            self.perf_label.config(text="🤔 Processing...", foreground="#00D9FF")
         else:
-            self.thinking_icon.config(text="", foreground="gray")
+            self.perf_label.config(text="", foreground="gray")
     
     def update_code_buttons_visibility(self):
-        """Show/hide code-specific buttons based on current model"""
-        if self.current_model_key in ["code", "code_advanced"]:
-            self.code_buttons_frame.pack(side=tk.RIGHT, padx=(5, 0))
-        else:
-            self.code_buttons_frame.pack_forget()
+        """Legacy function - code buttons are now integrated into the main UI"""
+        pass
     
     def copy_last_code_block(self):
         """Copy the last code block from the chat to clipboard"""
@@ -626,7 +798,7 @@ Usage Tips:
     
     def update_mode_buttons(self):
         """Update the styling of mode selection buttons"""
-        # Reset all buttons to normal style
+        # Reset all local buttons to normal style
         self.chat_button.configure(style='Model.TButton')
         self.think_button.configure(style='Model.TButton')
         self.code_button.configure(style='Model.TButton')
@@ -641,12 +813,19 @@ Usage Tips:
             self.code_button.configure(style='ActiveModel.TButton')
         elif self.current_model_key == "code_advanced":
             self.advanced_button.configure(style='ActiveModel.TButton')
+        
+        # Update cloud buttons if available
+        if hasattr(self, 'cloud_buttons'):
+            for btn_key, btn in self.cloud_buttons.items():
+                if btn_key == self.current_model_key:
+                    btn.configure(style='ActiveModel.TButton')
+                else:
+                    btn.configure(style='Cloud.TButton')
     
     def update_mode_labels(self):
         """Update mode-related labels"""
         current_model = self.models[self.current_model_key]
-        mode_name = current_model['display_name'].split()[0]  # Get first word (DeepSeek, CodeGemma, CodeQwen)
-        self.active_mode_label.config(text=f"Mode: {current_model['emoji']} {mode_name}")
+        self.current_mode_label.config(text=f"Active: {current_model['emoji']} {current_model['display_name']}")
         self.mode_desc_label.config(text=current_model['description'])
     
     def refresh_chat_display(self):
@@ -679,51 +858,56 @@ Usage Tips:
         return 'break'
     
     def on_text_change(self, event):
-        """Update character counter with enhanced time estimation"""
+        """Update character counter with modern styling and enhanced time estimation"""
         text = self.message_entry.get("1.0", tk.END).strip()
         char_count = len(text)
         word_count = len(text.split()) if text else 0
         
-        # Enhanced response time estimation using wrapper
+        # Enhanced response time estimation
         if char_count > 0:
-            config = self.model_wrapper.get_model_config(self.current_model_key)
+            # Determine current provider
+            current_model = self.models[self.current_model_key]
+            provider = current_model.get("provider", "ollama")
             
-            # More sophisticated time estimation based on content type and model
-            if self.current_model_key == "chat":
-                # Chat mode - natural conversation, moderate speed
-                base_time = 2.5
-                complexity_factor = word_count * 0.1
-                estimated_time = max(2, min(15, base_time + complexity_factor))
-                speed_indicator = "💬⚡"
-            elif self.current_model_key == "code":
-                # Code mode - faster responses, but varies by complexity
-                base_time = 2
-                complexity_factor = word_count * 0.1  # Code complexity
-                estimated_time = max(2, min(12, base_time + complexity_factor))
-                speed_indicator = "💻⚡"
-            elif self.current_model_key == "code_advanced":
-                # Advanced mode - more detailed responses
-                base_time = 5
-                complexity_factor = word_count * 0.15
-                estimated_time = max(5, min(30, base_time + complexity_factor))
-                speed_indicator = "🧠🔬"
+            if provider == "ollama":
+                # Local model estimation
+                if self.current_model_key == "chat":
+                    base_time = 2.5
+                    complexity_factor = word_count * 0.1
+                    estimated_time = max(2, min(15, base_time + complexity_factor))
+                    speed_indicator = "⚡ Local"
+                elif self.current_model_key == "code":
+                    base_time = 2
+                    complexity_factor = word_count * 0.1
+                    estimated_time = max(2, min(12, base_time + complexity_factor))
+                    speed_indicator = "� Fast"
+                elif self.current_model_key == "code_advanced":
+                    base_time = 5
+                    complexity_factor = word_count * 0.15
+                    estimated_time = max(5, min(30, base_time + complexity_factor))
+                    speed_indicator = "🔬 Deep"
+                else:
+                    base_time = 3
+                    complexity_factor = word_count * 0.12
+                    estimated_time = max(3, min(20, base_time + complexity_factor))
+                    speed_indicator = "� Think"
             else:
-                # Think mode - analytical responses
+                # Cloud model estimation
                 base_time = 3
-                complexity_factor = word_count * 0.12
-                estimated_time = max(3, min(20, base_time + complexity_factor))
-                speed_indicator = "🤔💭"
+                complexity_factor = word_count * 0.08
+                estimated_time = max(2, min(25, base_time + complexity_factor))
+                speed_indicator = "☁️ Cloud"
             
-            # Add context about message complexity
-            complexity_hint = ""
+            # Update stats with modern formatting
+            stats_text = f"{char_count} chars, {word_count} words • ~{estimated_time:.0f}s {speed_indicator}"
             if word_count > 50:
-                complexity_hint = " (complex)"
+                stats_text += " • Complex query"
             elif word_count > 20:
-                complexity_hint = " (detailed)"
+                stats_text += " • Detailed"
             
-            self.char_label.config(text=f"{char_count} chars, {word_count} words (~{estimated_time:.0f}s {speed_indicator}){complexity_hint}")
+            self.stats_label.config(text=stats_text + " • Enter to send • Ctrl+L to clear")
         else:
-            self.char_label.config(text="0 chars")
+            self.stats_label.config(text="0 characters • Press Enter to send • Ctrl+L to clear")
     
     def check_ollama_connection(self):
         """Check if Ollama is running and accessible"""
@@ -742,6 +926,27 @@ Usage Tips:
         # Run connection check in background
         threading.Thread(target=check_connection, daemon=True).start()
     
+    def check_openrouter_connection_async(self):
+        """Check OpenRouter connection in background"""
+        if not CLOUD_MODELS_AVAILABLE or not self.openrouter_wrapper:
+            return
+            
+        try:
+            # Test connection with first available model
+            if self.cloud_models:
+                from openrouter_client import OpenRouterClient
+                first_model = list(self.cloud_models.values())[0]["name"]
+                client = OpenRouterClient()
+                
+                if client.test_connection(first_model):
+                    self.root.after(0, lambda: self.update_status("✅ Cloud models ready", "green"))
+                else:
+                    self.root.after(0, lambda: self.update_status("⚠️ Cloud models unavailable", "orange"))
+            else:
+                self.root.after(0, lambda: self.update_status("⚠️ No cloud models configured", "orange"))
+        except Exception as e:
+            self.root.after(0, lambda: self.update_status(f"❌ Cloud error: {str(e)}", "red"))
+    
     def check_model_availability(self):
         """Check if the specified models are available"""
         def check_models():
@@ -759,25 +964,17 @@ Usage Tips:
                         if model_info['name'] in model_names:
                             available_models.append(model_info['display_name'])
                             # Update individual model status
-                            if model_key == "chat":
-                                self.root.after(0, lambda: self.chat_status.config(text="💬 ✅", foreground="green"))
-                            elif model_key == "conversation":
-                                self.root.after(0, lambda: self.think_status.config(text="🤔 ✅", foreground="green"))
-                            elif model_key == "code":
-                                self.root.after(0, lambda: self.code_status.config(text="💻 ✅", foreground="green"))
-                            elif model_key == "code_advanced":
-                                self.root.after(0, lambda: self.advanced_status.config(text="🧠 ✅", foreground="green"))
+                            if model_key in self.status_indicators:
+                                emoji = self.status_indicators[model_key].cget("text").split()[0]
+                                self.root.after(0, lambda k=model_key, e=emoji: 
+                                               self.status_indicators[k].config(text=f"{e} ✅", foreground="#00E676"))
                         else:
                             missing_models.append(model_info['display_name'])
                             # Update individual model status
-                            if model_key == "chat":
-                                self.root.after(0, lambda: self.chat_status.config(text="💬 ❌", foreground="red"))
-                            elif model_key == "conversation":
-                                self.root.after(0, lambda: self.think_status.config(text="🤔 ❌", foreground="red"))
-                            elif model_key == "code":
-                                self.root.after(0, lambda: self.code_status.config(text="💻 ❌", foreground="red"))
-                            elif model_key == "code_advanced":
-                                self.root.after(0, lambda: self.advanced_status.config(text="🧠 ❌", foreground="red"))
+                            if model_key in self.status_indicators:
+                                emoji = self.status_indicators[model_key].cget("text").split()[0]
+                                self.root.after(0, lambda k=model_key, e=emoji: 
+                                               self.status_indicators[k].config(text=f"{e} ❌", foreground="#FF5252"))
                     
                     if missing_models:
                         missing_str = ", ".join(missing_models)
@@ -789,10 +986,10 @@ Usage Tips:
             except Exception as e:
                 self.root.after(0, lambda: self.update_status(f"❌ Error checking models: {str(e)}", "red"))
                 # Set all model indicators to error
-                self.root.after(0, lambda: self.chat_status.config(text="💬 ❌", foreground="red"))
-                self.root.after(0, lambda: self.think_status.config(text="🤔 ❌", foreground="red"))
-                self.root.after(0, lambda: self.code_status.config(text="💻 ❌", foreground="red"))
-                self.root.after(0, lambda: self.advanced_status.config(text="🧠 ❌", foreground="red"))
+                for model_key in self.status_indicators:
+                    emoji = self.status_indicators[model_key].cget("text").split()[0]
+                    self.root.after(0, lambda k=model_key, e=emoji: 
+                                   self.status_indicators[k].config(text=f"{e} ❌", foreground="#FF5252"))
         
         threading.Thread(target=check_models, daemon=True).start()
     
@@ -845,31 +1042,45 @@ How can I assist you today?"""
         self.add_message_to_chat(sender_name, welcome_msg, "assistant")
     
     def add_message_to_chat(self, sender, message, role="user"):
-        """Add a message to the chat display"""
+        """Add a message to the chat display with modern Grok-inspired styling"""
         self.chat_display.config(state=tk.NORMAL)
         
         # Add timestamp
         timestamp = datetime.now().strftime("%H:%M:%S")
         
-        # Format message based on role
+        # Format message based on role with modern styling
         if role == "user":
-            prefix = f"[{timestamp}] 👤 You:\n"
-            self.chat_display.insert(tk.END, prefix, "user_name")
+            prefix = f"[{timestamp}] 👤 You\n"
+            self.chat_display.insert(tk.END, prefix, "user_header")
         else:
-            prefix = f"[{timestamp}] 🤖 {sender}:\n"
-            self.chat_display.insert(tk.END, prefix, "assistant_name")
+            prefix = f"[{timestamp}] 🤖 {sender}\n"
+            self.chat_display.insert(tk.END, prefix, "assistant_header")
         
         # Add message content
-        self.chat_display.insert(tk.END, f"{message}\n\n", "message")
+        self.chat_display.insert(tk.END, f"{message}\n\n", f"{role}_message")
         
-        # Configure text tags for styling
-        self.chat_display.tag_config("user_name", foreground="#3498db", font=('Arial', 10, 'bold'))
-        self.chat_display.tag_config("assistant_name", foreground="#e74c3c", font=('Arial', 10, 'bold'))
-        self.chat_display.tag_config("message", foreground="#ecf0f1")
-        self.chat_display.tag_config("code_block", foreground="#f39c12", background="#2c3e50", font=('Consolas', 9))
+        # Configure modern text tags
+        self.chat_display.tag_config("user_header", 
+                                   foreground="#00D9FF", 
+                                   font=('SF Pro Text', 11, 'bold'))
+        self.chat_display.tag_config("assistant_header", 
+                                   foreground="#00E676", 
+                                   font=('SF Pro Text', 11, 'bold'))
+        self.chat_display.tag_config("user_message", 
+                                   foreground="#FFFFFF", 
+                                   font=('SF Pro Text', 11))
+        self.chat_display.tag_config("assistant_message", 
+                                   foreground="#E0E0E0", 
+                                   font=('SF Pro Text', 11))
+        self.chat_display.tag_config("code_block", 
+                                   foreground="#FFB74D", 
+                                   background="#1A1A1A", 
+                                   font=('SF Mono', 10),
+                                   borderwidth=1,
+                                   relief="solid")
         
-        # Apply code highlighting if in code mode
-        if role == "assistant" and self.current_model_key in ["code", "code_advanced"]:
+        # Apply code highlighting if needed
+        if role == "assistant":
             self.highlight_code_blocks()
         
         self.chat_display.config(state=tk.DISABLED)
@@ -892,22 +1103,26 @@ How can I assist you today?"""
         self.chat_display.config(state=tk.DISABLED)
     
     def add_streaming_message_start(self):
-        """Start a streaming message in the chat"""
+        """Start a streaming message in the chat with modern styling"""
         self.chat_display.config(state=tk.NORMAL)
         
         # Add timestamp and assistant header
         timestamp = datetime.now().strftime("%H:%M:%S")
         sender_name = self.models[self.current_model_key]["display_name"]
         emoji = self.models[self.current_model_key]["emoji"]
-        prefix = f"[{timestamp}] {emoji} {sender_name}:\n"
-        self.chat_display.insert(tk.END, prefix, "assistant_name")
+        prefix = f"[{timestamp}] {emoji} {sender_name}\n"
+        self.chat_display.insert(tk.END, prefix, "assistant_header")
         
         # Mark the start position for streaming content
         self.streaming_start_pos = self.chat_display.index(tk.END + "-1c")
         
-        # Configure text tags for styling
-        self.chat_display.tag_config("assistant_name", foreground="#e74c3c", font=('Arial', 10, 'bold'))
-        self.chat_display.tag_config("streaming", foreground="#ecf0f1")
+        # Configure streaming text style
+        self.chat_display.tag_config("assistant_header", 
+                                   foreground="#00E676", 
+                                   font=('SF Pro Text', 11, 'bold'))
+        self.chat_display.tag_config("streaming", 
+                                   foreground="#E0E0E0", 
+                                   font=('SF Pro Text', 11))
         
         self.chat_display.config(state=tk.DISABLED)
         self.chat_display.see(tk.END)
@@ -927,7 +1142,7 @@ How can I assist you today?"""
         self.chat_display.see(tk.END)
     
     def send_message(self):
-        """Send message to Ollama and display response"""
+        """Send message to appropriate AI service (local or cloud) and display response"""
         message = self.message_entry.get("1.0", tk.END).strip()
         
         if not message:
@@ -942,16 +1157,36 @@ How can I assist you today?"""
         # Add to history
         self.chat_history.append({"role": "user", "content": message})
         
-        # Disable send button and show loading with animated dots
-        self.send_button.config(state="disabled", text="Thinking...")
-        self.update_status("🤔 AI is thinking...", "blue")
+        # Disable send button and show loading with modern text
+        self.send_button.config(state="disabled", text="⏳ Sending...")
+        self.update_status("� AI is processing your request...", "#00D9FF")
         
         # Show thinking icon and start animation
         self.set_thinking_state(True)
         self.start_thinking_animation()
         
-        # Send to Ollama in background thread using wrapper
-        threading.Thread(target=self.model_wrapper.get_ollama_response_wrapped, args=(message,), daemon=True).start()
+        # Route to appropriate service based on provider
+        current_model = self.models[self.current_model_key]
+        provider = current_model.get("provider", "ollama")
+        
+        if provider == "ollama":
+            # Send to local Ollama
+            threading.Thread(target=self.model_wrapper.get_ollama_response_wrapped, args=(message,), daemon=True).start()
+        elif provider == "openrouter" and CLOUD_MODELS_AVAILABLE and self.openrouter_wrapper:
+            # Send to OpenRouter cloud
+            model_name = current_model["name"]
+            threading.Thread(target=self.openrouter_wrapper.get_openrouter_response_wrapped, args=(message, model_name), daemon=True).start()
+        else:
+            # Fallback error
+            error_msg = "❌ Provider not available"
+            if provider == "openrouter" and not CLOUD_MODELS_AVAILABLE:
+                error_msg = "❌ Cloud models not available - OpenRouter integration missing"
+            elif provider == "openrouter" and not self.openrouter_wrapper:
+                error_msg = "❌ OpenRouter wrapper failed to initialize"
+            
+            self.root.after(0, lambda: self.add_message_to_chat("System", error_msg, "assistant"))
+            self.root.after(0, self.stop_thinking_animation)
+            self.root.after(0, lambda: self.send_button.config(state="normal", text="Send ↗"))
     
     def start_thinking_animation(self):
         """Start enhanced thinking animation using wrapper"""
@@ -1088,7 +1323,7 @@ How can I assist you today?"""
         finally:
             # Stop thinking animation and re-enable send button
             self.root.after(0, self.stop_thinking_animation)
-            self.root.after(0, lambda: self.send_button.config(state="normal", text="Send\n(Enter)"))
+            self.root.after(0, lambda: self.send_button.config(state="normal", text="Send ↗"))
     
     def clear_chat(self):
         """Clear the chat history and display for current model"""
@@ -1465,7 +1700,7 @@ class ModelWrapper:
 def main():
     """Main function to run the application"""
     root = tk.Tk()
-    app = DeepCompanion(root)
+    app = Companion(root)
     
     try:
         root.mainloop()

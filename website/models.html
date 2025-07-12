@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Models - Companion AI Chat Interface</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <i class="fas fa-robot"></i>
+                <span>Companion v3.0</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Home</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="models.html" class="active">Models</a></li>
+                <li><a href="download.html">Download</a></li>
+                <li><a href="index.html#demo" class="demo-btn">Try Demo</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Models Hero -->
+    <section class="hero">
+        <div class="hero-container">
+            <div class="hero-content">
+                <h1 class="hero-title">
+                    AI <span class="gradient-text">Models</span>
+                </h1>
+                <p class="hero-description">
+                    Access a wide variety of AI models, from privacy-focused local models to powerful cloud-based solutions.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Models Tabs -->
+    <section class="models">
+        <div class="container">
+            <div class="models-tabs">
+                <button class="tab-btn active" data-tab="local">🏠 Local Models</button>
+                <button class="tab-btn" data-tab="cloud">☁️ Cloud Models</button>
+            </div>
+            
+            <!-- Local Models -->
+            <div class="tab-content active" id="local">
+                <div class="models-grid">
+                    <div class="model-card">
+                        <div class="model-header">
+                            <h3>DeepSeek R1</h3>
+                            <span class="model-size">1.5B</span>
+                        </div>
+                        <p>Fast reasoning model optimized for code and logical tasks. Perfect for development workflows.</p>
+                        <div class="model-stats">
+                            <span>⚡ Fast</span>
+                            <span>💻 Code-focused</span>
+                            <span>🧠 Reasoning</span>
+                        </div>
+                    </div>
+                    
+                    <div class="model-card">
+                        <div class="model-header">
+                            <h3>Llama 3.2</h3>
+                            <span class="model-size">3B</span>
+                        </div>
+                        <p>Meta's latest open-source model with excellent general capabilities and multilingual support.</p>
+                        <div class="model-stats">
+                            <span>🌐 Multilingual</span>
+                            <span>📝 General</span>
+                            <span>🔓 Open Source</span>
+                        </div>
+                    </div>
+                    
+                    <div class="model-card">
+                        <div class="model-header">
+                            <h3>Codestral</h3>
+                            <span class="model-size">22B</span>
+                        </div>
+                        <p>Mistral's code-specialized model with excellent programming assistance capabilities.</p>
+                        <div class="model-stats">
+                            <span>💻 Programming</span>
+                            <span>🔧 Debugging</span>
+                            <span>📚 Documentation</span>
+                        </div>
+                    </div>
+                    
+                    <div class="model-card">
+                        <div class="model-header">
+                            <h3>Phi-3</h3>
+                            <span class="model-size">3.8B</span>
+                        </div>
+                        <p>Microsoft's small but capable model, optimized for efficiency and mobile deployment.</p>
+                        <div class="model-stats">
+                            <span>📱 Mobile-ready</span>
+                            <span>⚡ Efficient</span>
+                            <span>🎯 Focused</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Cloud Models -->
+            <div class="tab-content" id="cloud">
+                <div class="models-grid">
+                    <div class="model-card premium">
+                        <div class="model-header">
+                            <h3>GPT-4 Turbo</h3>
+                            <span class="model-provider">OpenAI</span>
+                        </div>
+                        <p>The most capable GPT model with 128k context window and multimodal capabilities.</p>
+                        <div class="model-stats">
+                            <span>🎯 Most Capable</span>
+                            <span>📄 128k Context</span>
+                            <span>🖼️ Vision</span>
+                        </div>
+                    </div>
+                    
+                    <div class="model-card premium">
+                        <div class="model-header">
+                            <h3>Claude 3.5 Sonnet</h3>
+                            <span class="model-provider">Anthropic</span>
+                        </div>
+                        <p>Anthropic's flagship model with excellent reasoning and safety characteristics.</p>
+                        <div class="model-stats">
+                            <span>🧠 Reasoning</span>
+                            <span>🛡️ Safe</span>
+                            <span>📝 Writing</span>
+                        </div>
+                    </div>
+                    
+                    <div class="model-card premium">
+                        <div class="model-header">
+                            <h3>Gemini Pro</h3>
+                            <span class="model-provider">Google</span>
+                        </div>
+                        <p>Google's multimodal model with strong performance across various tasks.</p>
+                        <div class="model-stats">
+                            <span>🌐 Multimodal</span>
+                            <span>🔍 Search</span>
+                            <span>📊 Analysis</span>
+                        </div>
+                    </div>
+                    
+                    <div class="model-card premium">
+                        <div class="model-header">
+                            <h3>Mixtral 8x7B</h3>
+                            <span class="model-provider">Mistral</span>
+                        </div>
+                        <p>High-performance mixture of experts model with excellent cost-performance ratio.</p>
+                        <div class="model-stats">
+                            <span>💰 Cost-effective</span>
+                            <span>⚡ Fast</span>
+                            <span>🔓 Open</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <div class="footer-logo">
+                        <i class="fas fa-robot"></i>
+                        <span>Companion</span>
+                    </div>
+                    <p>The future of AI interaction is here. Experience the power of local and cloud AI models in one beautiful interface.</p>
+                </div>
+                <div class="footer-section">
+                    <h3>Product</h3>
+                    <ul>
+                        <li><a href="features.html">Features</a></li>
+                        <li><a href="models.html">Models</a></li>
+                        <li><a href="download.html">Download</a></li>
+                        <li><a href="roadmap.html">Roadmap</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h3>Resources</h3>
+                    <ul>
+                        <li><a href="documentation.html">Documentation</a></li>
+                        <li><a href="api-reference.html">API Reference</a></li>
+                        <li><a href="tutorials.html">Tutorials</a></li>
+                        <li><a href="community.html">Community</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h3>Support</h3>
+                    <ul>
+                        <li><a href="help.html">Help Center</a></li>
+                        <li><a href="contact.html">Contact Us</a></li>
+                        <li><a href="https://github.com/Aryan-Rajyaguru-1/companion/issues" target="_blank">Bug Reports</a></li>
+                        <li><a href="https://github.com/Aryan-Rajyaguru-1/companion/discussions" target="_blank">Feature Requests</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 Companion. Open source under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+    
+    <script>
+        // Tab switching for models
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tab = btn.dataset.tab;
+                
+                // Update buttons
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                // Update content
+                document.querySelectorAll('.tab-content').forEach(content => {
+                    content.classList.remove('active');
+                });
+                document.getElementById(tab).classList.add('active');
+            });
+        });
+    </script>
+</body>
+</html>

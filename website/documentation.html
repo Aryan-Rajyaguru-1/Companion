@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documentation - Companion AI Chat Interface</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <i class="fas fa-robot"></i>
+                <span>Companion v3.0</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Home</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="models.html">Models</a></li>
+                <li><a href="download.html">Download</a></li>
+                <li><a href="index.html#demo" class="demo-btn">Try Demo</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Documentation Hero -->
+    <section class="hero">
+        <div class="hero-container">
+            <div class="hero-content">
+                <h1 class="hero-title">
+                    <span class="gradient-text">Documentation</span>
+                </h1>
+                <p class="hero-description">
+                    Everything you need to get started with Companion and make the most of its powerful features.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Documentation Content -->
+    <section class="documentation">
+        <div class="container">
+            <div class="docs-grid">
+                <div class="docs-section">
+                    <h2>📚 Quick Start Guide</h2>
+                    <div class="docs-content">
+                        <h3>Installation</h3>
+                        <ol>
+                            <li>Download and install <a href="https://ollama.ai" target="_blank">Ollama</a></li>
+                            <li>Clone the Companion repository</li>
+                            <li>Install Python dependencies: <code>pip install -r requirements.txt</code></li>
+                            <li>Run the application: <code>python main.py</code></li>
+                        </ol>
+                        
+                        <h3>First Chat</h3>
+                        <p>Once Companion is running:</p>
+                        <ul>
+                            <li>Select a model from the dropdown</li>
+                            <li>Type your message in the chat input</li>
+                            <li>Press Enter or click Send</li>
+                            <li>View the AI response in the chat window</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="docs-section">
+                    <h2>⚙️ Configuration</h2>
+                    <div class="docs-content">
+                        <h3>Local Models (Ollama)</h3>
+                        <p>Companion automatically detects Ollama models. To add more models:</p>
+                        <code>ollama pull &lt;model-name&gt;</code>
+                        
+                        <h3>Cloud Models (OpenRouter)</h3>
+                        <p>To use cloud models, set your OpenRouter API key:</p>
+                        <ol>
+                            <li>Get an API key from <a href="https://openrouter.ai" target="_blank">OpenRouter</a></li>
+                            <li>Set the environment variable: <code>OPENROUTER_API_KEY=your_key</code></li>
+                            <li>Restart Companion</li>
+                        </ol>
+                    </div>
+                </div>
+                
+                <div class="docs-section">
+                    <h2>🚀 Advanced Features</h2>
+                    <div class="docs-content">
+                        <h3>Keyboard Shortcuts</h3>
+                        <ul>
+                            <li><kbd>Enter</kbd> - Send message</li>
+                            <li><kbd>Ctrl+Enter</kbd> - New line in message</li>
+                            <li><kbd>Ctrl+K</kbd> - Clear chat</li>
+                            <li><kbd>Ctrl+S</kbd> - Save conversation</li>
+                        </ul>
+                        
+                        <h3>Chat Management</h3>
+                        <ul>
+                            <li>Conversations are automatically saved</li>
+                            <li>Use the Clear button to start fresh</li>
+                            <li>Export conversations in multiple formats</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="docs-section">
+                    <h2>🔧 Troubleshooting</h2>
+                    <div class="docs-content">
+                        <h3>Common Issues</h3>
+                        <ul>
+                            <li><strong>Ollama not found:</strong> Make sure Ollama is installed and running</li>
+                            <li><strong>No models available:</strong> Pull models using <code>ollama pull</code></li>
+                            <li><strong>Cloud models not working:</strong> Check your OpenRouter API key</li>
+                            <li><strong>Connection issues:</strong> Verify firewall settings</li>
+                        </ul>
+                        
+                        <h3>Getting Help</h3>
+                        <p>Need more help? Check out our:</p>
+                        <ul>
+                            <li><a href="https://github.com/Aryan-Rajyaguru-1/companion" target="_blank">GitHub Repository</a></li>
+                            <li><a href="https://github.com/Aryan-Rajyaguru-1/companion/issues" target="_blank">Issue Tracker</a></li>
+                            <li><a href="community.html">Community Forum</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <div class="footer-logo">
+                        <i class="fas fa-robot"></i>
+                        <span>Companion</span>
+                    </div>
+                    <p>The future of AI interaction is here.</p>
+                </div>
+                <div class="footer-section">
+                    <h3>Product</h3>
+                    <ul>
+                        <li><a href="features.html">Features</a></li>
+                        <li><a href="models.html">Models</a></li>
+                        <li><a href="download.html">Download</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h3>Resources</h3>
+                    <ul>
+                        <li><a href="documentation.html">Documentation</a></li>
+                        <li><a href="../README.md" target="_blank">README</a></li>
+                        <li><a href="tutorials.html">Tutorials</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h3>Support</h3>
+                    <ul>
+                        <li><a href="help.html">Help Center</a></li>
+                        <li><a href="https://github.com/Aryan-Rajyaguru-1/companion/issues" target="_blank">Bug Reports</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 Companion. Open source under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>
