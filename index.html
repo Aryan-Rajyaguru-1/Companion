@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Companion v3.0 - AI Chat Interface</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <i class="fas fa-robot"></i>
+                <span>Companion v3.0</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Home</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="models.html">Models</a></li>
+                <li><a href="download.html">Download</a></li>
+                <li><a href="index.html#demo" class="demo-btn">Try Demo</a></li>
+            </ul>
+            <div class="hamburger">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section id="home" class="hero">
+        <div class="hero-container">
+            <div class="hero-content">
+                <h1 class="hero-title">
+                    Meet Your AI Companion
+                    <span class="gradient-text">Companion v3.0</span>
+                </h1>
+                <p class="hero-description">
+                    The most advanced GUI for AI interactions. Chat with local Ollama models or powerful cloud models through OpenRouter. Experience seamless conversations with cutting-edge AI technology.
+                </p>
+                <div class="hero-buttons">
+                    <a href="#download" class="btn btn-primary">
+                        <i class="fas fa-download"></i>
+                        Download Free
+                    </a>
+                    <a href="#demo" class="btn btn-secondary">
+                        <i class="fas fa-play"></i>
+                        Try Demo
+                    </a>
+                </div>
+                <div class="hero-stats">
+                    <div class="stat">
+                        <span class="stat-number">10+</span>
+                        <span class="stat-label">AI Models</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-number">2</span>
+                        <span class="stat-label">Providers</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-number">∞</span>
+                        <span class="stat-label">Possibilities</span>
+                    </div>
+                </div>
+            </div>
+            <div class="hero-image">
+                <div class="app-mockup">
+                    <div class="mockup-header">
+                        <div class="mockup-buttons">
+                            <span class="btn-close"></span>
+                            <span class="btn-minimize"></span>
+                            <span class="btn-maximize"></span>
+                        </div>
+                        <span class="mockup-title">Companion v3.0</span>
+                    </div>
+                    <div class="mockup-content">
+                        <div class="chat-demo">
+                            <div class="chat-message user">
+                                <div class="message-bubble">Hello! Can you help me with Python?</div>
+                            </div>
+                            <div class="chat-message ai">
+                                <div class="message-bubble">
+                                    <div class="typing-indicator">
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features">
+        <div class="container">
+            <div class="section-header">
+                <h2>Powerful Features</h2>
+                <p>Everything you need for advanced AI interactions</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-home"></i>
+                    </div>
+                    <h3>Local Models</h3>
+                    <p>Run AI models locally with Ollama. Complete privacy and control over your data.</p>
+                    <ul>
+                        <li>Llama 3.2 for chat</li>
+                        <li>DeepSeek R1 for reasoning</li>
+                        <li>CodeGemma for coding</li>
+                        <li>CodeQwen for advanced tasks</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-cloud"></i>
+                    </div>
+                    <h3>Cloud Models</h3>
+                    <p>Access cutting-edge models through OpenRouter API integration.</p>
+                    <ul>
+                        <li>GPT-4o & GPT-4.1</li>
+                        <li>Gemini 2.5 Flash</li>
+                        <li>DeepSeek R1 Cloud</li>
+                        <li>Mistral Devstral</li>
+                        <li>Perplexity Sonar</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-comments"></i>
+                    </div>
+                    <h3>Smart Chat Interface</h3>
+                    <p>Beautiful, responsive chat interface with real-time streaming.</p>
+                    <ul>
+                        <li>Real-time response streaming</li>
+                        <li>Syntax highlighting</li>
+                        <li>Code block copying</li>
+                        <li>Separate chat histories</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-keyboard"></i>
+                    </div>
+                    <h3>Keyboard Shortcuts</h3>
+                    <p>Efficient workflows with comprehensive keyboard shortcuts.</p>
+                    <ul>
+                        <li>Ctrl+1-4 for model switching</li>
+                        <li>Enter to send messages</li>
+                        <li>Ctrl+L to clear chat</li>
+                        <li>F1 for help</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <h3>Developer Tools</h3>
+                    <p>Built-in tools for developers and programmers.</p>
+                    <ul>
+                        <li>Code formatting</li>
+                        <li>Copy code blocks</li>
+                        <li>Specialized coding models</li>
+                        <li>Error highlighting</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-gauge-high"></i>
+                    </div>
+                    <h3>Performance Metrics</h3>
+                    <p>Real-time performance monitoring and optimization.</p>
+                    <ul>
+                        <li>Response time tracking</li>
+                        <li>Tokens per second</li>
+                        <li>Model-specific optimization</li>
+                        <li>Connection status</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Models Section -->
+    <section id="models" class="models">
+        <div class="container">
+            <div class="section-header">
+                <h2>Supported AI Models</h2>
+                <p>Choose from local privacy or cloud power</p>
+            </div>
+            <div class="models-tabs">
+                <div class="tab-buttons">
+                    <button class="tab-btn active" data-tab="local">
+                        <i class="fas fa-home"></i>
+                        Local Models
+                    </button>
+                    <button class="tab-btn" data-tab="cloud">
+                        <i class="fas fa-cloud"></i>
+                        Cloud Models
+                    </button>
+                </div>
+                <div class="tab-content">
+                    <div id="local" class="tab-pane active">
+                        <div class="models-grid">
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <span class="model-emoji">💬</span>
+                                    <h3>Llama 3.2 3B</h3>
+                                    <span class="model-badge">Chat</span>
+                                </div>
+                                <p>Natural conversation and general assistance. Perfect for everyday interactions.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-memory"></i> 2.0 GB</span>
+                                    <span><i class="fas fa-clock"></i> ~3-8s</span>
+                                </div>
+                            </div>
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <span class="model-emoji">🤔</span>
+                                    <h3>DeepSeek R1 1.5B</h3>
+                                    <span class="model-badge">Think</span>
+                                </div>
+                                <p>Advanced reasoning and analytical thinking. Great for problem-solving.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-memory"></i> 1.1 GB</span>
+                                    <span><i class="fas fa-clock"></i> ~3-8s</span>
+                                </div>
+                            </div>
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <span class="model-emoji">💻</span>
+                                    <h3>CodeGemma 2B</h3>
+                                    <span class="model-badge">Code</span>
+                                </div>
+                                <p>Fast code generation and debugging. Optimized for quick solutions.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-memory"></i> 1.6 GB</span>
+                                    <span><i class="fas fa-clock"></i> ~2-5s</span>
+                                </div>
+                            </div>
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <span class="model-emoji">🧠</span>
+                                    <h3>CodeQwen 7B</h3>
+                                    <span class="model-badge">Advanced</span>
+                                </div>
+                                <p>Complex programming tasks with detailed explanations and best practices.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-memory"></i> 4.2 GB</span>
+                                    <span><i class="fas fa-clock"></i> ~10-30s</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="cloud" class="tab-pane">
+                        <div class="models-grid">
+                            <div class="model-card premium">
+                                <div class="model-header">
+                                    <span class="model-emoji">🤖</span>
+                                    <h3>GPT-4o</h3>
+                                    <span class="model-badge">Premium</span>
+                                </div>
+                                <p>OpenAI's most advanced model with superior reasoning and creativity.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-dollar-sign"></i> $2.50/$10.00</span>
+                                    <span><i class="fas fa-clock"></i> ~1-3s</span>
+                                </div>
+                            </div>
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <span class="model-emoji">⚡</span>
+                                    <h3>Gemini 2.5 Flash</h3>
+                                    <span class="model-badge">Fast</span>
+                                </div>
+                                <p>Google's lightning-fast multimodal AI with excellent performance.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-dollar-sign"></i> $0.075/$0.30</span>
+                                    <span><i class="fas fa-clock"></i> ~0.5-2s</span>
+                                </div>
+                            </div>
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <span class="model-emoji">🧠</span>
+                                    <h3>DeepSeek R1 Cloud</h3>
+                                    <span class="model-badge">Reasoning</span>
+                                </div>
+                                <p>Cloud version of DeepSeek R1 with enhanced reasoning capabilities.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-dollar-sign"></i> $0.14/$0.28</span>
+                                    <span><i class="fas fa-clock"></i> ~1-4s</span>
+                                </div>
+                            </div>
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <span class="model-emoji">🔍</span>
+                                    <h3>Perplexity Sonar</h3>
+                                    <span class="model-badge">Research</span>
+                                </div>
+                                <p>Deep research capabilities with web search integration.</p>
+                                <div class="model-specs">
+                                    <span><i class="fas fa-dollar-sign"></i> $5.00/$5.00</span>
+                                    <span><i class="fas fa-clock"></i> ~2-6s</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Demo Section -->
+    <section id="demo" class="demo">
+        <div class="container">
+            <div class="section-header">
+                <h2>Try Companion</h2>
+                <p>Experience the power of AI conversation</p>
+            </div>
+            <div class="demo-container">
+                <div class="demo-interface">
+                    <div class="demo-header">
+                        <div class="demo-tabs">
+                            <span class="demo-tab active">💬 Chat</span>
+                            <span class="demo-tab">🤔 Think</span>
+                            <span class="demo-tab">💻 Code</span>
+                        </div>
+                        <div class="demo-status">
+                            <span class="status-indicator"></span>
+                            Connected
+                        </div>
+                    </div>
+                    <div class="demo-chat">
+                        <div class="demo-messages" id="demoMessages">
+                            <div class="demo-message assistant">
+                                <div class="message-avatar">🤖</div>
+                                <div class="message-content">
+                                    <strong>Companion:</strong> Hello! I'm Companion v3.0. Ask me anything or try one of the examples below!
+                                </div>
+                            </div>
+                        </div>
+                        <div class="demo-input-area">
+                            <input type="text" id="demoInput" placeholder="Type your message here..." />
+                            <button id="demoSend" class="demo-send-btn">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                        <div class="demo-examples">
+                            <button class="example-btn" data-text="Explain quantum computing in simple terms">
+                                🔬 Quantum Computing
+                            </button>
+                            <button class="example-btn" data-text="Write a Python function to sort a list">
+                                💻 Python Function
+                            </button>
+                            <button class="example-btn" data-text="What are the benefits of renewable energy?">
+                                🌱 Renewable Energy
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Download Section -->
+    <section id="download" class="download">
+        <div class="container">
+            <div class="download-content">
+                <div class="download-info">
+                    <h2>Download Companion v3.0</h2>
+                    <p>Get started with the most advanced AI chat interface. Free and open source.</p>
+                    <div class="download-features">
+                        <div class="feature-item">
+                            <i class="fas fa-check"></i>
+                            <span>Cross-platform support (Windows, macOS, Linux)</span>
+                        </div>
+                        <div class="feature-item">
+                            <i class="fas fa-check"></i>
+                            <span>No subscription required</span>
+                        </div>
+                        <div class="feature-item">
+                            <i class="fas fa-check"></i>
+                            <span>Local and cloud model support</span>
+                        </div>
+                        <div class="feature-item">
+                            <i class="fas fa-check"></i>
+                            <span>Regular updates and improvements</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="download-buttons">
+                    <a href="#" class="download-btn primary">
+                        <i class="fab fa-windows"></i>
+                        <div>
+                            <span class="btn-title">Download for Windows</span>
+                            <span class="btn-subtitle">Windows 10/11 • 64-bit</span>
+                        </div>
+                    </a>
+                    <a href="#" class="download-btn">
+                        <i class="fab fa-apple"></i>
+                        <div>
+                            <span class="btn-title">Download for macOS</span>
+                            <span class="btn-subtitle">macOS 11+ • Intel/Apple Silicon</span>
+                        </div>
+                    </a>
+                    <a href="#" class="download-btn">
+                        <i class="fab fa-linux"></i>
+                        <div>
+                            <span class="btn-title">Download for Linux</span>
+                            <span class="btn-subtitle">Ubuntu 20.04+ • Debian</span>
+                        </div>
+                    </a>
+                    <a href="https://github.com/deepcompanion/deepcompanion" class="download-btn github">
+                        <i class="fab fa-github"></i>
+                        <div>
+                            <span class="btn-title">View on GitHub</span>
+                            <span class="btn-subtitle">Source code • Issues • Contributions</span>
+                        </div>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <div class="footer-logo">
+                        <i class="fas fa-robot"></i>
+                        <span>Companion</span>
+                    </div>
+                    <p>The future of AI interaction is here. Experience the power of local and cloud AI models in one beautiful interface.</p>
+                    <div class="social-links">
+                        <a href="https://github.com/Aryan-Rajyaguru-1/Companion" target="_blank"><i class="fab fa-github"></i></a>
+                        <a href="https://discord.gg/companion" target="_blank"><i class="fab fa-discord"></i></a>
+                        <a href="https://twitter.com/companion_ai" target="_blank"><i class="fab fa-twitter"></i></a>
+                    </div>
+                </div>
+                <div class="footer-section">
+                    <h3>Product</h3>
+                    <ul>
+                        <li><a href="features.html">Features</a></li>
+                        <li><a href="models.html">Models</a></li>
+                        <li><a href="download.html">Download</a></li>
+                        <li><a href="roadmap.html">Roadmap</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h3>Resources</h3>
+                    <ul>
+                        <li><a href="documentation.html">Documentation</a></li>
+                        <li><a href="../README.md" target="_blank">API Reference</a></li>
+                        <li><a href="tutorials.html">Tutorials</a></li>
+                        <li><a href="https://github.com/Aryan-Rajyaguru-1/Companion/discussions" target="_blank">Community</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h3>Support</h3>
+                    <ul>
+                        <li><a href="help.html">Help Center</a></li>
+                        <li><a href="contact.html">Contact Us</a></li>
+                        <li><a href="https://github.com/Aryan-Rajyaguru-1/Companion/issues" target="_blank">Bug Reports</a></li>
+                        <li><a href="https://github.com/Aryan-Rajyaguru-1/Companion/discussions" target="_blank">Feature Requests</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 Companion. Open source under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
