@@ -1,20 +1,21 @@
-# Companion Brain API Server Requirements
-# For cloud deployment (Railway, Render, Fly.io)
+# Companion Brain API Server Requirements - CLOUD OPTIMIZED
+# Lightweight version for Railway deployment (no PyTorch/CUDA)
 
 # Core API framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 
-# HTTP and CORS
+# HTTP and utilities
 python-multipart==0.0.6
-aiofiles==23.2.1
+requests==2.32.3
+aiohttp==3.9.1
 
-# Environment management
+# Environment and config
 python-dotenv==1.0.0
 
-# Logging and monitoring
-python-json-logger==2.0.7
+# Groq API client (for AI responses)
+groq==0.4.0
 
-# All Companion BaaS dependencies
--r companion_baas/requirements.txt
+# Basic utilities
+python-json-logger==2.0.7
