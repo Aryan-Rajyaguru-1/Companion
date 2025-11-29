@@ -1,5 +1,5 @@
 # Nixpacks configuration for Railway deployment
-# Full version with Groq API support
+# Lightweight Groq-only version
 
 [phases.setup]
 nixPkgs = ["python311", "python311Packages.pip", "python311Packages.virtualenv"]
@@ -8,11 +8,11 @@ nixPkgs = ["python311", "python311Packages.pip", "python311Packages.virtualenv"]
 cmds = [
     "python -m venv /opt/venv",
     ". /opt/venv/bin/activate && pip install --upgrade pip",
-    ". /opt/venv/bin/activate && pip install -r requirements-api.txt"
+    ". /opt/venv/bin/activate && pip install fastapi==0.104.1 uvicorn[standard]==0.24.0 pydantic==2.5.0 groq==0.4.0 python-multipart==0.0.6"
 ]
 
 [phases.build]
 cmds = []
 
 [start]
-cmd = ". /opt/venv/bin/activate && uvicorn api_server:app --host 0.0.0.0 --port $PORT"
+cmd = ". /opt/venv/bin/activate && uvicorn api_server_groq:app --host 0.0.0.0 --port $PORT"
