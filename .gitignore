@@ -1,1 +1,168 @@
+# Environment variables (NEVER commit!)
+.env
+.env.local
+.env.production
+.env.development
+
+# API keys and secrets
+**/config_local.py
+**/secrets.py
+*.key
+*.pem
+
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# API Keys & Secrets
+*api_key*
+*secret*
+config_local.py
+secrets.json
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache
+.cache/
+*.cache
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Model files (large binary files)
+*.h5
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.onnx
+*.pb
+models/
+checkpoints/
+
+# Data files
+data/
+datasets/
+*.csv
+*.json.gz
+*.parquet
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Node (for web components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Documentation builds
+docs/_build/
+site/
+
+# Distribution
+*.whl
+
+# Testing
+.tox/
+.nox/
+
+# Misc
+.vscode-server/
+*.orig
+
+# Companion BaaS specific
+companion_baas/cache/
+companion_baas/logs/
+companion_baas/data/
+
+# Ollama models (large files)
+*.gguf
+
+# Audio/Video files
+*.mp3
+*.wav
+*.mp4
+*.avi
+*.mov
+
+# ESP32 build artifacts (Companion Vision)
+Companion\ Vision/build/
+Companion\ Vision/sdkconfig
+Companion\ Vision/sdkconfig.old
+
+# Backup files
+*.backup

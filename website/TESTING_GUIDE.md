@@ -62,7 +62,7 @@
 The testing interface is designed to easily connect to real AI APIs:
 
 1. **Ollama Integration**: Replace simulation with actual Ollama API calls
-2. **OpenRouter Support**: Connect to cloud AI models
+2. **Cloud AI Support**: Connect to cloud AI models
 3. **Custom APIs**: Modify the `runTest()` function for your backend
 
 ## 📊 Next Steps

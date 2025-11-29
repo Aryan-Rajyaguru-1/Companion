@@ -1,5 +1,167 @@
 // Companion Demo Interface JavaScript
+
+// Authentication Management
+class AuthManager {
+    constructor() {
+        this.token = this.getToken();
+        this.user = this.getUser();
+    }
+
+    getToken() {
+        return localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
+    }
+
+    getUser() {
+        const userStr = localStorage.getItem('user_data') || sessionStorage.getItem('user_data');
+        return userStr ? JSON.parse(userStr) : null;
+    }
+
+    setAuth(token, user, remember = false) {
+        if (remember) {
+            localStorage.setItem('auth_token', token);
+            localStorage.setItem('user_data', JSON.stringify(user));
+        } else {
+            sessionStorage.setItem('auth_token', token);
+            sessionStorage.setItem('user_data', JSON.stringify(user));
+        }
+        this.token = token;
+        this.user = user;
+    }
+
+    clearAuth() {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('user_data');
+        sessionStorage.removeItem('auth_token');
+        sessionStorage.removeItem('user_data');
+        this.token = null;
+        this.user = null;
+    }
+
+    isAuthenticated() {
+        return !!this.token;
+    }
+
+    async checkAuth() {
+        if (!this.token) return false;
+
+        try {
+            const response = await fetch('/api/auth/me', {
+                headers: {
+                    'Authorization': `Bearer ${this.token}`
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                this.user = data.user;
+                return true;
+            } else {
+                this.clearAuth();
+                return false;
+            }
+        } catch (error) {
+            console.error('Auth check failed:', error);
+            return false;
+        }
+    }
+
+    async logout() {
+        if (!this.token) return;
+
+        try {
+            await fetch('/api/auth/logout', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.token}`
+                }
+            });
+        } catch (error) {
+            console.error('Logout request failed:', error);
+        }
+
+        this.clearAuth();
+        window.location.href = 'login.html';
+    }
+
+    getAuthHeaders() {
+        return this.token ? { 'Authorization': `Bearer ${this.token}` } : {};
+    }
+}
+
+// Global auth manager
+const authManager = new AuthManager();
+
+// Check authentication on page load
+async function checkAuthOnLoad() {
+    // Skip auth check for public pages
+    const publicPages = ['login.html', 'signup.html'];
+    const currentPage = window.location.pathname.split('/').pop();
+    
+    if (publicPages.includes(currentPage)) {
+        return;
+    }
+
+    const isAuthenticated = await authManager.checkAuth();
+    if (!isAuthenticated) {
+        // Redirect to login page
+        window.location.href = 'login.html';
+        return;
+    }
+
+    // Update UI with user info
+    updateUserInterface();
+}
+
+function updateUserInterface() {
+    if (authManager.user) {
+        // Update navbar with user info
+        updateNavbarWithUser();
+        
+        // Show authenticated content
+        const authContent = document.querySelectorAll('.auth-required');
+        authContent.forEach(el => el.style.display = 'block');
+        
+        const noAuthContent = document.querySelectorAll('.no-auth-required');
+        noAuthContent.forEach(el => el.style.display = 'none');
+        
+        // Update demo button to "Go to Chat" for logged-in users
+        const tryDemoBtn = document.getElementById('tryDemoBtn');
+        const goToChatBtn = document.getElementById('goToChatBtn');
+        if (tryDemoBtn && goToChatBtn) {
+            tryDemoBtn.style.display = 'none';
+            goToChatBtn.style.display = 'inline-block';
+        }
+    }
+}
+
+function updateNavbarWithUser() {
+    const navMenu = document.querySelector('.nav-menu');
+    if (navMenu && authManager.user) {
+        // Add user menu
+        const userMenuItem = document.createElement('li');
+        userMenuItem.className = 'user-menu';
+        userMenuItem.innerHTML = `
+            <div class="user-dropdown">
+                <button class="user-btn">
+                    <span class="user-avatar">${authManager.user.name.charAt(0).toUpperCase()}</span>
+                    <span class="user-name">${authManager.user.name}</span>
+                    <i class="fas fa-chevron-down"></i>
+                </button>
+                <div class="dropdown-menu">
+                    <a href="#profile">Profile</a>
+                    <a href="#settings">Settings</a>
+                    <a href="#" onclick="authManager.logout()">Logout</a>
+                </div>
+            </div>
+        `;
+        navMenu.appendChild(userMenuItem);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
+    // Check authentication first
+    checkAuthOnLoad();
+    
     const demoInput = document.getElementById('demoInput');
     const demoSend = document.getElementById('demoSend');
     const demoMessages = document.getElementById('demoMessages');
@@ -453,4 +615,674 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Initialize download functionality when page loads
     initializeDownloadButtons();
+    
+    // Initialize Get API section functionality
+    initializeGetAPISection();
+});
+
+// Get API Section Functions
+function initializeGetAPISection() {
+    // Code tabs functionality
+    const codeTabs = document.querySelectorAll('.code-tab');
+    const codeBlocks = document.querySelectorAll('.code-block');
+    
+    codeTabs.forEach(tab => {
+        tab.addEventListener('click', function() {
+            const targetLang = this.getAttribute('data-lang');
+            
+            // Remove active class from all tabs and blocks
+            codeTabs.forEach(t => t.classList.remove('active'));
+            codeBlocks.forEach(b => b.classList.remove('active'));
+            
+            // Add active class to clicked tab and corresponding block
+            this.classList.add('active');
+            const targetBlock = document.querySelector(`.code-block[data-lang="${targetLang}"]`);
+            if (targetBlock) {
+                targetBlock.classList.add('active');
+            }
+        });
+    });
+}
+
+// API Health Check Function
+async function checkAPIHealth() {
+    const button = event.target;
+    const originalText = button.innerHTML;
+    
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
+    button.disabled = true;
+    
+    try {
+        const response = await fetch('/api/health');
+        const data = await response.json();
+        
+        if (response.ok) {
+            showNotification('✅ API is healthy and ready!', 'success');
+            button.innerHTML = '<i class="fas fa-check"></i> API Healthy';
+            button.classList.add('success');
+            
+            setTimeout(() => {
+                button.innerHTML = originalText;
+                button.classList.remove('success');
+                button.disabled = false;
+            }, 3000);
+        } else {
+            throw new Error('API not responding');
+        }
+    } catch (error) {
+        showNotification('❌ API is not available. Please start the server first.', 'error');
+        button.innerHTML = '<i class="fas fa-times"></i> API Offline';
+        button.classList.add('error');
+        
+        setTimeout(() => {
+            button.innerHTML = originalText;
+            button.classList.remove('error');
+            button.disabled = false;
+        }, 3000);
+    }
+}
+
+// Enhanced notification system
+function showNotification(message, type = 'info') {
+    // Remove existing notification if any
+    const existing = document.querySelector('.api-notification');
+    if (existing) {
+        existing.remove();
+    }
+    
+    const notification = document.createElement('div');
+    notification.className = `api-notification ${type}`;
+    notification.innerHTML = `
+        <div class="notification-content">
+            <span>${message}</span>
+            <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
+        </div>
+    `;
+    
+    // Add notification styles
+    const style = `
+        .api-notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            padding: 15px 20px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            animation: slideIn 0.3s ease;
+            max-width: 400px;
+        }
+        .api-notification.success { background: #10b981; }
+        .api-notification.error { background: #ef4444; }
+        .api-notification.info { background: #3b82f6; }
+        .notification-content { display: flex; justify-content: space-between; align-items: center; }
+        .notification-close { 
+            background: none; border: none; color: white; 
+            font-size: 18px; cursor: pointer; margin-left: 10px;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+    `;
+    
+    // Add styles if not already added
+    if (!document.querySelector('#notification-styles')) {
+        const styleElement = document.createElement('style');
+        styleElement.id = 'notification-styles';
+        styleElement.textContent = style;
+        document.head.appendChild(styleElement);
+    }
+    
+    document.body.appendChild(notification);
+    
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+        if (notification.parentElement) {
+            notification.remove();
+        }
+    }, 5000);
+}
+
+// Get API Integration functionality
+let generatedAPIKey = null;
+let isAPIKeyViewed = false;
+let apiKeyPassword = null;
+
+function generateAPIKey() {
+    // Generate a random API key
+    const apiKey = 'ck_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15) + '_' + Date.now().toString(36);
+    generatedAPIKey = apiKey;
+    
+    // Show security options modal
+    showAPIKeySecurityModal();
+}
+
+function showAPIKeySecurityModal() {
+    const modal = document.createElement('div');
+    modal.className = 'api-security-modal';
+    modal.innerHTML = `
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-shield-alt"></i> Secure Your API Key</h3>
+                <button class="modal-close" onclick="closeAPIKeyModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="security-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p>For your security, please choose how you want to protect your API key:</p>
+                </div>
+                
+                <div class="security-options">
+                    <div class="option-card" onclick="selectSecurityOption('password')">
+                        <i class="fas fa-lock"></i>
+                        <h4>Password Protection</h4>
+                        <p>Set a password to view your API key anytime</p>
+                        <div class="option-benefits">
+                            ✓ Reusable access<br>
+                            ✓ Maximum security<br>
+                            ✓ Password recovery
+                        </div>
+                    </div>
+                    
+                    <div class="option-card" onclick="selectSecurityOption('onetime')">
+                        <i class="fas fa-eye-slash"></i>
+                        <h4>One-Time View</h4>
+                        <p>View your API key once, then it disappears forever</p>
+                        <div class="option-benefits">
+                            ✓ Immediate access<br>
+                            ✓ No password needed<br>
+                            ⚠️ Copy it safely!
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    modal.style.display = 'flex';
+}
+
+function selectSecurityOption(option) {
+    if (option === 'password') {
+        showPasswordSetupModal();
+    } else {
+        showOneTimeAPIKey();
+    }
+}
+
+function showPasswordSetupModal() {
+    const modal = document.querySelector('.api-security-modal');
+    modal.querySelector('.modal-body').innerHTML = `
+        <div class="password-setup">
+            <div class="setup-header">
+                <i class="fas fa-key"></i>
+                <h4>Set Password for API Key</h4>
+                <p>Choose a strong password to protect your API key</p>
+            </div>
+            
+            <form onsubmit="setupAPIKeyPassword(event)" class="password-form">
+                <div class="form-group">
+                    <label for="apiPassword">Password</label>
+                    <input type="password" id="apiPassword" required minlength="6" 
+                           placeholder="Enter a strong password">
+                    <small>Minimum 6 characters</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirmPassword">Confirm Password</label>
+                    <input type="password" id="confirmPassword" required 
+                           placeholder="Confirm your password">
+                </div>
+                
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="showAPIKeySecurityModal()">
+                        <i class="fas fa-arrow-left"></i> Back
+                    </button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-shield-alt"></i> Secure API Key
+                    </button>
+                </div>
+            </form>
+        </div>
+    `;
+}
+
+function setupAPIKeyPassword(event) {
+    event.preventDefault();
+    
+    const password = document.getElementById('apiPassword').value;
+    const confirmPassword = document.getElementById('confirmPassword').value;
+    
+    if (password !== confirmPassword) {
+        showNotification('Passwords do not match!', 'error');
+        return;
+    }
+    
+    if (password.length < 6) {
+        showNotification('Password must be at least 6 characters long!', 'error');
+        return;
+    }
+    
+    // Store password (in real app, this would be hashed and stored securely)
+    apiKeyPassword = password;
+    
+    // Close modal and show success
+    closeAPIKeyModal();
+    showAPIKeyProtectedSuccess();
+}
+
+function showOneTimeAPIKey() {
+    closeAPIKeyModal();
+    
+    // Show one-time warning modal
+    const warningModal = document.createElement('div');
+    warningModal.className = 'api-warning-modal';
+    warningModal.innerHTML = `
+        <div class="modal-overlay"></div>
+        <div class="modal-content warning-content">
+            <div class="warning-header">
+                <i class="fas fa-exclamation-circle"></i>
+                <h3>⚠️ One-Time View Warning</h3>
+            </div>
+            <div class="warning-body">
+                <div class="warning-message">
+                    <p><strong>IMPORTANT:</strong> Your API key will be shown only ONCE!</p>
+                    <p>Please copy it now and write it down somewhere safe. You will not be able to see it again.</p>
+                </div>
+                
+                <div class="warning-checklist">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="understand1" required>
+                        <span class="checkmark"></span>
+                        I understand this is a one-time view
+                    </label>
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="understand2" required>
+                        <span class="checkmark"></span>
+                        I will copy and save the API key immediately
+                    </label>
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="understand3" required>
+                        <span class="checkmark"></span>
+                        I understand I cannot recover this key if lost
+                    </label>
+                </div>
+                
+                <div class="warning-actions">
+                    <button class="btn btn-secondary" onclick="closeWarningModal()">
+                        <i class="fas fa-times"></i> Cancel
+                    </button>
+                    <button class="btn btn-danger" onclick="revealOneTimeAPIKey()" id="revealBtn" disabled>
+                        <i class="fas fa-unlock"></i> Show API Key
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(warningModal);
+    warningModal.style.display = 'flex';
+    
+    // Enable reveal button only when all checkboxes are checked
+    const checkboxes = warningModal.querySelectorAll('input[type="checkbox"]');
+    const revealBtn = document.getElementById('revealBtn');
+    
+    checkboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', () => {
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+            revealBtn.disabled = !allChecked;
+            revealBtn.style.opacity = allChecked ? '1' : '0.5';
+        });
+    });
+}
+
+function revealOneTimeAPIKey() {
+    closeWarningModal();
+    
+    // Display the API key with auto-destruction timer
+    const apiKeyDisplay = document.getElementById('apiKeyDisplay');
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    
+    if (apiKeyDisplay && apiKeyInput) {
+        apiKeyInput.value = generatedAPIKey;
+        apiKeyDisplay.style.display = 'block';
+        
+        // Add destruction warning
+        const warningDiv = document.createElement('div');
+        warningDiv.className = 'destruction-warning';
+        warningDiv.innerHTML = `
+            <div class="warning-banner">
+                <i class="fas fa-clock"></i>
+                <span>This API key will disappear in <span id="countdown">60</span> seconds!</span>
+                <button onclick="extendTime()" class="extend-btn">+30s</button>
+            </div>
+        `;
+        
+        apiKeyDisplay.insertBefore(warningDiv, apiKeyDisplay.firstChild);
+        
+        // Start countdown
+        startAPIKeyDestruction();
+        
+        // Update button
+        const button = document.querySelector('.generate-api-btn');
+        if (button) {
+            button.innerHTML = '<i class="fas fa-eye"></i> API Key Revealed';
+            button.style.background = '#dc3545';
+            button.disabled = true;
+        }
+        
+        // Show critical warning
+        showNotification('⚠️ COPY YOUR API KEY NOW! It will disappear soon!', 'warning');
+    }
+    
+    isAPIKeyViewed = true;
+}
+
+function startAPIKeyDestruction(seconds = 60) {
+    const countdown = document.getElementById('countdown');
+    if (!countdown) return;
+    
+    const timer = setInterval(() => {
+        seconds--;
+        countdown.textContent = seconds;
+        
+        if (seconds <= 10) {
+            countdown.parentElement.style.color = '#dc3545';
+            countdown.parentElement.style.fontWeight = 'bold';
+        }
+        
+        if (seconds <= 0) {
+            clearInterval(timer);
+            destroyAPIKey();
+        }
+    }, 1000);
+    
+    // Store timer reference for extending
+    window.apiKeyTimer = timer;
+    window.remainingSeconds = seconds;
+}
+
+function extendTime() {
+    if (window.apiKeyTimer) {
+        clearInterval(window.apiKeyTimer);
+    }
+    
+    window.remainingSeconds += 30;
+    const countdown = document.getElementById('countdown');
+    if (countdown) {
+        countdown.parentElement.style.color = '#007bff';
+        countdown.parentElement.style.fontWeight = 'normal';
+        startAPIKeyDestruction(window.remainingSeconds);
+        showNotification('Time extended by 30 seconds!', 'success');
+    }
+}
+
+function destroyAPIKey() {
+    const apiKeyDisplay = document.getElementById('apiKeyDisplay');
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    
+    if (apiKeyDisplay && apiKeyInput) {
+        // Clear the API key
+        apiKeyInput.value = '';
+        apiKeyDisplay.style.display = 'none';
+        
+        // Clear from memory
+        generatedAPIKey = null;
+        
+        // Reset button
+        const button = document.querySelector('.generate-api-btn');
+        if (button) {
+            button.innerHTML = '<i class="fas fa-key"></i> Generate New API Key';
+            button.style.background = '';
+            button.disabled = false;
+        }
+        
+        // Show destruction notification
+        showNotification('🔥 API Key has been destroyed for security!', 'info');
+    }
+}
+
+function showAPIKeyProtectedSuccess() {
+    const apiKeyDisplay = document.getElementById('apiKeyDisplay');
+    
+    if (apiKeyDisplay) {
+        apiKeyDisplay.innerHTML = `
+            <div class="protected-api-display">
+                <div class="protection-status">
+                    <i class="fas fa-shield-check"></i>
+                    <h4>API Key Protected</h4>
+                    <p>Your API key has been generated and secured with password protection.</p>
+                </div>
+                
+                <div class="access-controls">
+                    <button onclick="requestAPIKeyAccess()" class="btn btn-primary">
+                        <i class="fas fa-unlock"></i> Enter Password to View
+                    </button>
+                </div>
+                
+                <div class="security-info">
+                    <small><i class="fas fa-info-circle"></i> Your API key is encrypted and requires your password to view</small>
+                </div>
+            </div>
+        `;
+        
+        apiKeyDisplay.style.display = 'block';
+        
+        // Update button
+        const button = document.querySelector('.generate-api-btn');
+        if (button) {
+            button.innerHTML = '<i class="fas fa-shield-check"></i> API Key Secured';
+            button.style.background = '#10b981';
+        }
+        
+        showNotification('API Key secured with password protection!', 'success');
+    }
+}
+
+function requestAPIKeyAccess() {
+    const accessModal = document.createElement('div');
+    accessModal.className = 'api-access-modal';
+    accessModal.innerHTML = `
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-unlock"></i> Enter Password</h3>
+                <button class="modal-close" onclick="closeAccessModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form onsubmit="verifyAPIKeyPassword(event)" class="access-form">
+                    <div class="form-group">
+                        <label for="accessPassword">Enter your password to view the API key:</label>
+                        <input type="password" id="accessPassword" required 
+                               placeholder="Enter password" autofocus>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeAccessModal()">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-eye"></i> View API Key
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(accessModal);
+    accessModal.style.display = 'flex';
+}
+
+function verifyAPIKeyPassword(event) {
+    event.preventDefault();
+    
+    const enteredPassword = document.getElementById('accessPassword').value;
+    
+    if (enteredPassword === apiKeyPassword) {
+        closeAccessModal();
+        showProtectedAPIKey();
+    } else {
+        showNotification('Incorrect password!', 'error');
+        document.getElementById('accessPassword').value = '';
+        document.getElementById('accessPassword').focus();
+    }
+}
+
+function showProtectedAPIKey() {
+    const apiKeyDisplay = document.getElementById('apiKeyDisplay');
+    
+    if (apiKeyDisplay && generatedAPIKey) {
+        apiKeyDisplay.innerHTML = `
+            <div class="revealed-api-display">
+                <div class="api-key-container">
+                    <label>Your Protected API Key:</label>
+                    <div class="api-key-input-group">
+                        <input type="text" value="${generatedAPIKey}" readonly id="protectedApiKey">
+                        <button class="copy-btn" onclick="copyProtectedAPIKey()">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                    </div>
+                    <small class="api-key-note">
+                        <i class="fas fa-shield-alt"></i> This key is password protected and can be viewed anytime
+                    </small>
+                </div>
+                
+                <div class="protection-controls">
+                    <button onclick="hideAPIKey()" class="btn btn-secondary">
+                        <i class="fas fa-eye-slash"></i> Hide Key
+                    </button>
+                    <button onclick="changeAPIKeyPassword()" class="btn btn-outline">
+                        <i class="fas fa-key"></i> Change Password
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        showNotification('API Key unlocked successfully!', 'success');
+    }
+}
+
+function hideAPIKey() {
+    showAPIKeyProtectedSuccess();
+}
+
+function copyProtectedAPIKey() {
+    const apiKeyInput = document.getElementById('protectedApiKey');
+    if (apiKeyInput) {
+        apiKeyInput.select();
+        apiKeyInput.setSelectionRange(0, 99999);
+        
+        try {
+            document.execCommand('copy');
+            showNotification('Protected API Key copied to clipboard!', 'success');
+            
+            const copyBtn = document.querySelector('.copy-btn');
+            if (copyBtn) {
+                const originalHTML = copyBtn.innerHTML;
+                copyBtn.innerHTML = '<i class="fas fa-check"></i>';
+                copyBtn.style.background = '#10b981';
+                
+                setTimeout(() => {
+                    copyBtn.innerHTML = originalHTML;
+                    copyBtn.style.background = '';
+                }, 2000);
+            }
+        } catch (err) {
+            showNotification('Failed to copy API Key', 'error');
+        }
+    }
+}
+
+function closeAPIKeyModal() {
+    const modal = document.querySelector('.api-security-modal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+function closeWarningModal() {
+    const modal = document.querySelector('.api-warning-modal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+function closeAccessModal() {
+    const modal = document.querySelector('.api-access-modal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+function copyAPIKey() {
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    if (apiKeyInput) {
+        apiKeyInput.select();
+        apiKeyInput.setSelectionRange(0, 99999); // For mobile devices
+        
+        try {
+            document.execCommand('copy');
+            showNotification('API Key copied to clipboard!', 'success');
+            
+            // Update copy button temporarily
+            const copyBtn = document.querySelector('.copy-btn');
+            if (copyBtn) {
+                const originalHTML = copyBtn.innerHTML;
+                copyBtn.innerHTML = '<i class="fas fa-check"></i>';
+                copyBtn.style.background = '#10b981';
+                
+                setTimeout(() => {
+                    copyBtn.innerHTML = originalHTML;
+                    copyBtn.style.background = '';
+                }, 2000);
+            }
+        } catch (err) {
+            showNotification('Failed to copy API Key', 'error');
+        }
+    }
+}
+
+// Code tabs functionality for Get API section
+function initCodeTabs() {
+    const tabButtons = document.querySelectorAll('.code-tabs .tab-btn');
+    const tabPanes = document.querySelectorAll('.code-tabs .tab-pane');
+    
+    tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const targetTab = button.getAttribute('data-tab');
+            
+            // Remove active class from all buttons and panes
+            tabButtons.forEach(btn => btn.classList.remove('active'));
+            tabPanes.forEach(pane => pane.classList.remove('active'));
+            
+            // Add active class to clicked button and corresponding pane
+            button.classList.add('active');
+            const targetPane = document.getElementById(targetTab);
+            if (targetPane) {
+                targetPane.classList.add('active');
+            }
+        });
+    });
+}
+
+// Initialize code tabs when DOM is loaded
+document.addEventListener('DOMContentLoaded', function() {
+    initCodeTabs();
+    
+    // Add click handlers for API key functionality
+    const generateBtn = document.querySelector('.generate-api-btn');
+    if (generateBtn) {
+        generateBtn.addEventListener('click', generateAPIKey);
+    }
+    
+    const copyBtn = document.querySelector('.copy-btn');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', copyAPIKey);
+    }
 });

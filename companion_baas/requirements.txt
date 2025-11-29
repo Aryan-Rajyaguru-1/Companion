@@ -1,0 +1,54 @@
+# Companion BaaS Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies (from parent Companion project)
+# These are imported from the website/ directory
+
+# Optional: If you want to run BaaS standalone, uncomment below:
+# requests>=2.31.0
+# flask>=2.3.0
+# flask-cors>=4.0.0
+# beautifulsoup4>=4.12.0
+# nltk>=3.8.0
+# textblob>=0.17.0
+# scikit-learn>=1.3.0
+# numpy>=1.24.0
+
+# ====== NEW: Knowledge Layer Dependencies ======
+# Elasticsearch for vector database
+elasticsearch>=8.11.0
+
+# Sentence Transformers for embeddings
+sentence-transformers>=2.2.2
+torch>=2.0.0  # Required by sentence-transformers
+transformers>=4.30.0
+
+# ====== NEW: Search Layer Dependencies ======
+# Meilisearch for fast full-text search
+meilisearch>=0.31.0
+
+# ====== NEW: Web Intelligence Dependencies ======
+# Crawl4AI for web scraping
+# Note: Install from GitHub for latest version
+# pip install git+https://github.com/unclecode/crawl4ai.git
+# Or use Docker: docker pull unclecode/crawl4ai:latest
+
+# Browser-Use for automation
+# browser-use>=0.1.0  # Install when needed
+playwright>=1.40.0  # Required by browser-use
+
+# ====== NEW: Code Execution Dependencies ======
+# Open Interpreter for safe code execution
+# open-interpreter>=0.3.0  # Install when needed
+
+# ====== NEW: Image Generation Dependencies ======
+# Stable Diffusion for text-to-image
+# diffusers>=0.25.0  # Install when needed (GPU intensive)
+# accelerate>=0.25.0  # Speeds up generation
+
+# ====== NEW: Caching Dependencies ======
+# Redis for high-performance caching
+redis>=5.0.0
+
+# Note: For now, BaaS uses the existing Companion dependencies
+# Run from Companion project root to use existing packages

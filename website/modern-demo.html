@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0a0a0a">
+    <title>Companion - Web Mode AI Chat</title>
+    <link rel="stylesheet" href="modern-chat-styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&family=SF+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Mobile Menu Button -->
+    <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle Menu">
+        <span>☰</span>
+    </button>
+    
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                                            <div class="brand">
+                <img src="companion-icon.svg" alt="Companion AI" class="brand-icon">
+                <span class="brand-text">Companion AI</span>
+            </div>
+                <button class="new-chat-btn" id="newChatBtn">
+                    <span class="btn-icon">+</span>
+                    <span class="btn-text">New Chat</span>
+                </button>
+            </div>
+
+            <!-- Search for conversations -->
+            <div class="search-conversations">
+                <input type="text" 
+                       class="conversation-search-input" 
+                       id="searchInput"
+                       placeholder="Search conversations..."
+                       autocomplete="off">
+            </div>
+
+            <div class="sidebar-content">
+                <div class="chat-history" id="chatHistory">
+                    <!-- Chat history will be loaded dynamically -->
+                    <div class="history-loading">
+                        <div class="loading-spinner"></div>
+                        <span>Loading conversations...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="user-info">
+                                                                    <img src="companion-icon.svg" alt="AI" class="user-avatar">
+                    <div class="user-details">
+                        <span class="user-name">Companion User</span>
+                        <span class="user-status">Multi-Engine AI</span>
+                    </div>
+                </div>
+                <div class="footer-links">
+                    <a href="download.html" class="footer-link">⬇ Download Desktop</a>
+                    <a href="help.html" class="footer-link">? Help</a>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="top-bar">
+                <div class="chat-info">
+                    <h1 class="chat-title">Companion AI</h1>
+                    <span class="chat-subtitle">Advanced Multi-Engine AI Assistant</span>
+                </div>
+                <div class="top-actions">
+                    <button class="action-btn" title="Model Settings">
+                        <span>⚙</span>
+                    </button>
+                    <button class="action-btn" title="Share Chat">
+                        <span>⇧</span>
+                    </button>
+                    <button class="action-btn" title="Clear Chat" id="clearChatBtn">
+                        <span>⌫</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Chat Area -->
+            <div class="chat-area">
+                <!-- Welcome State -->
+                <div class="welcome-state" id="welcomeState">
+                    <div class="welcome-content">
+                        <h1 class="welcome-title">What can I help you with?</h1>
+                        
+                        <!-- Search Input -->
+                        <div class="search-container">
+                            <div class="search-input-wrapper">
+                                <button class="search-btn add-btn" id="addBtnMain" title="Add Files or Connect GitHub">
+                                    <span>+</span>
+                                </button>
+                                <input type="text" 
+                                       class="search-input" 
+                                       id="chatInput"
+                                       placeholder="Message Companion AI..."
+                                       autocomplete="off">
+                                <div class="search-actions">
+                                    <button class="search-btn tools-btn" id="toolsBtn" title="Tools">
+                                        <span class="btn-label">Tools</span>
+                                    </button>
+                                    <button class="search-btn voice-btn" id="voiceBtn" title="Voice Input">
+                                        <img src="/SVGs/microphone-svgrepo-com.svg" alt="Voice" class="btn-icon">
+                                    </button>
+                                    <button class="search-btn send-btn" id="sendBtn" title="Send Message">
+                                        <span>→</span>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <!-- Tools Dropdown -->
+                            <div class="tools-dropdown" id="toolsDropdown">
+                                <div class="tools-header">
+                                    <span>Available Tools</span>
+                                </div>
+                                <div class="tool-toggle-item" data-tool="think">
+                                    <div class="tool-info">
+                                        <span class="tool-icon">
+                                            <img src="/SVGs/thinking.svg" alt="Think" style="width: 20px; height: 20px;">
+                                        </span>
+                                        <span class="tool-text">Think for longer</span>
+                                    </div>
+                                    <label class="tool-toggle">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="think">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="tool-toggle-item" data-tool="research">
+                                    <div class="tool-info">
+                                        <span class="tool-icon">
+                                            <img src="/SVGs/deep search.svg" alt="Deep Research" style="width: 20px; height: 20px;">
+                                        </span>
+                                        <span class="tool-text">Run deep research</span>
+                                    </div>
+                                    <label class="tool-toggle">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="research">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="tool-toggle-item" data-tool="web">
+                                    <div class="tool-info">
+                                        <span class="tool-icon">
+                                            <img src="/SVGs/search.svg" alt="Search Web" style="width: 20px; height: 20px;">
+                                        </span>
+                                        <span class="tool-text">Search the web</span>
+                                    </div>
+                                    <label class="tool-toggle">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="web">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="tool-toggle-item" data-tool="code">
+                                    <div class="tool-info">
+                                        <span class="tool-icon">💻</span>
+                                        <span class="tool-text">Write or code</span>
+                                    </div>
+                                    <label class="tool-toggle">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="code">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="tool-toggle-item" data-tool="deepthink">
+                                    <div class="tool-info">
+                                        <span class="tool-icon">
+                                            <img src="/SVGs/Deepthink.svg" alt="Deep Think" style="width: 20px; height: 20px;">
+                                        </span>
+                                        <span class="tool-text">Deep Think (All AI + Search)</span>
+                                        <span class="tool-description">Uses all LLMs and search engines for comprehensive analysis</span>
+                                    </div>
+                                    <label class="tool-toggle">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="deepthink">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Main Search Add Dropdown -->
+                        <div class="add-dropdown main-search-dropdown" id="addDropdownMain" style="display: none;">
+                            <div class="dropdown-header">
+                                <span>Add Content</span>
+                            </div>
+                            <button class="dropdown-item" id="addFileMainBtn">
+                                <span class="dropdown-item-icon">📄</span>
+                                <span>Upload File</span>
+                            </button>
+                            <button class="dropdown-item" id="addImageMainBtn">
+                                <span class="dropdown-item-icon">🖼️</span>
+                                <span>Upload Image</span>
+                            </button>
+                            <button class="dropdown-item" id="connectGithubMainBtn">
+                                <span class="dropdown-item-icon">
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                                    </svg>
+                                </span>
+                                <span>Connect GitHub Repo</span>
+                            </button>
+                            <button class="dropdown-item" id="pasteCodeMainBtn">
+                                <span class="dropdown-item-icon">💻</span>
+                                <span>Paste Code</span>
+                            </button>
+                        </div>
+
+                        <!-- Active Tools Display -->
+                        <div class="active-tools" id="activeTools" style="display: none;">
+                            <div class="active-tools-label">Active tools:</div>
+                            <div class="active-tools-list" id="activeToolsList">
+                                <!-- Active tools will be shown here -->
+                            </div>
+                        </div>
+
+                        <!-- Quick Actions -->
+                        <div class="quick-actions">
+                            <button class="quick-action" data-prompt="Explain quantum computing in simple terms">
+                                <span class="action-icon">◯</span>
+                                <span class="action-text">Explain quantum computing</span>
+                            </button>
+                            <button class="quick-action" data-prompt="Write a Python function to sort a list">
+                                <span class="action-icon">⟨⟩</span>
+                                <span class="action-text">Python function help</span>
+                            </button>
+                            <button class="quick-action" data-prompt="What's the meaning of life?">
+                                <span class="action-icon">?</span>
+                                <span class="action-text">Philosophical question</span>
+                            </button>
+                            <button class="quick-action" data-prompt="Help me debug this JavaScript code">
+                                <span class="action-icon">◇</span>
+                                <span class="action-text">Debug code</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Messages -->
+                <div class="chat-messages" id="chatMessages" style="display: none;">
+                    <!-- Messages will be added here dynamically -->
+                </div>
+            </div>
+
+            <!-- Input Area (for active chat) -->
+            <div class="input-area" id="inputArea" style="display: none;">
+                
+                <div class="input-container">
+                    <div class="input-wrapper">
+                        <button class="input-btn add-btn" id="addBtn" title="Add Files, Images, or Connect GitHub">
+                            <span>+</span>
+                        </button>
+                        <textarea class="chat-textarea" 
+                                  id="chatTextarea"
+                                  placeholder="Message Companion AI..."
+                                  rows="1"></textarea>
+                        <div class="input-actions">
+                            <button class="input-btn tools-btn-chat" id="toolsBtnChat" title="Tools">
+                                <span class="btn-label">Tools</span>
+                            </button>
+                            <button class="input-btn voice-btn" title="Voice Input">
+                                <img src="/SVGs/microphone-svgrepo-com.svg" alt="Voice" style="width: 20px; height: 20px;">
+                            </button>
+                            <button class="input-btn send-btn" id="sendMessageBtn" title="Send">
+                                <span>↗</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="input-footer">
+                        <span class="char-count" id="charCount">0 characters</span>
+                        <span class="input-hint">Enter to send • Shift+Enter for new line</span>
+                    </div>
+                    
+                    <!-- Hidden file inputs -->
+                    <input type="file" id="fileInput" multiple accept="*/*" style="display: none;">
+                    <input type="file" id="imageInput" multiple accept="image/*" style="display: none;">
+                    
+                    <!-- Add Files Dropdown -->
+                    <div class="add-dropdown" id="addDropdown" style="display: none;">
+                        <div class="dropdown-header">
+                            <span>Add Content</span>
+                        </div>
+                        <button class="dropdown-item" id="addFileBtn">
+                            <span class="dropdown-item-icon">📄</span>
+                            <span>Upload File</span>
+                        </button>
+                        <button class="dropdown-item" id="addImageBtn">
+                            <span class="dropdown-item-icon">🖼️</span>
+                            <span>Upload Image</span>
+                        </button>
+                        <button class="dropdown-item" id="connectGithubBtn">
+                            <span class="dropdown-item-icon">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                                </svg>
+                            </span>
+                            <span>Connect GitHub Repo</span>
+                        </button>
+                        <button class="dropdown-item" id="pasteCodeBtn">
+                            <span class="dropdown-item-icon">💻</span>
+                            <span>Paste Code</span>
+                        </button>
+                    </div>
+                    
+                    <!-- Tools Dropdown for Chat Area -->
+                    <div class="tools-dropdown" id="toolsDropdownChat" style="display: none;">
+                        <div class="tools-header">
+                            <span>Available Tools</span>
+                        </div>
+                        <div class="tool-toggle-item" data-tool="think">
+                            <div class="tool-info">
+                                <span class="tool-icon">
+                                    <img src="/SVGs/thinking.svg" alt="Think" style="width: 20px; height: 20px;">
+                                </span>
+                                <span class="tool-text">Think for longer</span>
+                            </div>
+                            <label class="tool-toggle">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="think">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="tool-toggle-item" data-tool="research">
+                            <div class="tool-info">
+                                <span class="tool-icon">
+                                    <img src="/SVGs/deep search.svg" alt="Deep Research" style="width: 20px; height: 20px;">
+                                </span>
+                                <span class="tool-text">Run deep research</span>
+                            </div>
+                            <label class="tool-toggle">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="research">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="tool-toggle-item" data-tool="web">
+                            <div class="tool-info">
+                                <span class="tool-icon">
+                                    <img src="/SVGs/search.svg" alt="Search Web" style="width: 20px; height: 20px;">
+                                </span>
+                                <span class="tool-text">Search the web</span>
+                            </div>
+                            <label class="tool-toggle">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="web">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="tool-toggle-item" data-tool="code">
+                            <div class="tool-info">
+                                <span class="tool-icon">💻</span>
+                                <span class="tool-text">Write or code</span>
+                            </div>
+                            <label class="tool-toggle">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="code">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="tool-toggle-item" data-tool="deepthink">
+                            <div class="tool-info">
+                                <span class="tool-icon">
+                                    <img src="/SVGs/Deepthink.svg" alt="Deep Think" style="width: 20px; height: 20px;">
+                                </span>
+                                <span class="tool-text">Deep Think (All AI + Search)</span>
+                                <span class="tool-description">Uses all LLMs and search engines for comprehensive analysis</span>
+                            </div>
+                            <label class="tool-toggle">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="deepthink">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- GitHub Connection Modal -->
+                    <div class="github-modal" id="githubModal" style="display: none;">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h3>Connect GitHub Repository</h3>
+                                <button class="modal-close" id="closeGithubModal">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="input-group">
+                                    <label for="githubUrl">Repository URL</label>
+                                    <input type="text" id="githubUrl" placeholder="https://github.com/username/repository" class="modal-input">
+                                </div>
+                                <div class="input-group">
+                                    <label for="githubToken">Personal Access Token (for push access)</label>
+                                    <input type="password" id="githubToken" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" class="modal-input">
+                                    <small class="input-hint">Required for pushing code. Generate at <a href="https://github.com/settings/tokens" target="_blank">github.com/settings/tokens</a></small>
+                                </div>
+                                <div class="input-group">
+                                    <label for="githubBranch">Branch (optional)</label>
+                                    <input type="text" id="githubBranch" placeholder="main" class="modal-input">
+                                </div>
+                                <div class="checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="includeReadme"> Include README.md
+                                    </label>
+                                    <label>
+                                        <input type="checkbox" id="includeCode" checked> Include source code
+                                    </label>
+                                    <label>
+                                        <input type="checkbox" id="enablePush"> Enable push functionality
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn btn-secondary" id="cancelGithub">Cancel</button>
+                                <button class="btn btn-primary" id="connectGithub">Connect Repository</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Mobile FAB Button for Tools (shown only on mobile) -->
+        <button class="mobile-tools-fab" id="mobileToolsFab" style="display: none;" title="Toggle Tools">
+            <span>⚙️</span>
+        </button>
+        
+        <!-- Sidebar Overlay for Mobile -->
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+    </div>
+
+    <script src="voice-chat.js"></script>
+    <script src="modern-chat-script.js"></script>
+</body>
+</html>

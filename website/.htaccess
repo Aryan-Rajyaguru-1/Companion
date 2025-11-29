@@ -1,0 +1,5 @@
+Options +Indexes
+IndexOptions +FancyIndexing +HTMLTable +IgnoreCase +NameWidth=* +DescriptionWidth=*
+HeaderName /header.html
+ReadmeName /readme.html
+IndexIgnore header.html readme.html

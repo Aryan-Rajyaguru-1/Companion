@@ -292,6 +292,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Demo welcome message after a short delay
     setTimeout(() => {
-        addMessage('system', '🚀 Welcome to the DeepCompanion demo! Try asking a question or switching AI models.', true);
+        addMessage('system', '🚀 Welcome to the Companion demo! Try asking a question or switching AI models.', true);
     }, 2000);
 });

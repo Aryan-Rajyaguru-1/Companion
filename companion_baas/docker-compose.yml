@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Elasticsearch - Vector Database
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: companion_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"  # Limit memory for laptop
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - companion_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Meilisearch - Fast Full-Text Search
+  meilisearch:
+    image: getmeili/meilisearch:v1.5
+    container_name: companion_meilisearch
+    environment:
+      - MEILI_MASTER_KEY=masterKey123
+      - MEILI_ENV=development
+    ports:
+      - "7700:7700"
+    volumes:
+      - meili_data:/meili_data
+    networks:
+      - companion_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:7700/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Redis - High-Performance Caching
+  redis:
+    image: redis:7-alpine
+    container_name: companion_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - companion_network
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Optional: Crawl4AI - Web Scraping (Resource intensive)
+  # Uncomment to enable
+  # crawl4ai:
+  #   image: unclecode/crawl4ai:latest
+  #   container_name: companion_crawl4ai
+  #   ports:
+  #     - "8000:8000"
+  #   networks:
+  #     - companion_network
+  #   restart: unless-stopped
+
+volumes:
+  es_data:
+    driver: local
+  meili_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  companion_network:
+    driver: bridge

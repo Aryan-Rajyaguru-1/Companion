@@ -1,0 +1,44 @@
+# Unified Brain API - Dockerfile
+# ================================
+# Production-ready Docker image for the Unified Brain API
+
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY companion_baas/requirements.txt requirements.txt
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional API dependencies
+RUN pip install --no-cache-dir \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0 \
+    requests==2.31.0
+
+# Copy application code
+COPY companion_baas/ /app/
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/logs
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+
+# Run the API server
+CMD ["python", "-m", "uvicorn", "api.unified_brain_api:app", "--host", "0.0.0.0", "--port", "8000"]
