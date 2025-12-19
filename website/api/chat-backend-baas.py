@@ -302,6 +302,20 @@ def require_auth(f):
     return decorated_function
 
 # ============================================================================
+# Health Check Route
+# ============================================================================
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint - no authentication required"""
+    return jsonify({
+        "status": "healthy",
+        "service": "Companion AI API",
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat(),
+        "environment": os.environ.get('ENVIRONMENT', 'development')
+    })
+
+# ============================================================================
 # KEEP: Authentication Routes
 # ============================================================================
 @app.route('/api/auth/register', methods=['POST'])
@@ -1272,7 +1286,7 @@ def perplexity_search():
 @app.route('/')
 def serve_index():
     """Serve login page as entry point"""
-    response = send_from_directory('.', 'login.html')
+    response = send_from_directory('../frontend', 'login.html')
     response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
@@ -1282,7 +1296,7 @@ def serve_index():
 @app.route('/home')
 def serve_home():
     """Serve index.html landing page (requires auth)"""
-    response = send_from_directory('.', 'index.html')
+    response = send_from_directory('../frontend', 'index.html')
     response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
@@ -1291,7 +1305,7 @@ def serve_home():
 @app.route('/chat')
 def serve_chat():
     """Serve the chat interface (requires auth)"""
-    response = send_from_directory('.', 'modern-demo.html')
+    response = send_from_directory('../frontend', 'modern-demo.html')
     response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
@@ -1303,8 +1317,13 @@ def serve_chat():
 
 @app.route('/<path:path>')
 def serve_static(path):
-    """Serve static files"""
-    return send_from_directory('.', path)
+    """Serve static files from frontend directory"""
+    # Try frontend directory first
+    try:
+        return send_from_directory('../frontend', path)
+    except:
+        # Fallback to current directory for any other files
+        return send_from_directory('.', path)
 
 @app.route('/api/admin/db-stats', methods=['GET'])
 def get_database_stats():
