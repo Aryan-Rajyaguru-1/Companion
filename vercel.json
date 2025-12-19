@@ -5,25 +5,19 @@
       "runtime": "@vercel/python"
     }
   },
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/(.*)",
-      "dest": "/api/app.py"
+      "source": "/api/(.*)",
+      "destination": "/api/app.py"
     },
     {
-      "src": "/(.*)",
-      "dest": "/website/$1"
+      "source": "/(.*)",
+      "destination": "/website/$1"
     }
   ],
   "env": {
     "ENVIRONMENT": "production",
     "LOG_LEVEL": "INFO",
     "DEBUG": "false"
-  },
-  "rewrites": [
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/website/index.html"
-    }
-  ]
+  }
 }
