@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "website"))
 
 # Import the main Flask application
-from chat_backend_baas import app
+from website.api.chat_backend_baas import app
 
 # Vercel expects the Flask app to be named 'app'
 # The app variable is already defined in chat_backend_baas.py
