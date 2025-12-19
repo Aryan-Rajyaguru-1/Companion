@@ -7,11 +7,11 @@ import os
 import sys
 from pathlib import Path
 
-# Add the website directory to Python path so we can import our modules
-sys.path.insert(0, str(Path(__file__).parent.parent / "website"))
+# Add the api directory to Python path so we can import our modules
+sys.path.insert(0, str(Path(__file__).parent))
 
 # Import the main Flask application
-from website.api.chat_backend_baas import app
+from chat_backend_baas import app
 
 # Vercel expects the Flask app to be named 'app'
 # The app variable is already defined in chat_backend_baas.py
