@@ -261,9 +261,6 @@ class AuthManager:
             logger.error(f"Stats error: {e}")
             return {"error": str(e)}
 
-# Initialize auth manager
-auth_manager = AuthManager()
-
 # ============================================================================
 # SIMPLE CHAT BACKEND
 # ============================================================================
