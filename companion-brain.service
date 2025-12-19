@@ -1,0 +1,17 @@
+[Unit]
+Description=Companion Brain Autonomous Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=aryan
+WorkingDirectory=/home/aryan/Documents/Companion deepthink
+Environment="PATH=/home/aryan/Documents/Companion deepthink/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/aryan/Documents/Companion deepthink/.venv/bin/python -u /home/aryan/Documents/Companion deepthink/companion_baas/autonomous/start_daemon.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/aryan/Documents/Companion deepthink/autonomous_daemon.log
+StandardError=append:/home/aryan/Documents/Companion deepthink/autonomous_daemon.log
+
+[Install]
+WantedBy=multi-user.target

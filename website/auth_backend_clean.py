@@ -114,21 +114,9 @@ class AuthManager:
         return password_hash.hex(), salt
 
     def _verify_password(self, password: str, stored_hash: str, salt: str) -> bool:
-        """Verify password against stored hash - supports both PBKDF2 and legacy SHA256"""
-        # First try PBKDF2 (current method)
-        pbkdf2_hash, _ = self._hash_password(password, salt)
-        if pbkdf2_hash == stored_hash:
-            return True
-        
-        # If PBKDF2 doesn't match, try legacy SHA256 method for backward compatibility
-        combined = password + salt
-        legacy_hash = hashlib.sha256(combined.encode()).hexdigest()
-        if legacy_hash == stored_hash:
-            # Password matches legacy hash - we should rehash it with PBKDF2 on next login
-            logger.info("Password verified with legacy hash - will upgrade on next login")
-            return True
-        
-        return False
+        """Verify password against stored hash"""
+        password_hash, _ = self._hash_password(password, salt)
+        return password_hash == stored_hash
 
     def _generate_jwt_token(self, user_id: int, email: str, name: str, remember: bool = False) -> str:
         """Generate JWT token for user with consistent payload format"""
@@ -299,17 +287,6 @@ class AuthManager:
             if not self._verify_password(password, stored_hash, salt):
                 self._log_login_attempt(email, ip_address, False)
                 return False, "Invalid email or password", None
-
-            # Check if password needs rehashing (legacy SHA256 to PBKDF2)
-            combined = password + salt
-            legacy_hash = hashlib.sha256(combined.encode()).hexdigest()
-            if legacy_hash == stored_hash:
-                # Upgrade password hash to PBKDF2
-                new_hash, new_salt = self._hash_password(password)
-                cursor.execute('''
-                    UPDATE users SET password_hash = ?, salt = ? WHERE id = ?
-                ''', (new_hash, new_salt, user_id))
-                logger.info(f"✅ Password hash upgraded for user: {email}")
 
             # Update last login
             cursor.execute('''

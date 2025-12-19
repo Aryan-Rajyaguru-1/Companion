@@ -66,19 +66,7 @@ class AuthManager {
     }
 
     async logout() {
-        if (!this.token) return;
-
-        try {
-            await fetch('/api/auth/logout', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${this.token}`
-                }
-            });
-        } catch (error) {
-            console.error('Logout request failed:', error);
-        }
-
+        // For stateless JWT auth, just clear local storage
         this.clearAuth();
         window.location.href = 'login.html';
     }

@@ -8,14 +8,15 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#0a0a0a">
     <title>Companion - Web Mode AI Chat</title>
-    <link rel="stylesheet" href="modern-chat-styles.css">
+    <link rel="stylesheet" href="modern-chat-styles.css?v=3.1">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&family=SF+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
     <!-- Mobile Menu Button -->
-    <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle Menu">
+    <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle Menu" 
+            onclick="document.getElementById('sidebar').classList.toggle('active');document.getElementById('sidebarOverlay').classList.toggle('active');console.log('Mobile menu toggled!');">
         <span>☰</span>
     </button>
     
@@ -88,6 +89,39 @@
                 </div>
             </header>
 
+            <!-- User Menu Tab (Floating, Top Right) -->
+            <div class="user-menu" style="position: absolute; top: 18px; right: 32px; z-index: 10001;">
+              <button class="user-btn" onclick="toggleMenu()">
+                <span class="avatar">AR</span>
+                <span class="username">Aryan Rajyaguru</span>
+              </button>
+              <div class="dropdown" id="dropdown">
+                <a href="#">Upgrade plan</a>
+                <a href="#">Personalization</a>
+                <a href="#">Settings</a>
+                <hr />
+                <a href="#">Help</a>
+                <a href="#" class="logout">Log out</a>
+              </div>
+            </div>
+            <!-- End User Menu Tab -->
+
+            <script>
+            function toggleMenu() {
+              const menu = document.getElementById("dropdown");
+              menu.style.display = menu.style.display === "block" ? "none" : "block";
+            }
+            // Close on outside click
+            if (!window._userMenuListenerAdded) {
+              document.addEventListener("click", (e) => {
+                if (!e.target.closest(".user-menu")) {
+                  document.getElementById("dropdown").style.display = "none";
+                }
+              });
+              window._userMenuListenerAdded = true;
+            }
+            </script>
+
             <!-- Chat Area -->
             <div class="chat-area">
                 <!-- Welcome State -->
@@ -124,62 +158,42 @@
                                 <div class="tools-header">
                                     <span>Available Tools</span>
                                 </div>
-                                <div class="tool-toggle-item" data-tool="think">
+                                <div class="tool-toggle-item" data-tool="search">
                                     <div class="tool-info">
                                         <span class="tool-icon">
-                                            <img src="/SVGs/thinking.svg" alt="Think" style="width: 20px; height: 20px;">
+                                            <img src="/SVGs/search.svg" alt="Search" style="width: 20px; height: 20px;">
                                         </span>
-                                        <span class="tool-text">Think for longer</span>
+                                        <span class="tool-text">Quick Search</span>
+                                        <span class="tool-description">Fast answers using optimized AI models (~20-25s). Perfect for simple questions and quick lookups.</span>
                                     </div>
                                     <label class="tool-toggle">
-                                        <input type="checkbox" class="tool-checkbox" data-tool="think">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="search">
                                         <span class="toggle-slider"></span>
                                     </label>
                                 </div>
-                                <div class="tool-toggle-item" data-tool="research">
+                                <div class="tool-toggle-item" data-tool="deepsearch">
                                     <div class="tool-info">
                                         <span class="tool-icon">
-                                            <img src="/SVGs/deep search.svg" alt="Deep Research" style="width: 20px; height: 20px;">
+                                            <img src="/SVGs/deep search.svg" alt="Deep Search" style="width: 20px; height: 20px;">
                                         </span>
-                                        <span class="tool-text">Run deep research</span>
+                                        <span class="tool-text">Deep Research</span>
+                                        <span class="tool-description">Comprehensive analysis with advanced reasoning (~60-80s). Breaks down complex topics and provides detailed insights.</span>
                                     </div>
                                     <label class="tool-toggle">
-                                        <input type="checkbox" class="tool-checkbox" data-tool="research">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="deepsearch">
                                         <span class="toggle-slider"></span>
                                     </label>
                                 </div>
-                                <div class="tool-toggle-item" data-tool="web">
+                                <div class="tool-toggle-item" data-tool="agent">
                                     <div class="tool-info">
                                         <span class="tool-icon">
-                                            <img src="/SVGs/search.svg" alt="Search Web" style="width: 20px; height: 20px;">
+                                            <img src="/SVGs/Deepthink.svg" alt="Agent Mode" style="width: 20px; height: 20px;">
                                         </span>
-                                        <span class="tool-text">Search the web</span>
+                                        <span class="tool-text">Agent Mode</span>
+                                        <span class="tool-description">Full autonomous AI assistance (~60-80s). Uses all tools intelligently to solve complex problems and tasks.</span>
                                     </div>
                                     <label class="tool-toggle">
-                                        <input type="checkbox" class="tool-checkbox" data-tool="web">
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                                <div class="tool-toggle-item" data-tool="code">
-                                    <div class="tool-info">
-                                        <span class="tool-icon">💻</span>
-                                        <span class="tool-text">Write or code</span>
-                                    </div>
-                                    <label class="tool-toggle">
-                                        <input type="checkbox" class="tool-checkbox" data-tool="code">
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                                <div class="tool-toggle-item" data-tool="deepthink">
-                                    <div class="tool-info">
-                                        <span class="tool-icon">
-                                            <img src="/SVGs/Deepthink.svg" alt="Deep Think" style="width: 20px; height: 20px;">
-                                        </span>
-                                        <span class="tool-text">Deep Think (All AI + Search)</span>
-                                        <span class="tool-description">Uses all LLMs and search engines for comprehensive analysis</span>
-                                    </div>
-                                    <label class="tool-toggle">
-                                        <input type="checkbox" class="tool-checkbox" data-tool="deepthink">
+                                        <input type="checkbox" class="tool-checkbox" data-tool="agent">
                                         <span class="toggle-slider"></span>
                                     </label>
                                 </div>
@@ -278,9 +292,16 @@
                         <span class="input-hint">Enter to send • Shift+Enter for new line</span>
                     </div>
                     
-                    <!-- Hidden file inputs -->
-                    <input type="file" id="fileInput" multiple accept="*/*" style="display: none;">
-                    <input type="file" id="imageInput" multiple accept="image/*" style="display: none;">
+                    <!-- Progress Bar for Tool Operations -->
+                    <div class="progress-container" id="progressContainer" style="display: none;">
+                        <div class="progress-info">
+                            <span class="progress-text" id="progressText">Processing with AI tools...</span>
+                            <span class="progress-percent" id="progressPercent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                    </div>
                     
                     <!-- Add Files Dropdown -->
                     <div class="add-dropdown" id="addDropdown" style="display: none;">
@@ -314,62 +335,51 @@
                         <div class="tools-header">
                             <span>Available Tools</span>
                         </div>
-                        <div class="tool-toggle-item" data-tool="think">
+                        <div class="tool-toggle-item" data-tool="search">
                             <div class="tool-info">
-                                <span class="tool-icon">
-                                    <img src="/SVGs/thinking.svg" alt="Think" style="width: 20px; height: 20px;">
-                                </span>
-                                <span class="tool-text">Think for longer</span>
+                                <div class="tool-header">
+                                    <span class="tool-icon">
+                                        <img src="/SVGs/search.svg" alt="Search" style="width: 20px; height: 20px;">
+                                    </span>
+                                    <span class="tool-text">Quick Search</span>
+                                </div>
+                                <span class="tool-description">Fast answers using optimized AI models. Perfect for simple questions and quick lookups.</span>
+                                <span class="tool-performance">~20-25 seconds</span>
                             </div>
                             <label class="tool-toggle">
-                                <input type="checkbox" class="tool-checkbox-chat" data-tool="think">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="search">
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
-                        <div class="tool-toggle-item" data-tool="research">
+                        <div class="tool-toggle-item" data-tool="deepsearch">
                             <div class="tool-info">
-                                <span class="tool-icon">
-                                    <img src="/SVGs/deep search.svg" alt="Deep Research" style="width: 20px; height: 20px;">
-                                </span>
-                                <span class="tool-text">Run deep research</span>
+                                <div class="tool-header">
+                                    <span class="tool-icon">
+                                        <img src="/SVGs/deep search.svg" alt="Deep Search" style="width: 20px; height: 20px;">
+                                    </span>
+                                    <span class="tool-text">Deep Research</span>
+                                </div>
+                                <span class="tool-description">Comprehensive analysis with advanced reasoning. Breaks down complex topics and provides detailed insights.</span>
+                                <span class="tool-performance">~60-80 seconds</span>
                             </div>
                             <label class="tool-toggle">
-                                <input type="checkbox" class="tool-checkbox-chat" data-tool="research">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="deepsearch">
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
-                        <div class="tool-toggle-item" data-tool="web">
+                        <div class="tool-toggle-item" data-tool="agent">
                             <div class="tool-info">
-                                <span class="tool-icon">
-                                    <img src="/SVGs/search.svg" alt="Search Web" style="width: 20px; height: 20px;">
-                                </span>
-                                <span class="tool-text">Search the web</span>
+                                <div class="tool-header">
+                                    <span class="tool-icon">
+                                        <img src="/SVGs/Deepthink.svg" alt="Agent Mode" style="width: 20px; height: 20px;">
+                                    </span>
+                                    <span class="tool-text">Agent Mode</span>
+                                </div>
+                                <span class="tool-description">Full autonomous AI assistance. Uses all tools intelligently to solve complex problems and tasks.</span>
+                                <span class="tool-performance">~60-80 seconds</span>
                             </div>
                             <label class="tool-toggle">
-                                <input type="checkbox" class="tool-checkbox-chat" data-tool="web">
-                                <span class="toggle-slider"></span>
-                            </label>
-                        </div>
-                        <div class="tool-toggle-item" data-tool="code">
-                            <div class="tool-info">
-                                <span class="tool-icon">💻</span>
-                                <span class="tool-text">Write or code</span>
-                            </div>
-                            <label class="tool-toggle">
-                                <input type="checkbox" class="tool-checkbox-chat" data-tool="code">
-                                <span class="toggle-slider"></span>
-                            </label>
-                        </div>
-                        <div class="tool-toggle-item" data-tool="deepthink">
-                            <div class="tool-info">
-                                <span class="tool-icon">
-                                    <img src="/SVGs/Deepthink.svg" alt="Deep Think" style="width: 20px; height: 20px;">
-                                </span>
-                                <span class="tool-text">Deep Think (All AI + Search)</span>
-                                <span class="tool-description">Uses all LLMs and search engines for comprehensive analysis</span>
-                            </div>
-                            <label class="tool-toggle">
-                                <input type="checkbox" class="tool-checkbox-chat" data-tool="deepthink">
+                                <input type="checkbox" class="tool-checkbox-chat" data-tool="agent">
                                 <span class="toggle-slider"></span>
                             </label>
                         </div>
@@ -418,16 +428,60 @@
             </div>
         </main>
         
+        <!-- Voice Status Indicator -->
+        <div class="voice-status" id="voiceStatus">
+            <div class="voice-status-icon">🎤</div>
+            <div class="voice-status-text" id="voiceStatusText">Listening...</div>
+        </div>
+        
+        <!-- File Upload Status Indicator -->
+        <div class="file-upload-status" id="fileUploadStatus">
+            <div class="file-upload-icon">📄</div>
+            <div class="file-upload-text" id="fileUploadText">Uploading file...</div>
+            <div class="file-upload-progress">
+                <div class="file-upload-bar" id="fileUploadBar"></div>
+            </div>
+        </div>
+        
         <!-- Mobile FAB Button for Tools (shown only on mobile) -->
         <button class="mobile-tools-fab" id="mobileToolsFab" style="display: none;" title="Toggle Tools">
             <span>⚙️</span>
         </button>
         
         <!-- Sidebar Overlay for Mobile -->
-        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+        <div class="sidebar-overlay" id="sidebarOverlay" 
+             onclick="document.getElementById('sidebar').classList.remove('active');this.classList.remove('active');"></div>
     </div>
 
-    <script src="voice-chat.js"></script>
-    <script src="modern-chat-script.js"></script>
+    <script src="voice-chat.js?v=3.3"></script>
+    <script src="modern-chat-script.js?v=3.3"></script>
+    <script>
+        // Authentication check - redirect to login if not authenticated
+        (function() {
+            const token = localStorage.getItem('auth_token');
+            if (!token) {
+                window.location.href = '/';
+                return;
+            }
+            
+            // Verify token and set auth header for all API calls
+            fetch('/api/auth/me', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.user) {
+                    localStorage.removeItem('auth_token');
+                    localStorage.removeItem('user');
+                    window.location.href = '/';
+                }
+            })
+            .catch(() => {
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('user');
+                window.location.href = '/';
+            });
+        })();
+    </script>
 </body>
 </html>

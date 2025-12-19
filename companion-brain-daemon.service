@@ -1,0 +1,21 @@
+[Unit]
+Description=Autonomous Companion Brain Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%PROJECT_DIR%
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=%PYTHON_PATH% %PROJECT_DIR%/companion_baas/autonomous/start_daemon.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/companion-brain/daemon.log
+StandardError=append:/var/log/companion-brain/daemon-error.log
+
+# Resource limits (optional)
+# MemoryLimit=2G
+# CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

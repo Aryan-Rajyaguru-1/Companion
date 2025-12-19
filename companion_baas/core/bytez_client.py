@@ -21,13 +21,26 @@ class BytezClient:
     Free tier: 0-10B params, unlimited tokens, 1 concurrent request
     """
     
-    # Popular models on Bytez platform
+    # Popular models on Bytez platform (with proper chat templates)
     RECOMMENDED_MODELS = {
-        'chat': 'Qwen/Qwen3-4B-Instruct-2507',  # Fast chat model
-        'code': 'deepseek-ai/deepseek-coder-1.3b-instruct',  # Code generation
-        'reasoning': 'microsoft/phi-2',  # Reasoning tasks
-        'general': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',  # Very fast
-        'multilingual': 'facebook/mbart-large-50-many-to-many-mmt',  # Translation
+        'chat': 'Qwen/Qwen2.5-3B-Instruct',  # Fast chat model with chat template
+        'code': 'Qwen/Qwen2.5-Coder-3B-Instruct',  # Code generation
+        'reasoning': 'Qwen/Qwen2.5-3B-Instruct',  # Reasoning tasks
+        'general': 'Qwen/Qwen2.5-3B-Instruct',  # Reliable model
+        'multilingual': 'Qwen/Qwen2.5-3B-Instruct',  # Multi-purpose
+    }
+    
+    # Model name aliases - map short names to full model IDs
+    # Using models that have proper chat templates configured
+    MODEL_ALIASES = {
+        'qwen-4b': 'Qwen/Qwen2.5-3B-Instruct',  # Qwen with proper chat template
+        'phi-2-reasoner': 'Qwen/Qwen2.5-3B-Instruct',  # Fallback to working model
+        'phi-2': 'Qwen/Qwen2.5-3B-Instruct',  # Fallback to working model
+        'deepseek-coder': 'deepseek-ai/deepseek-coder-1.3b-instruct',
+        'tinyllama': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
+        'qwen-32b': 'Qwen/Qwen2.5-3B-Instruct',  # All map to same working model
+        'qwen-72b': 'Qwen/Qwen2.5-3B-Instruct',
+        'qwen-math': 'Qwen/Qwen2.5-3B-Instruct',
     }
     
     def __init__(self, api_key: str):
@@ -92,13 +105,35 @@ class BytezClient:
             if not model:
                 model = self.RECOMMENDED_MODELS.get(task_type, self.RECOMMENDED_MODELS['chat'])
             
+            # Resolve model aliases
+            model = self.MODEL_ALIASES.get(model, model)
+            
             logger.info(f"🤖 Bytez request to {model}")
             
             # Get model instance
             model_instance = self.client.model(model)
             
             # Run inference
-            result = model_instance.run(messages)
+            try:
+                result = model_instance.run(messages)
+            except Exception as run_error:
+                logger.error(f"❌ Bytez model.run() failed: {run_error}")
+                return {
+                    'success': False,
+                    'error': f"Model execution failed: {str(run_error)}",
+                    'response': None,
+                    'model': model
+                }
+            
+            # Check if result is None or invalid
+            if result is None:
+                logger.error(f"❌ Bytez returned None for model {model}")
+                return {
+                    'success': False,
+                    'error': f"Model {model} returned no response (may not exist)",
+                    'response': None,
+                    'model': model
+                }
             
             # Check for errors
             if hasattr(result, 'error') and result.error:

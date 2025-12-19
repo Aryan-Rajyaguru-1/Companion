@@ -1,6 +1,72 @@
 // Modern Chat Interface JavaScript
 
 class ModernChatInterface {
+        // --- AUTH MANAGEMENT ---
+        async checkAuthOnLoad() {
+            // Check for token in storage
+            const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
+            if (!token) {
+                this.showLoginModal();
+                return false;
+            }
+            // Validate token with backend
+            try {
+                const res = await fetch(`${this.apiBaseUrl}/auth/me`, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.status === 401) {
+                    this.clearAuth();
+                    this.showLoginModal();
+                    return false;
+                }
+                const data = await res.json();
+                if (!data.user) {
+                    this.clearAuth();
+                    this.showLoginModal();
+                    return false;
+                }
+                // Valid user
+                this.currentUser = data.user;
+                this.hideLoginModal();
+                return true;
+            } catch (e) {
+                this.clearAuth();
+                this.showLoginModal();
+                return false;
+            }
+        }
+
+        clearAuth() {
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem('user_data');
+            sessionStorage.removeItem('auth_token');
+            sessionStorage.removeItem('user_data');
+            this.currentUser = null;
+        }
+
+        // Show/hide login modal (implement modal in HTML if not present)
+        showLoginModal() {
+            const modal = document.getElementById('loginModal');
+            if (modal) modal.style.display = 'flex';
+        }
+        hideLoginModal() {
+            const modal = document.getElementById('loginModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        // Wrap fetch to auto-handle 401 and token
+        async authFetch(url, options = {}) {
+            const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
+            options.headers = options.headers || {};
+            if (token) options.headers['Authorization'] = 'Bearer ' + token;
+            let response = await fetch(url, options);
+            if (response.status === 401) {
+                this.clearAuth();
+                this.showLoginModal();
+                throw new Error('Unauthorized');
+            }
+            return response;
+        }
     constructor() {
         this.currentChatId = null;
         this.chatHistory = [];
@@ -10,14 +76,18 @@ class ModernChatInterface {
         
         this.initializeElements();
         this.bindEvents();
-        this.loadChatHistory();
+        // --- AUTH: Check on load ---
+        this.checkAuthOnLoad().then((authed) => {
+            if (authed) {
+                this.loadChatHistory();
+            }
+        });
         this.initializeToolToggles();
         this.setupFileUpload(); // Initialize file upload functionality
         this.initializeSearch(); // Initialize search functionality
         this.initializeMobileMenu(); // Initialize mobile menu
         this.initializeVoiceChat(); // Initialize voice chat functionality
         this.fixMainSearchDropdown(); // Fix main search bar dropdown
-        
         // Initial height adjustment and window resize handler
         setTimeout(() => this.adjustChatAreaHeight(), 100);
         window.addEventListener('resize', () => this.adjustChatAreaHeight());
@@ -128,6 +198,20 @@ class ModernChatInterface {
                     dd.classList.remove('show');
                 });
             }
+            
+            // Handle logout button
+            if (e.target.classList.contains('logout') || e.target.closest('.logout')) {
+                e.preventDefault();
+                this.clearAuth();
+                window.location.href = '/login.html';
+            }
+            
+            // Handle logout clicks
+            if (e.target.classList.contains('logout') || e.target.closest('.logout')) {
+                e.preventDefault();
+                this.clearAuth();
+                window.location.href = 'login.html';
+            }
         });
         
         // Auto-resize textarea
@@ -165,10 +249,9 @@ class ModernChatInterface {
             this.activeToolsContainer.style.display = 'flex';
             this.activeToolsList.innerHTML = Array.from(this.activeTools).map(tool => {
                 const toolNames = {
-                    'think': '🧠 Think',
-                    'research': '🔍 Research', 
-                    'web': '🌐 Web',
-                    'code': '💻 Code'
+                    'search': '🔍 Search',
+                    'deepsearch': '� Deep Search',
+                    'agent': '🤖 Agent Mode'
                 };
                 return `<span class="active-tool">${toolNames[tool] || tool}</span>`;
             }).join('');
@@ -226,29 +309,35 @@ class ModernChatInterface {
         this.showTypingIndicator();
         
         try {
-            // Collect active tools from checkboxes
-            const activeTools = Array.from(document.querySelectorAll('.tool-checkbox:checked')).map(cb => cb.dataset.tool);
-            
-            // Send message to backend
-            const response = await fetch(`${this.apiBaseUrl}/conversations/${this.currentChatId}/messages`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ 
-                    message: message,
-                    tools: activeTools  // Include selected tools
-                })
-            });
-            
-            if (!response.ok) {
-                throw new Error('Failed to send message');
-            }
-            
-            const data = await response.json();
-            
-            // Remove typing indicator
-            this.removeTypingIndicator();
+        // Collect active tools from checkboxes
+        const activeTools = Array.from(document.querySelectorAll('.tool-checkbox:checked')).map(cb => cb.dataset.tool);
+
+        // Show progress bar for tool operations
+        if (activeTools.length > 0) {
+            this.showProgressBar(activeTools[0]); // Show progress for the first active tool
+        }
+        
+        // Send message to backend (with auth, 401 auto-handling)
+        const response = await this.authFetch(`${this.apiBaseUrl}/conversations/${this.currentChatId}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+                message: message,
+                tools: activeTools  // Include selected tools
+            })
+        });
+        if (!response.ok) {
+            throw new Error('Failed to send message');
+        }
+        const data = await response.json();
+        
+        // Hide progress bar
+        this.hideProgressBar();
+        
+        // Remove typing indicator
+        this.removeTypingIndicator();
             
             // Add AI response with learned status and thinking data if available
             const thinkingData = data.assistant_message.thinking || null;
@@ -259,6 +348,7 @@ class ModernChatInterface {
             
         } catch (error) {
             console.error('Error sending message:', error);
+            this.hideProgressBar(); // Hide progress bar on error
             this.removeTypingIndicator();
             this.addMessage('assistant', 'Sorry, I encountered an error. Please try again.');
         }
@@ -1008,19 +1098,152 @@ class ModernChatInterface {
         }
     }
 
+    // Progress Bar Methods
+    showProgressBar(tool) {
+        const progressContainer = document.getElementById('progressContainer');
+        const progressText = document.getElementById('progressText');
+        const progressFill = document.getElementById('progressFill');
+
+        if (!progressContainer) return;
+
+        // Set tool-specific text and styling
+        let toolName = 'AI';
+        let estimatedTime = '30-60 seconds';
+        let statusMessage = 'Initializing...';
+
+        switch(tool) {
+            case 'search':
+                toolName = 'Quick Search';
+                estimatedTime = '20-25 seconds';
+                statusMessage = 'Searching with optimized AI models...';
+                progressFill.className = 'progress-fill search';
+                break;
+            case 'deepsearch':
+                toolName = 'Deep Research';
+                estimatedTime = '60-80 seconds';
+                statusMessage = 'Analyzing with advanced reasoning...';
+                progressFill.className = 'progress-fill deepsearch';
+                break;
+            case 'agent':
+                toolName = 'Agent Mode';
+                estimatedTime = '60-80 seconds';
+                statusMessage = 'Activating autonomous AI assistance...';
+                progressFill.className = 'progress-fill agent';
+                break;
+            default:
+                progressFill.className = 'progress-fill';
+        }
+
+        progressText.textContent = `${statusMessage} (~${estimatedTime})`;
+        progressContainer.style.display = 'block';
+
+        // Reset progress
+        progressFill.style.width = '0%';
+        document.getElementById('progressPercent').textContent = '0%';
+
+        // Start progress animation with status updates
+        this.startProgressAnimation(tool);
+    }
+
+    hideProgressBar() {
+        const progressContainer = document.getElementById('progressContainer');
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
+        this.stopProgressAnimation();
+    }
+
+    startProgressAnimation(tool) {
+        this.progressInterval = setInterval(() => {
+            const progressFill = document.getElementById('progressFill');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressText = document.getElementById('progressText');
+
+            if (!progressFill) return;
+
+            let currentWidth = parseFloat(progressFill.style.width) || 0;
+            let increment = 0;
+            let statusUpdate = '';
+
+            // Different progress speeds and status updates for different tools
+            switch(tool) {
+                case 'search':
+                    increment = Math.random() * 3 + 1; // Faster for search
+                    if (currentWidth < 30) statusUpdate = 'Searching with optimized AI models...';
+                    else if (currentWidth < 70) statusUpdate = 'Processing results...';
+                    else statusUpdate = 'Finalizing response...';
+                    break;
+                case 'deepsearch':
+                case 'agent':
+                    increment = Math.random() * 1.5 + 0.5; // Slower for complex tasks
+                    if (currentWidth < 20) statusUpdate = 'Analyzing with advanced reasoning...';
+                    else if (currentWidth < 50) statusUpdate = 'Exploring multiple perspectives...';
+                    else if (currentWidth < 75) statusUpdate = 'Synthesizing information...';
+                    else statusUpdate = 'Generating comprehensive response...';
+                    break;
+                default:
+                    increment = Math.random() * 2 + 0.5;
+            }
+
+            currentWidth = Math.min(currentWidth + increment, 95); // Cap at 95%
+            progressFill.style.width = currentWidth + '%';
+            progressPercent.textContent = Math.round(currentWidth) + '%';
+
+            // Update status text if we have a new message
+            if (statusUpdate && progressText) {
+                const currentText = progressText.textContent;
+                const timeMatch = currentText.match(/\(~[\d-]+ seconds\)/);
+                const timePart = timeMatch ? timeMatch[0] : '';
+                progressText.textContent = `${statusUpdate} ${timePart}`;
+            }
+
+        }, 800); // Slightly slower updates for better UX
+    }
+
+    stopProgressAnimation() {
+        if (this.progressInterval) {
+            clearInterval(this.progressInterval);
+            this.progressInterval = null;
+        }
+
+        // Complete the progress bar with animation
+        const progressFill = document.getElementById('progressFill');
+        const progressPercent = document.getElementById('progressPercent');
+        const progressText = document.getElementById('progressText');
+
+        if (progressFill && progressPercent) {
+            // Animate to 100%
+            progressFill.style.width = '100%';
+            progressPercent.textContent = '100%';
+
+            // Update status to completion
+            if (progressText) {
+                progressText.textContent = '✅ Response complete!';
+                progressText.style.color = 'var(--success-color)';
+            }
+
+            // Add completion animation
+            progressFill.style.animation = 'progressComplete 0.6s ease-out';
+
+            // Hide after completion celebration
+            setTimeout(() => {
+                this.hideProgressBar();
+                // Reset text color
+                if (progressText) {
+                    progressText.style.color = '';
+                }
+            }, 1500);
+        }
+    }
+
     async loadChatHistory() {
         try {
-            console.log('Loading chat history from:', `${this.apiBaseUrl}/conversations`);
-            const response = await fetch(`${this.apiBaseUrl}/conversations`);
-            
+            const response = await this.authFetch(`${this.apiBaseUrl}/conversations`);
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
-            
             const conversations = await response.json();
-            console.log('Loaded conversations:', conversations);
             this.updateChatHistorySidebar(conversations);
-            
         } catch (error) {
             console.error('Error loading chat history:', error);
             this.showEmptyHistoryState();
@@ -1180,7 +1403,8 @@ class ModernChatInterface {
                 throw new Error('Failed to load conversation');
             }
             
-            const messages = await response.json();
+            const data = await response.json();
+            const messages = data.messages || [];
             
             // Clear current messages
             this.chatMessages.innerHTML = '';
@@ -1269,17 +1493,28 @@ class ModernChatInterface {
     }
 
     formatDate(dateString) {
-        const date = new Date(dateString);
+        // Ensure UTC parsing: if no 'Z' or timezone, add 'Z'
+        let safeDateString = dateString;
+        if (typeof safeDateString === 'string' && !safeDateString.match(/[zZ]|[+-]\d{2}:?\d{2}$/)) {
+            safeDateString += 'Z';
+        }
+        const date = new Date(safeDateString);
         const now = new Date();
         const diff = now - date;
+        const minutes = Math.floor(diff / (1000 * 60));
         const hours = Math.floor(diff / (1000 * 60 * 60));
-        
-        if (hours < 1) {
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+        if (minutes < 1) {
             return 'Just now';
+        } else if (minutes < 60) {
+            return `${minutes}m ago`;
         } else if (hours < 24) {
             return `${hours}h ago`;
+        } else if (days < 7) {
+            return `${days}d ago`;
         } else {
-            return date.toLocaleDateString();
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
         }
     }
 
@@ -1718,9 +1953,32 @@ class ModernChatInterface {
         const files = Array.from(event.target.files);
         if (files.length === 0) return;
 
-        files.forEach(file => {
+        // Validate file sizes (max 10MB per file)
+        const maxSize = 10 * 1024 * 1024; // 10MB
+        const oversizedFiles = files.filter(file => file.size > maxSize);
+
+        if (oversizedFiles.length > 0) {
+            this.showFileUploadStatus(`File too large: ${oversizedFiles[0].name} (${this.formatFileSize(oversizedFiles[0].size)}). Max size: 10MB`, 'error');
+            setTimeout(() => this.hideFileUploadStatus(), 4000);
+            return;
+        }
+
+        files.forEach((file, index) => {
+            // Show upload progress
+            this.showFileUploadStatus(`Reading ${file.name}...`, 'uploading');
+            this.updateFileUploadProgress(10);
+
             const reader = new FileReader();
+
+            reader.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percentComplete = Math.round((e.loaded / e.total) * 80) + 10; // 10-90%
+                    this.updateFileUploadProgress(percentComplete);
+                }
+            };
+
             reader.onload = (e) => {
+                this.updateFileUploadProgress(100);
                 const content = e.target.result;
                 const fileInfo = {
                     name: file.name,
@@ -1728,11 +1986,21 @@ class ModernChatInterface {
                     type: file.type,
                     content: content
                 };
-                
+
                 this.addFileToChat(fileInfo);
+
+                // Show success
+                this.showFileUploadStatus(`✅ ${file.name} uploaded successfully`, 'success');
+                setTimeout(() => this.hideFileUploadStatus(), 2000);
             };
-            
-            if (file.type.startsWith('text/') || file.name.endsWith('.md') || file.name.endsWith('.txt')) {
+
+            reader.onerror = () => {
+                this.showFileUploadStatus(`❌ Failed to read ${file.name}`, 'error');
+                setTimeout(() => this.hideFileUploadStatus(), 3000);
+            };
+
+            // Start reading based on file type
+            if (file.type.startsWith('text/') || file.name.endsWith('.md') || file.name.endsWith('.txt') || file.name.endsWith('.json')) {
                 reader.readAsText(file);
             } else {
                 reader.readAsDataURL(file);
@@ -1747,18 +2015,58 @@ class ModernChatInterface {
         const files = Array.from(event.target.files);
         if (files.length === 0) return;
 
-        files.forEach(file => {
+        // Validate file sizes (max 10MB per file)
+        const maxSize = 10 * 1024 * 1024; // 10MB
+        const oversizedFiles = files.filter(file => file.size > maxSize);
+
+        if (oversizedFiles.length > 0) {
+            this.showFileUploadStatus(`Image too large: ${oversizedFiles[0].name} (${this.formatFileSize(oversizedFiles[0].size)}). Max size: 10MB`, 'error');
+            setTimeout(() => this.hideFileUploadStatus(), 4000);
+            return;
+        }
+
+        files.forEach((file, index) => {
+            // Validate image types
+            if (!file.type.startsWith('image/')) {
+                this.showFileUploadStatus(`Invalid file type: ${file.name}. Please select an image file.`, 'error');
+                setTimeout(() => this.hideFileUploadStatus(), 3000);
+                return;
+            }
+
+            // Show upload progress
+            this.showFileUploadStatus(`Processing ${file.name}...`, 'uploading');
+            this.updateFileUploadProgress(10);
+
             const reader = new FileReader();
+
+            reader.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percentComplete = Math.round((e.loaded / e.total) * 80) + 10; // 10-90%
+                    this.updateFileUploadProgress(percentComplete);
+                }
+            };
+
             reader.onload = (e) => {
+                this.updateFileUploadProgress(100);
                 const imageInfo = {
                     name: file.name,
                     size: file.size,
                     type: file.type,
                     dataUrl: e.target.result
                 };
-                
+
                 this.addImageToChat(imageInfo);
+
+                // Show success
+                this.showFileUploadStatus(`✅ ${file.name} uploaded successfully`, 'success');
+                setTimeout(() => this.hideFileUploadStatus(), 2000);
             };
+
+            reader.onerror = () => {
+                this.showFileUploadStatus(`❌ Failed to read ${file.name}`, 'error');
+                setTimeout(() => this.hideFileUploadStatus(), 3000);
+            };
+
             reader.readAsDataURL(file);
         });
 
@@ -2082,20 +2390,34 @@ class ModernChatInterface {
     }
 
     initializeMobileMenu() {
+        console.log('🔧 Initializing mobile menu...');
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
         const sidebar = document.getElementById('sidebar');
         const sidebarOverlay = document.getElementById('sidebarOverlay');
+        
+        console.log('Mobile menu elements:', { 
+            button: !!mobileMenuBtn, 
+            sidebar: !!sidebar, 
+            overlay: !!sidebarOverlay 
+        });
         
         if (mobileMenuBtn && sidebar && sidebarOverlay) {
             // Toggle sidebar on button click
             mobileMenuBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
+                console.log('📱 Mobile menu button clicked!');
+                const isActive = sidebar.classList.contains('active');
+                console.log('Current state:', isActive ? 'open' : 'closed');
+                
                 sidebar.classList.toggle('active');
                 sidebarOverlay.classList.toggle('active');
+                
+                console.log('New state:', sidebar.classList.contains('active') ? 'open' : 'closed');
             });
             
             // Close sidebar when overlay is clicked
             sidebarOverlay.addEventListener('click', () => {
+                console.log('📱 Overlay clicked, closing sidebar');
                 sidebar.classList.remove('active');
                 sidebarOverlay.classList.remove('active');
             });
@@ -2105,6 +2427,7 @@ class ModernChatInterface {
             historyItems.forEach(item => {
                 item.addEventListener('click', () => {
                     if (window.innerWidth <= 768) {
+                        console.log('📱 History item clicked on mobile, closing sidebar');
                         sidebar.classList.remove('active');
                         sidebarOverlay.classList.remove('active');
                     }
@@ -2116,11 +2439,16 @@ class ModernChatInterface {
             if (newChatBtn) {
                 newChatBtn.addEventListener('click', () => {
                     if (window.innerWidth <= 768) {
+                        console.log('📱 New chat clicked on mobile, closing sidebar');
                         sidebar.classList.remove('active');
                         sidebarOverlay.classList.remove('active');
                     }
                 });
             }
+            
+            console.log('✅ Mobile menu initialized successfully');
+        } else {
+            console.error('❌ Mobile menu initialization failed - missing elements');
         }
         
         // Setup mobile tools FAB
@@ -2238,76 +2566,101 @@ class ModernChatInterface {
     
     handleListeningStart() {
         console.log('🎤 Listening started');
-        
+
         // Update all voice buttons to show listening state
         const voiceButtons = document.querySelectorAll('.voice-btn');
         voiceButtons.forEach(btn => {
             btn.classList.add('listening');
-            btn.style.backgroundColor = '#ef4444';
-            btn.style.animation = 'pulse 1.5s infinite';
+            btn.setAttribute('aria-label', 'Stop voice input');
         });
-        
-        // Show listening indicator
-        this.showNotification('🎤 Listening... Speak now', 'info', 3000);
+
+        // Show voice status indicator
+        this.showVoiceStatus('Listening... Speak now', 'listening');
     }
-    
+
     handleListeningEnd() {
         console.log('🎤 Listening ended');
-        
+
         // Reset all voice buttons
         const voiceButtons = document.querySelectorAll('.voice-btn');
         voiceButtons.forEach(btn => {
             btn.classList.remove('listening');
-            btn.style.backgroundColor = '';
-            btn.style.animation = '';
+            btn.setAttribute('aria-label', 'Start voice input');
         });
+
+        // Hide voice status indicator
+        this.hideVoiceStatus();
     }
-    
+
     handleListeningError(error) {
         console.error('🎤 Listening error:', error);
-        
+
         const errorMessages = {
             'no-speech': 'No speech detected. Please try again.',
             'audio-capture': 'Microphone access denied or not available.',
-            'not-allowed': 'Microphone permission denied. Please allow microphone access.',
-            'network': 'Network error. Please check your connection.'
+            'not-allowed': 'Microphone permission denied. Please allow microphone access and refresh the page.',
+            'network': 'Network error. Please check your connection.',
+            'service-not-allowed': 'Voice recognition service not available.',
+            'aborted': 'Voice input was cancelled.',
+            'language-not-supported': 'Selected language is not supported.',
+            'bad-grammar': 'Speech recognition grammar error.'
         };
-        
+
         const message = errorMessages[error] || `Voice input error: ${error}`;
-        this.showNotification(message, 'error');
+
+        // Reset voice buttons
+        const voiceButtons = document.querySelectorAll('.voice-btn');
+        voiceButtons.forEach(btn => {
+            btn.classList.remove('listening');
+            btn.setAttribute('aria-label', 'Start voice input');
+        });
+
+        // Show error status
+        this.showVoiceStatus(message, 'error');
+
+        // Hide error after 5 seconds
+        setTimeout(() => this.hideVoiceStatus(), 5000);
     }
     
     handleTranscriptInterim(transcript) {
         console.log('🎤 Interim:', transcript);
-        
+
         // Show interim results in input field (with lighter text)
         const input = this.currentVoiceContext === 'search' ? this.chatInput : this.chatTextarea;
         if (input) {
             input.value = transcript;
             input.style.opacity = '0.6';
+            input.style.fontStyle = 'italic';
         }
+
+        // Update status indicator
+        this.updateVoiceStatus(`"${transcript}"`, 'listening');
     }
-    
+
     handleTranscriptFinal(transcript) {
         console.log('🎤 Final:', transcript);
-        
+
         // Set final transcript in input field
         const input = this.currentVoiceContext === 'search' ? this.chatInput : this.chatTextarea;
         if (input) {
             input.value = transcript;
             input.style.opacity = '1';
-            
+            input.style.fontStyle = 'normal';
+
             // Focus input
             input.focus();
-            
+
             // Update char count if in chat mode
             if (this.currentVoiceContext === 'chat') {
                 this.updateCharCount();
             }
         }
-        
-        // Show success notification
-        this.showNotification('✅ Voice input captured', 'success', 2000);
+
+        // Show success status
+        this.showVoiceStatus('✅ Voice input captured', 'success');
+
+        // Hide success status after 2 seconds
+        setTimeout(() => this.hideVoiceStatus(), 2000);
     }
     
     handleSpeakingStart() {
@@ -2329,22 +2682,84 @@ class ModernChatInterface {
         messages.forEach(msg => msg.classList.remove('speaking'));
     }
     
-    // Method to speak AI responses
-    speakResponse(text) {
-        // Clean markdown and special characters from text
-        const cleanText = text
-            .replace(/[*_~`#]/g, '')  // Remove markdown
-            .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')  // Convert links to just text
-            .replace(/```[\s\S]*?```/g, 'code block')  // Replace code blocks
-            .replace(/`[^`]+`/g, 'code')  // Replace inline code
-            .replace(/\n+/g, '. ')  // Convert newlines to periods
-            .trim();
-        
-        this.voiceChat.speak(cleanText, {
-            rate: 1.0,
-            pitch: 1.0,
-            volume: 0.8
-        });
+    showVoiceStatus(message, type = 'info') {
+        const statusElement = document.getElementById('voiceStatus');
+        const statusText = document.getElementById('voiceStatusText');
+        const statusIcon = statusElement.querySelector('.voice-status-icon');
+
+        if (!statusElement || !statusText) return;
+
+        // Update text and type
+        statusText.textContent = message;
+        statusElement.className = `voice-status ${type}`;
+
+        // Update icon based on type
+        const icons = {
+            listening: '🎤',
+            success: '✅',
+            error: '❌',
+            info: 'ℹ️'
+        };
+        statusIcon.textContent = icons[type] || icons.info;
+
+        // Show the status
+        statusElement.classList.add('show');
+    }
+
+    updateVoiceStatus(message, type = 'info') {
+        const statusElement = document.getElementById('voiceStatus');
+        const statusText = document.getElementById('voiceStatusText');
+
+        if (!statusElement || !statusText || !statusElement.classList.contains('show')) return;
+
+        statusText.textContent = message;
+        statusElement.className = `voice-status ${type}`;
+    }
+
+    hideVoiceStatus() {
+        const statusElement = document.getElementById('voiceStatus');
+        if (statusElement) {
+            statusElement.classList.remove('show');
+        }
+    }
+
+    showFileUploadStatus(message, type = 'uploading') {
+        const statusElement = document.getElementById('fileUploadStatus');
+        const statusText = document.getElementById('fileUploadText');
+        const statusIcon = statusElement.querySelector('.file-upload-icon');
+
+        if (!statusElement || !statusText) return;
+
+        // Update text and type
+        statusText.textContent = message;
+        statusElement.className = `file-upload-status ${type}`;
+
+        // Update icon based on type
+        const icons = {
+            uploading: '📄',
+            success: '✅',
+            error: '❌'
+        };
+        statusIcon.textContent = icons[type] || icons.uploading;
+
+        // Show the status
+        statusElement.classList.add('show');
+    }
+
+    updateFileUploadProgress(percent) {
+        const progressBar = document.getElementById('fileUploadBar');
+        if (progressBar) {
+            progressBar.style.width = percent + '%';
+        }
+    }
+
+    hideFileUploadStatus() {
+        const statusElement = document.getElementById('fileUploadStatus');
+        if (statusElement) {
+            statusElement.classList.remove('show');
+            // Reset progress bar
+            this.updateFileUploadProgress(0);
+        }
     }
     
     // Add edit query button to messages
@@ -2721,6 +3136,66 @@ class ModernChatInterface {
             }
         }
     }
+}
+
+// Standalone mobile menu initialization (runs immediately)
+function initStandaloneMobileMenu() {
+    console.log('🔧 Standalone mobile menu initializing...');
+    
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    const sidebar = document.getElementById('sidebar');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
+    
+    console.log('Elements found:', {
+        button: !!mobileMenuBtn,
+        sidebar: !!sidebar,
+        overlay: !!sidebarOverlay
+    });
+    
+    if (mobileMenuBtn && sidebar && sidebarOverlay) {
+        console.log('✅ All elements found, attaching click handler');
+        
+        // Remove any existing listeners
+        const newBtn = mobileMenuBtn.cloneNode(true);
+        mobileMenuBtn.parentNode.replaceChild(newBtn, mobileMenuBtn);
+        
+        newBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('🎯 MOBILE MENU CLICKED!');
+            
+            const isOpen = sidebar.classList.contains('active');
+            console.log('Sidebar currently:', isOpen ? 'OPEN' : 'CLOSED');
+            
+            if (isOpen) {
+                sidebar.classList.remove('active');
+                sidebarOverlay.classList.remove('active');
+                console.log('➡️ Closing sidebar');
+            } else {
+                sidebar.classList.add('active');
+                sidebarOverlay.classList.add('active');
+                console.log('⬅️ Opening sidebar');
+            }
+        });
+        
+        // Close on overlay click
+        sidebarOverlay.addEventListener('click', function() {
+            console.log('🎯 Overlay clicked, closing sidebar');
+            sidebar.classList.remove('active');
+            sidebarOverlay.classList.remove('active');
+        });
+        
+        console.log('✅ Standalone mobile menu initialized');
+    } else {
+        console.error('❌ Missing elements for mobile menu');
+    }
+}
+
+// Run immediately when script loads
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initStandaloneMobileMenu);
+} else {
+    initStandaloneMobileMenu();
 }
 
 // Initialize the chat interface when DOM is loaded

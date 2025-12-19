@@ -72,19 +72,24 @@ class SemanticCache:
         self.model = None
         self.hits = 0
         self.misses = 0
+        self.model_name = model_name  # Store model name for lazy loading
         
-        if SENTENCE_TRANSFORMERS_AVAILABLE:
+        # Don't initialize model during startup - lazy load when needed
+        logger.info("✅ Semantic cache initialized (lazy loading)")
+    
+    def _ensure_model_loaded(self):
+        """Lazy load the sentence transformer model when needed"""
+        if self.model is None and SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
-                self.model = SentenceTransformer(model_name)
-                logger.info(f"✅ Semantic cache initialized with model: {model_name}")
+                self.model = SentenceTransformer(self.model_name)
+                logger.info(f"✅ Semantic cache model loaded: {self.model_name}")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to load semantic cache model: {e}")
                 self.model = None
-        else:
-            logger.debug("Semantic cache disabled (sentence-transformers not installed)")
     
     def _compute_embedding(self, text: str) -> Optional[np.ndarray]:
         """Compute embedding for text"""
+        self._ensure_model_loaded()
         if not self.model:
             return None
         try:
@@ -239,8 +244,8 @@ class MultiModelConsensus:
             Dict with combined response, confidence, and individual results
         """
         if not models:
-            # Use diverse model set for consensus
-            models = ['qwen-4b', 'phi-2-reasoner', 'deepseek-coder']
+            # Use diverse model set for consensus (using OpenRouter for reliability)
+            models = ['qwen-4b', 'qwen-4b', 'deepseek-coder']  # Removed phi-2-reasoner
         
         self.consensus_queries += 1
         logger.info(f"🤝 Running consensus query with {len(models)} models")
@@ -856,10 +861,10 @@ class CircuitBreaker:
 # PHASE 1: KNOWLEDGE LAYER
 # ============================================================================
 try:
-    from config import get_config  # Import config from companion_baas/config
-    from knowledge.elasticsearch_client import ElasticsearchClient
-    from knowledge.vector_store import VectorStore
-    from knowledge.retriever import KnowledgeRetriever  # Fixed: retriever not knowledge_retriever
+    from companion_baas.config import get_config  # Import config from companion_baas/config
+    from companion_baas.knowledge.elasticsearch_client import ElasticsearchClient
+    from companion_baas.knowledge.vector_store import VectorStore
+    from companion_baas.knowledge.retriever import KnowledgeRetriever  # Fixed: retriever not knowledge_retriever
     PHASE1_AVAILABLE = True
     logger.info("✅ Phase 1 (Knowledge Layer) loaded")
 except ImportError as e:
@@ -870,8 +875,8 @@ except ImportError as e:
 # PHASE 2: SEARCH LAYER
 # ============================================================================
 try:
-    from search.meilisearch_client import MeilisearchClient
-    from search.search_engine import SearchEngine
+    from companion_baas.search.meilisearch_client import MeilisearchClient
+    from companion_baas.search.search_engine import SearchEngine
     PHASE2_AVAILABLE = True
     logger.info("✅ Phase 2 (Search Layer) loaded")
 except ImportError as e:
@@ -882,9 +887,9 @@ except ImportError as e:
 # PHASE 3: WEB INTELLIGENCE
 # ============================================================================
 try:
-    from web_intelligence.crawler import WebContentCrawler  # Fixed: WebContentCrawler not WebCrawler
-    from web_intelligence.api_clients.news_api import NewsAPIClient
-    from web_intelligence.api_clients.search_api import WebSearchClient  # Fixed: WebSearchClient not SearchAPIClient
+    from companion_baas.web_intelligence.crawler import WebContentCrawler  # Fixed: WebContentCrawler not WebCrawler
+    from companion_baas.web_intelligence.api_clients.news_api import NewsAPIClient
+    from companion_baas.web_intelligence.api_clients.search_api import WebSearchClient  # Fixed: WebSearchClient not SearchAPIClient
     PHASE3_AVAILABLE = True
     logger.info("✅ Phase 3 (Web Intelligence) loaded")
 except ImportError as e:
@@ -895,10 +900,10 @@ except ImportError as e:
 # PHASE 4: EXECUTION & GENERATION
 # ============================================================================
 try:
-    from execution.code_executor import CodeExecutor
-    from tools.tool_registry import ToolRegistry
-    from tools.tool_executor import ToolExecutor
-    from tools.builtin_tools import register_builtin_tools
+    from companion_baas.execution.code_executor import CodeExecutor
+    from companion_baas.tools.tool_registry import ToolRegistry
+    from companion_baas.tools.tool_executor import ToolExecutor
+    from companion_baas.tools.builtin_tools import register_builtin_tools
     PHASE4_AVAILABLE = True
     logger.info("✅ Phase 4 (Execution & Generation) loaded")
 except ImportError as e:
@@ -909,9 +914,9 @@ except ImportError as e:
 # PHASE 5: OPTIMIZATION
 # ============================================================================
 try:
-    from optimization.profiler import profiler
-    from optimization.cache_optimizer import cache_optimizer
-    from optimization.monitoring import monitor
+    from companion_baas.optimization.profiler import profiler
+    from companion_baas.optimization.cache_optimizer import cache_optimizer
+    from companion_baas.optimization.monitoring import monitor
     PHASE5_AVAILABLE = True
     logger.info("✅ Phase 5 (Optimization) loaded")
 except ImportError as e:
@@ -952,6 +957,15 @@ try:
 except ImportError:
     BYTEZ_AVAILABLE = False
     logger.warning("⚠️  Bytez client not available")
+
+# Import Groq client
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+    logger.info("✅ Groq client loaded")
+except ImportError:
+    GROQ_AVAILABLE = False
+    logger.warning("⚠️  Groq client not available")
 
 # Import Thread Manager for centralized thread management
 try:
@@ -1243,11 +1257,42 @@ class CompanionBrain:
             
             # Check if legacy components are available
             if generate_companion_response is None:
+                # Use Bytez or Groq provider as fallback
+                logger.info("Using Bytez provider for response generation")
+                provider_result = self.use_bytez(message, task='chat')
+                
+                if not provider_result['success']:
+                    logger.info("Bytez failed, trying Groq...")
+                    provider_result = self.use_groq(message)
+                
+                if provider_result['success']:
+                    response_content = provider_result['response']
+                    model_used = provider_result.get('model', 'groq')
+                else:
+                    # Fallback to simple response
+                    response_content = "I apologize, but I'm currently unable to process your request due to missing dependencies. Please check the system configuration."
+                    model_used = 'fallback'
+                
+                # Add response to history
+                conversation_context['history'].append({
+                    'role': 'assistant',
+                    'content': response_content,
+                    'timestamp': datetime.now().isoformat(),
+                    'model': model_used
+                })
+                
+                response_time = (datetime.now() - start_time).total_seconds()
+                
                 return {
-                    'success': False,
-                    'error': 'Legacy components not available. Brain is using new phase architecture.',
-                    'response': 'Please use the new phase-based methods (execute_code, call_tool, semantic_search, etc.)',
-                    'timestamp': datetime.now().isoformat()
+                    'response': response_content,
+                    'metadata': {
+                        'session_id': self.session_id,
+                        'app_type': self.app_type,
+                        'response_time': response_time,
+                        'model': model_used,
+                        'fallback': True
+                    },
+                    'success': True
                 }
             
             api_response = generate_companion_response(
@@ -1580,14 +1625,26 @@ class CompanionBrain:
         # Initialize Bytez if available
         if BYTEZ_AVAILABLE:
             try:
-                api_key = os.getenv('BYTEZ_API_KEY', '6013ed61509ab6ba3c2fa9252e8e5fa2')
+                api_key = os.getenv('BYTEZ_API_KEY')
+                if not api_key:
+                    raise ValueError("BYTEZ_API_KEY environment variable is required")
                 providers['bytez'] = BytezClient(api_key=api_key)
                 logger.info("✅ Bytez provider initialized (141k+ models)")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to initialize Bytez: {e}")
         
+        # Initialize Groq
+        if GROQ_AVAILABLE:
+            try:
+                groq_api_key = os.getenv('GROQ_API_KEY')
+                if not groq_api_key:
+                    raise ValueError("GROQ_API_KEY environment variable is required")
+                providers['groq'] = Groq(api_key=groq_api_key)
+                logger.info("✅ Groq provider initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize Groq: {e}")
+        
         # Could add other providers here in the future
-        # providers['groq'] = GroqClient()
         # providers['ollama'] = OllamaClient()
         
         return providers
@@ -1635,7 +1692,8 @@ class CompanionBrain:
             def _call():
                 return bytez.generate(
                     messages=[{'role': 'user', 'content': message}],
-                    model=model
+                    model=model,
+                    max_tokens=1024  # Set reasonable token limit like Groq
                 )
 
             result = self._call_with_retry(_call, provider='bytez', model=model)
@@ -1663,9 +1721,67 @@ class CompanionBrain:
                     }
                 }
             else:
-                return result
+                # Bytez failed
+                logger.warning(f"⚠️ Bytez failed: {result.get('error')}")
+                return result  # Return Bytez error
         except Exception as e:
             logger.error(f"❌ Bytez error: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'response': None
+            }
+    
+    def use_groq(self, message: str) -> Dict[str, Any]:
+        """
+        Use Groq for chat completion
+        
+        Args:
+            message: User message
+            
+        Returns:
+            Dict with response and metadata
+        """
+        if 'groq' not in self.providers:
+            return {
+                'success': False,
+                'error': 'Groq provider not available',
+                'response': None
+            }
+        
+        try:
+            groq_client = self.providers['groq']
+            start_time = datetime.now()
+            
+            chat_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": message}],
+                model="llama3-8b-8192",  # Fast and good model
+                max_tokens=1024,
+                temperature=0.7
+            )
+            
+            response_content = chat_completion.choices[0].message.content
+            response_time = (datetime.now() - start_time).total_seconds()
+            
+            self.stats['successful_requests'] += 1
+            if 'groq' not in self.stats['models_used']:
+                self.stats['models_used']['groq'] = 0
+            self.stats['models_used']['groq'] += 1
+            
+            logger.info(f"✅ Groq response in {response_time:.2f}s")
+            
+            return {
+                'success': True,
+                'response': response_content,
+                'model': 'llama3-8b-8192',
+                'metadata': {
+                    'provider': 'groq',
+                    'response_time': response_time,
+                    'tokens': chat_completion.usage.total_tokens if hasattr(chat_completion, 'usage') else None
+                }
+            }
+        except Exception as e:
+            logger.error(f"❌ Groq error: {e}")
             return {
                 'success': False,
                 'error': str(e),
@@ -1861,7 +1977,7 @@ Summary:"""
                 if 'code' in task:
                     return 'deepseek-coder'
                 if 'reason' in task or 'think' in task:
-                    return 'phi-2-reasoner'
+                    return 'qwen-4b'  # Changed from phi-2-reasoner (Bytez too slow)
                 if 'chat' in task:
                     return 'qwen-4b'
 
@@ -1884,8 +2000,8 @@ Summary:"""
             reasoning_patterns = ['why', 'how', 'because', 'explain', 'prove', 'analyze',
                                 'compare', 'evaluate', 'reason', 'logic']
             if any(k in text for k in reasoning_patterns):
-                logger.debug("🧠 Reasoning pattern detected → using phi-2-reasoner")
-                return 'phi-2-reasoner'
+                logger.debug("🧠 Reasoning pattern detected → using qwen-4b")
+                return 'qwen-4b'  # Changed from phi-2-reasoner (Bytez too slow)
 
             math_patterns = ['calculate', 'compute', 'equation', 'formula', 'solve', 
                            'integral', 'derivative', 'theorem']
@@ -2389,9 +2505,10 @@ Summary:"""
             )
             
             if not AGI_AVAILABLE:
-                logger.warning("⚠️ AGI components not fully available")
-                self.enable_agi = False
-                return
+                logger.warning("⚠️ AGI components not fully available - some features disabled")
+                # Don't disable AGI completely, just warn
+                # self.enable_agi = False
+                # return
             
             logger.debug("🧠 Initializing AGI components...")
             
@@ -3227,6 +3344,19 @@ Summary:"""
         Uses existing brain's API infrastructure
         """
         try:
+            # For autonomous mode, prefer OpenRouter (more reliable than Bytez)
+            if self.app_type == 'autonomous' and hasattr(self, 'openrouter_api'):
+                try:
+                    result = self.think(
+                        message=prompt,
+                        model='google/gemini-2.0-flash-exp:free',
+                        use_agi_decision=False
+                    )
+                    if result.get('success'):
+                        return result.get('response', 'No response')
+                except Exception as e:
+                    logger.warning(f"OpenRouter call failed: {e}, trying Bytez...")
+            
             # Use legacy API wrapper if available
             if LEGACY_AVAILABLE and api_wrapper:
                 response = generate_companion_response(prompt, history=[])
@@ -3234,7 +3364,7 @@ Summary:"""
                     return response.content
                 return str(response)
             
-            # Fallback: Use Bytez if available
+            # Fallback: Use Bytez if available (but it's slow)
             if BYTEZ_AVAILABLE and 'bytez' in self.providers:
                 bytez = self.providers['bytez']
                 model = self._route_to_best_model(prompt)
@@ -3754,7 +3884,7 @@ Summary:"""
         # Calculate average success rate from strategies
         success_rate = 0.0
         if self.self_learning.meta_learner.strategies:
-            total_success = sum(s.success_count / max(s.total_uses, 1) 
+            total_success = sum(s.get_success_rate() 
                               for s in self.self_learning.meta_learner.strategies.values())
             success_rate = total_success / len(self.self_learning.meta_learner.strategies)
         
