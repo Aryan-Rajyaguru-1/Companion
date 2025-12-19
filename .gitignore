@@ -166,3 +166,5 @@ Companion\ Vision/sdkconfig.old
 
 # Backup files
 *.backup
+.vercel
+.env*.local

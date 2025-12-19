@@ -1,0 +1,73 @@
+# Vercel Deployment Ignore File
+# Files and directories to exclude from Vercel deployment
+
+# Development and testing files
+.vscode/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Database files (use cloud database in production)
+*.db
+*.sqlite
+*.sqlite3
+auth.db
+chat_history.db
+memory.db
+
+# Logs and temporary files
+*.log
+nohup.out
+autonomous_daemon.log
+
+# Local development scripts
+check_brain_activity.py
+check_brain_status.sh
+check_daemon_status.sh
+install_daemon.sh
+monitor_brain.sh
+setup_autostart.sh
+setup_neural_layer.sh
+start_daemon_manual.sh
+test_*.py
+performance_benchmark.py
+simple_perf_test.py
+
+# Deployment files for other platforms
+Procfile
+fly.toml
+railway.json
+render.yaml
+nixpacks.toml
+
+# Documentation and misc
+*.md
+!README.md
+DEPLOYMENT_CHECKLIST.txt
+ENVIRONMENT_SETUP.md
+
+# Companion Vision (ESP32 project - not needed for web API)
+Companion Vision/
+
+# Service files
+*.service
+
+# Git
+.git/
+.github/
+
+# Node.js files (if any)
+node_modules/
+package.json
+pnpm-lock.yaml
+next.config.mjs
+postcss.config.mjs
+tsconfig.json
