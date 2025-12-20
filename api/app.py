@@ -122,6 +122,48 @@ async def get_conversations():  # x_api_key: str = Header(None)
     return []
 
 # ============================================================================
+# Authentication endpoints (simplified for Vercel)
+# ============================================================================
+
+@app.post("/api/auth/register")
+async def register():
+    """Simplified registration endpoint"""
+    # For Vercel, just return success
+    return {"success": True, "message": "Registration successful"}
+
+@app.post("/api/auth/login")
+async def login():
+    """Simplified login endpoint"""
+    # For Vercel, just return success with a dummy token
+    return {
+        "success": True,
+        "token": "vercel-demo-token",
+        "user": {
+            "id": 1,
+            "email": "demo@companion.ai",
+            "name": "Demo User"
+        }
+    }
+
+@app.get("/api/auth/me")
+async def get_me():
+    """Get current user info"""
+    # For Vercel, return demo user
+    return {
+        "success": True,
+        "user": {
+            "id": 1,
+            "email": "demo@companion.ai",
+            "name": "Demo User"
+        }
+    }
+
+@app.post("/api/auth/change-password")
+async def change_password():
+    """Change password endpoint"""
+    return {"success": True, "message": "Password changed successfully"}
+
+# ============================================================================
 # Static file serving for frontend
 # ============================================================================
 
