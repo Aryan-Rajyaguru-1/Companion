@@ -61,9 +61,9 @@ async def health():
     return {"status": "healthy", "version": "1.0.0"}
 
 @app.post("/v1/chat", response_model=ChatResponse)
-async def chat_v1(request: ChatRequest, authenticated: bool = Header(None, alias="x-api-key")):
+async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
     """Unified chat endpoint with agent routing"""
-    if not authenticated or authenticated != API_KEY:
+    if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
     # Simple agent routing based on keywords
@@ -109,9 +109,9 @@ async def chat_v1(request: ChatRequest, authenticated: bool = Header(None, alias
     return response
 
 @app.get("/v1/conversations")
-async def get_conversations(authenticated: bool = Header(None, alias="x-api-key")):
+async def get_conversations(x_api_key: str = Header(None)):
     """Get conversations (simplified for Vercel)"""
-    if not authenticated or authenticated != API_KEY:
+    if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
     # Return empty list for Vercel compatibility
