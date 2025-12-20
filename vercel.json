@@ -2,18 +2,19 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/api_server.py",
+      "src": "api/app.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/api/api_server.py"
-    },
-    {
       "src": "/(.*)",
-      "dest": "/api/api_server.py"
+      "dest": "/api/app.py"
     }
-  ]
+  ],
+  "env": {
+    "ENVIRONMENT": "production",
+    "LOG_LEVEL": "INFO",
+    "DEBUG": "false"
+  }
 }

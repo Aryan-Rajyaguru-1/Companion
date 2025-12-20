@@ -1,4 +1,4 @@
-// Chat API Service - Updated for Unified API v4.0.0
+// Chat API Service
 class ChatApi {
     constructor(baseUrl = '/api', apiKey = null) {
         // For development, use the API server URL
@@ -8,55 +8,40 @@ class ChatApi {
 
     getApiKey() {
         // Try to get from environment or local storage
-        return localStorage.getItem('apiKey') || 'your-secret-api-key-change-this';
+        return localStorage.getItem('apiKey') || 'your-api-key-here';
     }
 
-    async sendMessage(message, conversationId = null, agent = 'companion', options = {}) {
+    async sendMessage(message, conversationId = null) {
         const payload = {
             message: message,
             conversation_id: conversationId,
-            agent: agent,
-            stream: false,  // Use regular endpoint for non-streaming
-            max_tokens: options.maxTokens || 2048,
-            temperature: options.temperature || 0.7
+            stream: true  // Enable streaming
         };
 
         const response = await this.request('/chat', 'POST', payload);
 
-        return {
-            id: response.id,
-            role: response.role,
-            type: response.type,
-            content: response.content,
-            agent: response.agent,
-            timestamp: response.timestamp,
-            metadata: response.metadata,
-            conversationId: conversationId || response.conversation_id
-        };
+        if (response.success) {
+            return {
+                type: response.type || 'assistant',
+                agent: response.agent,
+                content: response.content,
+                conversationId: response.conversation_id
+            };
+        } else {
+            throw new Error(response.error || 'Unknown error');
+        }
     }
 
     async getConversationHistory(conversationId) {
-        const response = await this.request(`/conversations/${conversationId}`, 'GET');
-        return {
-            conversationId: response.conversation_id,
-            messages: response.messages,
-            createdAt: response.created_at,
-            updatedAt: response.updated_at
-        };
+        return await this.request(`/conversations/${conversationId}`, 'GET');
     }
 
     async createConversation() {
-        const response = await this.request('/conversations', 'POST', {});
-        return { conversationId: response.conversation_id };
+        return await this.request('/conversations', 'POST', {});
     }
 
     async deleteConversation(conversationId) {
         return await this.request(`/conversations/${conversationId}`, 'DELETE');
-    }
-
-    async listConversations() {
-        const response = await this.request('/conversations', 'GET');
-        return response.conversations || [];
     }
 
     async request(endpoint, method = 'GET', data = null) {
@@ -90,15 +75,12 @@ class ChatApi {
         }
     }
 
-    // Streaming support with agent selection
-    async sendMessageStreaming(message, conversationId, agent = 'companion', onChunk, onComplete, onError, options = {}) {
+    // Streaming support
+    async sendMessageStreaming(message, conversationId, onChunk, onComplete, onError) {
         const payload = {
             message: message,
             conversation_id: conversationId,
-            agent: agent,
-            stream: true,
-            max_tokens: options.maxTokens || 2048,
-            temperature: options.temperature || 0.7
+            stream: true
         };
 
         try {
