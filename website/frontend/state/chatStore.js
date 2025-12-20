@@ -3,6 +3,8 @@ class ChatStore {
     constructor() {
         this.conversations = [];
         this.currentConversationId = null;
+        this.isTyping = false;
+        this.error = null;
         this.listeners = [];
     }
 
@@ -24,7 +26,9 @@ class ChatStore {
         return {
             conversations: this.conversations,
             currentConversationId: this.currentConversationId,
-            currentConversation: this.getCurrentConversation()
+            currentConversation: this.getCurrentConversation(),
+            isTyping: this.isTyping,
+            error: this.error
         };
     }
 
@@ -73,6 +77,24 @@ class ChatStore {
             this.saveToStorage();
             this.notify();
         }
+    }
+
+    // Set typing state
+    setTyping(isTyping) {
+        this.isTyping = isTyping;
+        this.notify();
+    }
+
+    // Set error state
+    setError(error) {
+        this.error = error;
+        this.notify();
+    }
+
+    // Clear error
+    clearError() {
+        this.error = null;
+        this.notify();
     }
 
     // Delete conversation

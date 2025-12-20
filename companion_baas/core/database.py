@@ -9,6 +9,7 @@ import json
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 import os
+import uuid
 
 class Database:
     def __init__(self, db_path: str = "companion.db"):
@@ -54,6 +55,15 @@ class Database:
                     username TEXT UNIQUE NOT NULL,
                     email TEXT UNIQUE NOT NULL,
                     created_at TEXT NOT NULL
+                )
+            ''')
+            
+            # Conversation metadata table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS conversation_metadata (
+                    conversation_id TEXT PRIMARY KEY,
+                    metadata TEXT NOT NULL,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations (id)
                 )
             ''')
             
@@ -143,10 +153,14 @@ class Database:
         """Add a message to a conversation"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            
+            # Generate ID if not provided
+            message_id = message.get("id") or str(uuid.uuid4())
+            
             cursor.execute(
                 "INSERT INTO messages (id, conversation_id, role, type, content, agent, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    message["id"],
+                    message_id,
                     conversation_id,
                     message["role"],
                     message["type"],
@@ -164,13 +178,61 @@ class Database:
             )
             
             conn.commit()
+            
+            # Return the saved message data
+            return {
+                "id": message_id,
+                "conversation_id": conversation_id,
+                "role": message["role"],
+                "type": message["type"],
+                "content": message["content"],
+                "agent": message.get("agent"),
+                "timestamp": message["timestamp"],
+                "user_id": message.get("user_id"),
+                "metadata": message.get("metadata", {}),
+                "processing_time": message.get("processing_time")
+            }
 
     def delete_conversation(self, conversation_id: str):
         """Delete a conversation and its messages"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+            cursor.execute("DELETE FROM conversation_metadata WHERE conversation_id = ?", (conversation_id,))
             cursor.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+            conn.commit()
+
+    def get_conversation_metadata(self, conversation_id: str) -> Optional[Dict]:
+        """Get conversation metadata"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT metadata FROM conversation_metadata WHERE conversation_id = ?",
+                (conversation_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return json.loads(row[0])
+            return None
+
+    def update_conversation_metadata(self, conversation_id: str, metadata: Dict):
+        """Update conversation metadata"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO conversation_metadata (conversation_id, metadata) VALUES (?, ?)",
+                (conversation_id, json.dumps(metadata))
+            )
+            conn.commit()
+
+    def update_message_content(self, conversation_id: str, message_id: str, content: str):
+        """Update message content (for streaming)"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ?",
+                (content, message_id, conversation_id)
+            )
             conn.commit()
 
 # Global database instance

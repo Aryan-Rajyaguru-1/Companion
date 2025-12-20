@@ -8,24 +8,25 @@ class ChatApi {
 
     getApiKey() {
         // Try to get from environment or local storage
-        return localStorage.getItem('apiKey') || 'your-api-key-here';
+        return localStorage.getItem('apiKey') || 'L2u2O6EPC1d5ep3ll1b5FSkhdQ89cwut';
     }
 
-    async sendMessage(message, conversationId = null) {
+    async sendMessage(message, conversationId = null, options = {}) {
         const payload = {
             message: message,
             conversation_id: conversationId,
-            stream: true  // Enable streaming
+            stream: options.stream || false
         };
 
-        const response = await this.request('/chat', 'POST', payload);
+        const response = await this.request('/v1/chat', 'POST', payload);
 
         if (response.success) {
             return {
                 type: response.type || 'assistant',
                 agent: response.agent,
                 content: response.content,
-                conversationId: response.conversation_id
+                conversationId: response.conversation_id,
+                processingTime: response.processing_time
             };
         } else {
             throw new Error(response.error || 'Unknown error');
@@ -33,21 +34,70 @@ class ChatApi {
     }
 
     async getConversationHistory(conversationId) {
-        return await this.request(`/conversations/${conversationId}`, 'GET');
+        return await this.request(`/v1/conversations/${conversationId}`, 'GET');
     }
 
-    async createConversation() {
-        return await this.request('/conversations', 'POST', {});
+    async createConversation(title = null) {
+        const payload = title ? { title } : {};
+        return await this.request('/v1/conversations', 'POST', payload);
     }
 
     async deleteConversation(conversationId) {
-        return await this.request(`/conversations/${conversationId}`, 'DELETE');
+        return await this.request(`/v1/conversations/${conversationId}`, 'DELETE');
+    }
+
+    async getConversations() {
+        return await this.request('/v1/conversations', 'GET');
+    }
+
+    async getAgents() {
+        return await this.request('/v1/agents', 'GET');
     }
 
     async request(endpoint, method = 'GET', data = null) {
         const url = `${this.baseUrl}${endpoint}`;
         const headers = {
             'Content-Type': 'application/json',
+        };
+
+        // Add API key if available
+        if (this.apiKey) {
+            headers['X-API-Key'] = this.apiKey;
+        }
+
+        const config = {
+            method,
+            headers,
+        };
+
+        if (data) {
+            config.body = JSON.stringify(data);
+        }
+
+        try {
+            const response = await fetch(url, config);
+            const responseData = await response.json();
+
+            if (!response.ok) {
+                throw new Error(responseData.detail || `HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            return {
+                success: true,
+                ...responseData
+            };
+        } catch (error) {
+            console.error(`API request failed: ${method} ${url}`, error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+}
+
+// Global instance
+const chatApi = new ChatApi();
             'X-API-Key': this.apiKey
         };
 
