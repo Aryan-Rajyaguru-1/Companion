@@ -11,6 +11,11 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 import uuid
 import logging
+
+# Set up basic logging for import errors
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Import database
 try:
     from ..core.database import db
@@ -19,8 +24,6 @@ except (ImportError, Exception) as e:
     logger.warning(f"Database not available: {e}")
     db = None
     DATABASE_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
 
 class Message:
     """Standardized message schema"""
