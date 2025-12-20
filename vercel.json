@@ -19,10 +19,5 @@
     "ENVIRONMENT": "production",
     "LOG_LEVEL": "INFO",
     "DEBUG": "false"
-  },
-  "functions": {
-    "api/app.py": {
-      "runtime": "python3.11"
-    }
   }
 }
