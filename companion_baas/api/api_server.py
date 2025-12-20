@@ -26,33 +26,38 @@ import uuid
 
 # Import our components
 try:
-    from .controllers.chat_controller import ChatController
-    from .schemas.message import MessageCreate, MessageResponse, StreamingMessage
-    from .schemas.conversation import ConversationCreate, ConversationResponse, ConversationListItem
-except ImportError:
-    # Fallback for direct execution
-    import sys
-    import os
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    sys.path.insert(0, parent_dir)
-
-    from controllers.chat_controller import ChatController
-    from schemas.message import MessageCreate, MessageResponse, StreamingMessage
-    from schemas.conversation import ConversationCreate, ConversationResponse, ConversationListItem
+    from companion_baas.api.controllers.chat_controller import ChatController
+    from companion_baas.api.schemas.message import MessageCreate, MessageResponse, StreamingMessage
+    from companion_baas.api.schemas.conversation import ConversationCreate, ConversationResponse, ConversationListItem
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.error(f"Failed to import API components: {e}")
+    # Define dummy classes for Vercel deployment
+    class ChatController:
+        def __init__(self): pass
+        async def process_message(self, message, conversation_id, user_id=None): 
+            return {"message": {"content": "API not available", "role": "assistant", "type": "assistant", "id": "error", "conversation_id": conversation_id, "timestamp": "2025-01-01T00:00:00Z"}, "conversation_id": conversation_id}
+    
+    class MessageCreate: pass
+    class MessageResponse: pass
+    class StreamingMessage: pass
+    class ConversationCreate: pass
+    class ConversationResponse: pass
+    class ConversationListItem: pass
 
 # Import database
 try:
-    from ..core.database import db
-except ImportError:
-    # Fallback for direct execution
-    import sys
-    import os
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    sys.path.insert(0, parent_dir)
-
-    from core.database import db
+    from companion_baas.core.database import db
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.error(f"Failed to import database: {e}")
+    # Define dummy database for Vercel deployment
+    class DummyDB:
+        def get_conversation(self, cid): return None
+        def create_conversation(self, cid): pass
+        def get_all_conversations(self): return []
+        def add_message(self, cid, msg): return {"id": "error", "role": "system", "type": "error", "content": "Database not available", "timestamp": "2025-01-01T00:00:00Z"}
+    db = DummyDB()
 
 # Configuration
 PORT = int(os.getenv("PORT", "8000"))

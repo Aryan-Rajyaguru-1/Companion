@@ -12,28 +12,35 @@ import logging
 from typing import Dict, List, Optional, Any, Tuple
 import asyncio
 
+# Import agents using absolute paths for Vercel compatibility
 try:
-    from ..agents.code_agent import CodeAgent
-    from ..agents.research_agent import ResearchAgent
-    from ..agents.review_agent import ReviewAgent
-    from ..agents.test_agent import TestAgent
-    from ..core.brain import CompanionBrain
-except ImportError:
-    # Fallback for direct execution
-    import sys
-    import os
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    grandparent_dir = os.path.dirname(parent_dir)
-    sys.path.insert(0, grandparent_dir)
-
     from companion_baas.agents.code_agent import CodeAgent
     from companion_baas.agents.research_agent import ResearchAgent
     from companion_baas.agents.review_agent import ReviewAgent
     from companion_baas.agents.test_agent import TestAgent
     from companion_baas.core.brain import CompanionBrain
-
-logger = logging.getLogger(__name__)
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.error(f"Failed to import agents: {e}")
+    # Define dummy classes for Vercel deployment
+    class CodeAgent:
+        def __init__(self, brain): pass
+        async def process(self, message, context=None): return {"content": "Code agent not available", "agent": "code"}
+    
+    class ResearchAgent:
+        def __init__(self, brain): pass
+        async def process(self, message, context=None): return {"content": "Research agent not available", "agent": "research"}
+    
+    class ReviewAgent:
+        def __init__(self, brain): pass
+        async def process(self, message, context=None): return {"content": "Review agent not available", "agent": "review"}
+    
+    class TestAgent:
+        def __init__(self, brain): pass
+        async def process(self, message, context=None): return {"content": "Test agent not available", "agent": "test"}
+    
+    class CompanionBrain:
+        def __init__(self, app_type="vercel"): pass
 
 class AgentRouter:
     """Routes messages to appropriate agents based on content and context"""
