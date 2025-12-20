@@ -24,7 +24,14 @@ from enum import Enum
 import asyncio
 import hashlib
 import json
-import numpy as np
+
+# Optional numpy import for environments that don't have it (like Vercel)
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None
+    HAS_NUMPY = False
 
 # Add parent directories to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -87,8 +94,10 @@ class SemanticCache:
                 logger.warning(f"⚠️ Failed to load semantic cache model: {e}")
                 self.model = None
     
-    def _compute_embedding(self, text: str) -> Optional[np.ndarray]:
+    def _compute_embedding(self, text: str) -> Optional[list]:
         """Compute embedding for text"""
+        if not HAS_NUMPY:
+            return None  # Return None when numpy is not available
         self._ensure_model_loaded()
         if not self.model:
             return None
@@ -98,8 +107,10 @@ class SemanticCache:
             logger.warning(f"Embedding computation failed: {e}")
             return None
     
-    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+    def _cosine_similarity(self, vec1, vec2) -> float:
         """Compute cosine similarity between two vectors"""
+        if not HAS_NUMPY:
+            return 0.0  # Return default similarity when numpy is not available
         try:
             return float(np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2)))
         except Exception:
