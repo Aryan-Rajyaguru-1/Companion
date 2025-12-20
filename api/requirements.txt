@@ -1,22 +1,38 @@
 # Vercel API Requirements - Companion AI Framework
-# Minimal Flask application dependencies (Vercel-compatible)
+# FastAPI-based unified API server dependencies
 
-flask==2.3.3
-flask-cors==4.0.0
-requests==2.31.0
-python-dotenv==1.0.0
+# Core FastAPI and async support
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+
+# CORS support
+python-multipart==0.0.6
 
 # Database - SQLite only (no compilation needed)
 sqlalchemy==2.0.20
-flask-sqlalchemy==3.0.5
 
-# Authentication
+# Authentication and security
 PyJWT==2.8.0
 bcrypt==4.0.1
-werkzeug==2.3.7
+cryptography==41.0.7
 
-# Async support (lightweight)
+# HTTP client
+httpx==0.25.2
 aiohttp==3.9.0
 
-# Logging
+# Environment and configuration
+python-dotenv==1.0.0
+
+# Logging and utilities
 python-json-logger==2.0.7
+
+# Data processing
+numpy==1.24.3
+
+# Optional AI/ML dependencies (may not be available on Vercel free tier)
+# sentence-transformers==2.2.2
+# elasticsearch==8.11.0
+# meilisearch==0.28.3
+# soundfile==0.12.1
+# PyPDF2==3.0.1

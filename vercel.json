@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "api/app.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "runtime": "python3.11"
+      }
     }
   ],
   "routes": [
@@ -16,5 +19,10 @@
     "ENVIRONMENT": "production",
     "LOG_LEVEL": "INFO",
     "DEBUG": "false"
+  },
+  "functions": {
+    "api/app.py": {
+      "runtime": "python3.11"
+    }
   }
 }
