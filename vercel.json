@@ -2,14 +2,17 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/app.py",
-      "use": "@vercel/python"
+      "src": "companion_baas/api/api_server.py",
+      "use": "@vercel/python",
+      "config": {
+        "requirements": "requirements-vercel.txt"
+      }
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "/api/app.py"
+      "dest": "/companion_baas/api/api_server.py"
     }
   ],
   "env": {
