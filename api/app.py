@@ -48,7 +48,7 @@ class ChatResponse(BaseModel):
 conversations = {}
 
 # API Key authentication
-API_KEY = os.getenv("API_KEY", "your-secret-api-key-change-this")
+API_KEY = os.getenv("COMPANION_API_KEY", "your-secret-api-key-change-this")
 
 async def verify_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != API_KEY:
