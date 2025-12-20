@@ -14,12 +14,11 @@ import logging
 # Import database
 try:
     from ..core.database import db
-except ImportError:
-    # Fallback for direct execution
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    from companion_baas.core.database import db
+    DATABASE_AVAILABLE = True
+except (ImportError, Exception) as e:
+    logger.warning(f"Database not available: {e}")
+    db = None
+    DATABASE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +127,9 @@ class ChatController:
         conversation = Conversation(conversation_id)
         self.conversations[conversation_id] = conversation
 
-        # Also store in database
-        db.create_conversation(conversation_id)
+        # Also store in database if available
+        if DATABASE_AVAILABLE:
+            db.create_conversation(conversation_id)
 
         logger.info(f"Created conversation: {conversation_id}")
         return conversation_id
@@ -140,19 +140,20 @@ class ChatController:
         if conversation_id in self.conversations:
             return self.conversations[conversation_id]
 
-        # Try database
-        db_conv = db.get_conversation(conversation_id)
-        if db_conv:
-            conversation = Conversation(conversation_id)
-            conversation.created_at = db_conv.get("created_at", conversation.created_at)
-            conversation.updated_at = db_conv.get("updated_at", conversation.updated_at)
-            conversation.metadata = db_conv.get("metadata", {})
+        # Try database if available
+        if DATABASE_AVAILABLE:
+            db_conv = db.get_conversation(conversation_id)
+            if db_conv:
+                conversation = Conversation(conversation_id)
+                conversation.created_at = db_conv.get("created_at", conversation.created_at)
+                conversation.updated_at = db_conv.get("updated_at", conversation.updated_at)
+                conversation.metadata = db_conv.get("metadata", {})
 
-            # Load messages
-            for msg_data in db_conv.get("messages", []):
-                msg = Message(
-                    role=msg_data.get("role", "unknown"),
-                    content=msg_data.get("content", ""),
+                # Load messages
+                for msg_data in db_conv.get("messages", []):
+                    msg = Message(
+                        role=msg_data.get("role", "unknown"),
+                        content=msg_data.get("content", ""),
                     message_type=msg_data.get("type", "text"),
                     agent=msg_data.get("agent"),
                     metadata=msg_data.get("metadata", {})
@@ -175,12 +176,14 @@ class ChatController:
         if not conversation:
             conversation = Conversation(conversation_id)
             self.conversations[conversation_id] = conversation
-            db.create_conversation(conversation_id)
+            if DATABASE_AVAILABLE:
+                db.create_conversation(conversation_id)
 
         # Add user message
         user_message = Message("user", message, "text")
         conversation.add_message(user_message)
-        db.add_message(conversation_id, user_message.to_dict())
+        if DATABASE_AVAILABLE:
+            db.add_message(conversation_id, user_message.to_dict())
 
         # Get agent
         agent_func = self.agents.get(agent, self.agents["minimal"])
@@ -195,7 +198,8 @@ class ChatController:
 
         # Add response message
         conversation.add_message(response_message)
-        db.add_message(conversation_id, response_message.to_dict())
+        if DATABASE_AVAILABLE:
+            db.add_message(conversation_id, response_message.to_dict())
 
         return response_message
 
@@ -210,6 +214,18 @@ class ChatController:
 
     def list_conversations(self) -> List[Dict]:
         """List all conversations"""
+        if not DATABASE_AVAILABLE:
+            # Return in-memory conversations
+            return [
+                {
+                    "id": conv_id,
+                    "message_count": len(conv.messages),
+                    "created_at": conv.created_at.isoformat(),
+                    "updated_at": conv.updated_at.isoformat()
+                }
+                for conv_id, conv in self.conversations.items()
+            ]
+
         conversations = db.get_all_conversations()
         return [
             {
@@ -226,7 +242,9 @@ class ChatController:
         if conversation_id in self.conversations:
             del self.conversations[conversation_id]
 
-        return db.delete_conversation(conversation_id)
+        if DATABASE_AVAILABLE:
+            return db.delete_conversation(conversation_id)
+        return True
 
 # Global chat controller instance
 chat_controller = ChatController()
