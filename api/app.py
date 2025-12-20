@@ -90,10 +90,10 @@ async def chat_v1(request: ChatRequest):  # x_api_key: str = Header(None)
 
     # Create response
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     message_id = str(uuid.uuid4())
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.utcnow().isoformat() + "Z"
 
     response = ChatResponse(
         message=MessageResponse(
