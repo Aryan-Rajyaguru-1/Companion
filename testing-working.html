@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepCompanion - Testing Suite (Self-Contained)</title>
+    <style>
+        /* Complete inline styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a12;
+            color: #ffffff;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* Navigation */
+        .navbar {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 1000;
+            transition: all 0.3s ease;
+        }
+
+        .nav-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 70px;
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #7877c6;
+        }
+
+        .brand-icon {
+            font-size: 1.8rem;
+        }
+
+        .brand-text {
+            color: #ffffff;
+        }
+
+        .nav-badge {
+            background: linear-gradient(135deg, #7877c6, #5b59a6);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 1rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-left: 0.5rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 30px;
+            align-items: center;
+        }
+
+        .nav-link {
+            color: rgba(255, 255, 255, 0.7);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s ease;
+            position: relative;
+        }
+
+        .nav-link:hover,
+        .nav-link.active {
+            color: #ffffff;
+        }
+
+        /* Header */
+        .testing-header {
+            padding: 120px 0 60px;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .testing-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: radial-gradient(circle at 20% 50%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
+                        radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.1) 0%, transparent 50%);
+            pointer-events: none;
+        }
+
+        .header-content {
+            text-align: center;
+            position: relative;
+            z-index: 2;
+        }
+
+        .testing-title {
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #ffffff 0%, #e0e7ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .testing-subtitle {
+            font-size: 1.25rem;
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 2.5rem;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .testing-status {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 0.75rem 1.5rem;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .status-icon {
+            font-size: 1.25rem;
+        }
+
+        .status-label {
+            font-size: 0.875rem;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .status-value {
+            font-weight: 600;
+            color: #10b981;
+        }
+
+        /* Main content */
+        .testing-main {
+            padding: 60px 0;
+            background: #0a0a12;
+        }
+
+        .demo-content {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .demo-content h2 {
+            font-size: 2.5rem;
+            margin-bottom: 20px;
+            color: #7877c6;
+        }
+
+        .demo-content p {
+            font-size: 1.2rem;
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 30px;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 40px;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .feature-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .feature-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(120, 119, 198, 0.5);
+            transform: translateY(-2px);
+        }
+
+        .feature-item h3 {
+            color: #7877c6;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .test-button {
+            display: inline-block;
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #7877c6 0%, #5b59a6 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 10px;
+            font-weight: 600;
+            transition: transform 0.3s ease;
+            margin-top: 20px;
+        }
+
+        .test-button:hover {
+            transform: translateY(-2px);
+        }
+
+        /* Footer */
+        .footer {
+            background: rgba(15, 15, 35, 0.8);
+            padding: 40px 0 20px;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .footer-content {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-bottom: 20px;
+        }
+
+        .footer-link {
+            color: rgba(255, 255, 255, 0.7);
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .footer-link:hover {
+            color: #7877c6;
+        }
+
+        .footer-bottom {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.9rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .testing-title {
+                font-size: 2.5rem;
+            }
+            
+            .testing-status {
+                flex-direction: column;
+                align-items: center;
+                gap: 1rem;
+            }
+            
+            .nav-links {
+                display: none;
+            }
+            
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <span class="brand-icon">🚀</span>
+                <span class="brand-text">DeepCompanion</span>
+                <span class="nav-badge">Testing Suite</span>
+            </div>
+            <div class="nav-links">
+                <a href="grok-index.html" class="nav-link">Home</a>
+                <a href="demo.html" class="nav-link">Demo</a>
+                <a href="#" class="nav-link active">Testing</a>
+                <a href="grok-index.html#download" class="nav-link">Download</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Testing Header -->
+    <section class="testing-header">
+        <div class="container">
+            <div class="header-content">
+                <h1 class="testing-title">AI Model Testing Suite</h1>
+                <p class="testing-subtitle">
+                    Comprehensive testing environment for DeepCompanion's AI capabilities
+                </p>
+                <div class="testing-status">
+                    <div class="status-item">
+                        <span class="status-icon">🧪</span>
+                        <span class="status-label">Test Environment</span>
+                        <span class="status-value" id="envStatus">Ready</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-icon">🤖</span>
+                        <span class="status-label">Models Available</span>
+                        <span class="status-value">4 Active</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-icon">⚡</span>
+                        <span class="status-label">Response Time</span>
+                        <span class="status-value" id="responseTime">~1.2s</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Main Testing Interface -->
+    <section class="testing-main">
+        <div class="container">
+            <div class="demo-content">
+                <h2>🎉 Testing Suite Ready!</h2>
+                <p>
+                    Welcome to the DeepCompanion AI Model Testing Suite. This interface provides 
+                    comprehensive testing capabilities for all AI models. The full interactive 
+                    version includes model selection, configuration controls, and real-time testing.
+                </p>
+                
+                <div class="feature-grid">
+                    <div class="feature-item">
+                        <h3>🤖 Model Selection</h3>
+                        <p>Choose from Chat, Think, Code, and Advanced AI models</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>⚙️ Configuration</h3>
+                        <p>Adjust temperature, tokens, and response modes</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>🧪 Quick Tests</h3>
+                        <p>Pre-built test scenarios for different use cases</p>
+                    </div>
+                    <div class="feature-item">
+                        <h3>📊 Performance Metrics</h3>
+                        <p>Real-time tracking of response times and success rates</p>
+                    </div>
+                </div>
+                
+                <a href="testing.html" class="test-button" onclick="loadFullInterface()">Load Full Interactive Interface</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <a href="grok-index.html" class="footer-link">Home</a>
+                <a href="demo.html" class="footer-link">Demo</a>
+                <a href="#" class="footer-link">Testing</a>
+                <a href="grok-index.html#download" class="footer-link">Download</a>
+                <a href="https://github.com/your-repo/deepcompanion" class="footer-link">GitHub</a>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 DeepCompanion. Built with ❤️ for the AI community.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        console.log('DeepCompanion Testing Suite loaded successfully!');
+        
+        // Simple interactivity
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM fully loaded');
+            
+            // Animate status indicators
+            setTimeout(() => {
+                const envStatus = document.getElementById('envStatus');
+                const responseTime = document.getElementById('responseTime');
+                
+                if (envStatus) {
+                    envStatus.textContent = 'Online';
+                    envStatus.style.color = '#10b981';
+                }
+                
+                if (responseTime) {
+                    responseTime.textContent = '~0.8s';
+                }
+            }, 1000);
+            
+            // Add some visual feedback
+            const featureItems = document.querySelectorAll('.feature-item');
+            featureItems.forEach((item, index) => {
+                setTimeout(() => {
+                    item.style.opacity = '0';
+                    item.style.transform = 'translateY(20px)';
+                    item.style.transition = 'all 0.5s ease';
+                    
+                    setTimeout(() => {
+                        item.style.opacity = '1';
+                        item.style.transform = 'translateY(0)';
+                    }, 100);
+                }, index * 100);
+            });
+        });
+        
+        function loadFullInterface() {
+            console.log('Loading full interface...');
+            // This would normally load the full testing interface
+            alert('Full interactive interface would load here. This demo shows the page is working!');
+        }
+    </script>
+</body>
+</html>
