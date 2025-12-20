@@ -24,11 +24,32 @@ Version: 1.0.0
 __version__ = "1.0.0"
 __author__ = "Companion Team"
 
-from .core.brain import CompanionBrain
-from .core.model_router import ModelRouter
-from .core.context_manager import ContextManager
-from .core.response_processor import ResponseProcessor
-from .sdk.client import BrainClient, Brain
+# Optional imports with fallbacks
+try:
+    from .core.brain import CompanionBrain
+except ImportError:
+    CompanionBrain = None
+
+try:
+    from .core.model_router import ModelRouter
+except ImportError:
+    ModelRouter = None
+
+try:
+    from .core.context_manager import ContextManager
+except ImportError:
+    ContextManager = None
+
+try:
+    from .core.response_processor import ResponseProcessor
+except ImportError:
+    ResponseProcessor = None
+
+try:
+    from .sdk.client import BrainClient, Brain
+except ImportError:
+    BrainClient = None
+    Brain = None
 
 __all__ = [
     'CompanionBrain',

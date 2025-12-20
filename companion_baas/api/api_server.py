@@ -26,6 +26,10 @@ import asyncio
 import json
 import uuid
 
+# Set up basic logging for import errors
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Import unified chat controller
 try:
     from ..core.chat_controller import chat_controller
@@ -114,7 +118,6 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
 
 # Initialize FastAPI
 app = FastAPI(
