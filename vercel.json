@@ -1,27 +1,8 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "companion_baas/api/api_server.py",
-      "use": "@vercel/python",
-      "config": {
-        "requirements": "requirements-vercel.txt"
-      }
+  "functions": {
+    "api/**/*.py": {
+      "runtime": "python3.9"
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/companion_baas/api/api_server.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
-    }
-  ],
-  "env": {
-    "ENVIRONMENT": "production",
-    "LOG_LEVEL": "INFO",
-    "DEBUG": "false"
   }
 }
