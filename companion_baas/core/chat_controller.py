@@ -82,18 +82,9 @@ class ChatController:
             from ..core.brain import Brain
             brain = Brain()
             return lambda msg, **kwargs: brain.think(msg, **kwargs)
-        except ImportError:
-            # Fallback for direct execution
-            try:
-                import sys
-                import os
-                sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-                from companion_baas.core.brain import Brain
-                brain = Brain()
-                return lambda msg, **kwargs: brain.think(msg, **kwargs)
-            except ImportError:
-                logger.warning("Companion brain not available, using fallback")
-                return self._get_minimal_agent()
+        except (ImportError, ModuleNotFoundError) as e:
+            logger.warning(f"Companion brain not available: {e}. Using fallback.")
+            return self._get_minimal_agent()
 
     def _get_groq_agent(self):
         """Get Groq agent"""

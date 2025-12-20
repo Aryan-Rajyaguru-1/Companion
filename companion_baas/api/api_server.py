@@ -30,11 +30,79 @@ import uuid
 try:
     from ..core.chat_controller import chat_controller
 except ImportError:
-    # Fallback for direct execution
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from core.chat_controller import chat_controller
+    # Fallback for direct execution or when modules aren't available
+    try:
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+        from core.chat_controller import chat_controller
+    except ImportError as e:
+        logger.error(f"Failed to import chat controller: {e}")
+        # Create a minimal fallback
+        from typing import Dict, List, Optional, Any
+        import asyncio
+        import json
+        import uuid
+        import time
+
+        class MinimalChatController:
+            def __init__(self):
+                self.agents = {"groq": self._get_groq_agent(), "minimal": self._get_minimal_agent()}
+
+            def _get_groq_agent(self):
+                try:
+                    from groq import Groq
+                    import os
+                    api_key = os.getenv("GROQ_API_KEY")
+                    if not api_key:
+                        raise ValueError("GROQ_API_KEY not set")
+                    client = Groq(api_key=api_key)
+                    def groq_agent(message: str, **kwargs):
+                        response = client.chat.completions.create(
+                            messages=[{"role": "system", "content": "You are Companion Brain, an intelligent AI assistant."},
+                                     {"role": "user", "content": message}],
+                            model="llama-3.3-70b-versatile",
+                            max_tokens=kwargs.get('max_tokens', 2048),
+                            temperature=kwargs.get('temperature', 0.7)
+                        )
+                        return response.choices[0].message.content
+                    return groq_agent
+                except Exception as e:
+                    logger.error(f"Failed to initialize Groq agent: {e}")
+                    return self._get_minimal_agent()
+
+            def _get_minimal_agent(self):
+                def minimal_agent(message: str, **kwargs):
+                    return f"Hello! I received: '{message}'. Configure a proper agent for full functionality."
+                return minimal_agent
+
+            def send_message(self, conversation_id: str, message: str, agent: str = "minimal", **kwargs):
+                from datetime import datetime
+                agent_func = self.agents.get(agent, self.agents["minimal"])
+                response_content = agent_func(message, **kwargs)
+                class Message:
+                    def __init__(self, content):
+                        self.content = content
+                        self.agent = agent
+                        self.timestamp = datetime.utcnow().isoformat()
+                        self.metadata = {}
+                    def to_dict(self):
+                        return {
+                            "id": str(uuid.uuid4()),
+                            "role": "assistant",
+                            "type": "text",
+                            "content": self.content,
+                            "agent": self.agent,
+                            "timestamp": self.timestamp,
+                            "metadata": self.metadata
+                        }
+                return Message(response_content)
+
+            def list_conversations(self):
+                return []
+
+        chat_controller = MinimalChatController()
+        logger.info("Using minimal chat controller fallback")
 
 # Configuration
 PORT = int(os.getenv("PORT", "8000"))
