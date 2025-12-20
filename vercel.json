@@ -11,8 +11,12 @@
   ],
   "routes": [
     {
-      "src": "/(.*)",
+      "src": "/api/(.*)",
       "dest": "/api/app.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/website/frontend/$1"
     }
   ],
   "env": {
