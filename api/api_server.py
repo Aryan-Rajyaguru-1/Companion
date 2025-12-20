@@ -16,7 +16,7 @@ Environment variables:
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import os
@@ -177,13 +177,19 @@ async def verify_api_key(x_api_key: str = Header(None)):
 # API Endpoints
 @app.get("/")
 async def root():
-    return {
-        "message": "Companion Brain API Server",
-        "version": "4.0.0",
-        "description": "Professional-grade AI Assistant API with unified chat management",
-        "status": "running",
-        "agents": list(chat_controller.agents.keys())
-    }
+    """Serve the web UI"""
+    try:
+        with open("index.html", "r") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content, media_type="text/html")
+    except FileNotFoundError:
+        return {
+            "message": "Companion Brain API Server",
+            "version": "4.0.0",
+            "description": "Professional-grade AI Assistant API with unified chat management",
+            "status": "running",
+            "agents": list(chat_controller.agents.keys())
+        }
 
 @app.get("/health")
 async def health():
