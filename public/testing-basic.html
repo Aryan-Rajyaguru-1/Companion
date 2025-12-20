@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DeepCompanion Testing</title>
+    <meta charset="UTF-8">
+    <style>
+        body { 
+            background: black; 
+            color: white; 
+            font-family: Arial; 
+            margin: 20px; 
+        }
+        .box { 
+            background: #333; 
+            padding: 20px; 
+            margin: 10px 0; 
+            border-radius: 5px; 
+        }
+        button { 
+            background: #007acc; 
+            color: white; 
+            border: none; 
+            padding: 10px 15px; 
+            margin: 5px; 
+            cursor: pointer; 
+        }
+        textarea { 
+            width: 100%; 
+            height: 80px; 
+            background: #222; 
+            color: white; 
+            border: 1px solid #555; 
+            padding: 10px; 
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 DeepCompanion AI Testing</h1>
+    
+    <div class="box">
+        <h3>Select Model:</h3>
+        <button onclick="setModel('chat')">💬 Chat</button>
+        <button onclick="setModel('think')">🤔 Think</button>
+        <button onclick="setModel('code')">💻 Code</button>
+        <button onclick="setModel('advanced')">🧠 Advanced</button>
+        <p>Current: <span id="model">Chat</span></p>
+    </div>
+    
+    <div class="box">
+        <h3>Test Prompt:</h3>
+        <textarea id="prompt" placeholder="Enter your test..."></textarea><br>
+        <button onclick="test()">▶️ Run Test</button>
+        <button onclick="clear()">🗑️ Clear</button>
+    </div>
+    
+    <div class="box">
+        <h3>Results:</h3>
+        <div id="output">Ready to test!</div>
+    </div>
+    
+    <script>
+        var currentModel = 'chat';
+        
+        function setModel(model) {
+            currentModel = model;
+            document.getElementById('model').textContent = model.charAt(0).toUpperCase() + model.slice(1);
+        }
+        
+        function test() {
+            var prompt = document.getElementById('prompt').value;
+            if (!prompt) {
+                alert('Enter a prompt first!');
+                return;
+            }
+            
+            document.getElementById('output').innerHTML = 'Testing...';
+            
+            setTimeout(function() {
+                var result = 'Response from ' + currentModel + ' model:<br><br>';
+                result += '<strong>Input:</strong> ' + prompt + '<br><br>';
+                result += '<strong>Output:</strong> This is a test response from the ' + currentModel + ' AI model. ';
+                result += 'Your input was "' + prompt.substring(0, 30) + '..." ';
+                result += 'In a real setup, this would connect to Ollama.';
+                
+                document.getElementById('output').innerHTML = result;
+            }, 1000);
+        }
+        
+        function clear() {
+            document.getElementById('output').innerHTML = 'Ready to test!';
+            document.getElementById('prompt').value = '';
+        }
+    </script>
+</body>
+</html>

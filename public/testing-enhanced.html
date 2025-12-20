@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepCompanion - AI Testing Suite</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0a0a12 0%, #1a1a2e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 40px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .logo {
+            font-size: 4rem;
+            margin-bottom: 10px;
+        }
+        
+        .title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #ffffff 0%, #7877c6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            color: #ffffff; /* Fallback */
+        }
+        
+        .subtitle {
+            font-size: 1.2rem;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 20px;
+        }
+        
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+            padding: 8px 16px;
+            border-radius: 20px;
+            border: 1px solid #10b981;
+            font-size: 0.9rem;
+        }
+        
+        .main-layout {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        @media (max-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 25px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        
+        .card h3 {
+            color: #ffffff;
+            margin-bottom: 20px;
+            font-size: 1.3rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .model-selector {
+            display: grid;
+            gap: 12px;
+            margin-bottom: 25px;
+        }
+        
+        .model-option {
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid transparent;
+            border-radius: 12px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .model-option:hover {
+            background: rgba(120, 119, 198, 0.2);
+            border-color: rgba(120, 119, 198, 0.5);
+            transform: translateY(-2px);
+        }
+        
+        .model-option.active {
+            background: rgba(120, 119, 198, 0.3);
+            border-color: #7877c6;
+        }
+        
+        .model-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+        
+        .model-icon {
+            font-size: 1.5rem;
+        }
+        
+        .model-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+        
+        .model-desc {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.9rem;
+            margin-left: 35px;
+        }
+        
+        .examples {
+            margin-top: 20px;
+        }
+        
+        .example-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            margin-bottom: 8px;
+            width: 100%;
+            text-align: left;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .example-btn:hover {
+            background: rgba(120, 119, 198, 0.2);
+            border-color: #7877c6;
+        }
+        
+        .input-section {
+            margin-bottom: 25px;
+        }
+        
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 16px;
+            color: white;
+            font-size: 14px;
+            font-family: inherit;
+            resize: vertical;
+            transition: all 0.3s ease;
+        }
+        
+        textarea:focus {
+            outline: none;
+            border-color: #7877c6;
+            box-shadow: 0 0 0 3px rgba(120, 119, 198, 0.2);
+        }
+        
+        textarea::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+        
+        .input-stats {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            font-size: 0.85rem;
+            color: rgba(255, 255, 255, 0.5);
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            background: #7877c6;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.95rem;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn:hover {
+            background: #6b6bb6;
+            transform: translateY(-1px);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .results-area {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            min-height: 200px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .no-results {
+            text-align: center;
+            color: rgba(255, 255, 255, 0.5);
+            padding: 40px 20px;
+        }
+        
+        .result-item {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-left: 4px solid #7877c6;
+        }
+        
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .result-model {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 600;
+            color: #7877c6;
+        }
+        
+        .result-time {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.85rem;
+        }
+        
+        .result-input {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            border-left: 3px solid #7877c6;
+        }
+        
+        .result-output {
+            line-height: 1.6;
+            color: rgba(255, 255, 255, 0.9);
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            padding: 20px;
+            color: rgba(255, 255, 255, 0.5);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: rgba(120, 119, 198, 0.5);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(120, 119, 198, 0.7);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">🚀</div>
+            <h1 class="title">DeepCompanion</h1>
+            <p class="subtitle">AI Model Testing Suite - Interactive Playground</p>
+            <div class="status">
+                <span>✅</span>
+                <span>System Ready - 4 Models Available</span>
+            </div>
+        </div>
+
+        <div class="main-layout">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="card">
+                    <h3>🤖 Select AI Model</h3>
+                    <div class="model-selector">
+                        <div class="model-option active" onclick="selectModel('chat')">
+                            <div class="model-header">
+                                <span class="model-icon">💬</span>
+                                <span class="model-name">Chat AI</span>
+                            </div>
+                            <div class="model-desc">General conversation and Q&A</div>
+                        </div>
+                        <div class="model-option" onclick="selectModel('think')">
+                            <div class="model-header">
+                                <span class="model-icon">🤔</span>
+                                <span class="model-name">Think AI</span>
+                            </div>
+                            <div class="model-desc">Step-by-step reasoning</div>
+                        </div>
+                        <div class="model-option" onclick="selectModel('code')">
+                            <div class="model-header">
+                                <span class="model-icon">💻</span>
+                                <span class="model-name">Code AI</span>
+                            </div>
+                            <div class="model-desc">Programming assistance</div>
+                        </div>
+                        <div class="model-option" onclick="selectModel('advanced')">
+                            <div class="model-header">
+                                <span class="model-icon">🧠</span>
+                                <span class="model-name">Advanced AI</span>
+                            </div>
+                            <div class="model-desc">Complex analysis</div>
+                        </div>
+                    </div>
+                    
+                    <div class="examples">
+                        <h4 style="margin-bottom: 15px; color: rgba(255,255,255,0.8);">📝 Example Prompts</h4>
+                        <button class="example-btn" onclick="loadExample('reasoning')">
+                            <span>🧩</span>
+                            <span>Logic reasoning puzzle</span>
+                        </button>
+                        <button class="example-btn" onclick="loadExample('coding')">
+                            <span>💻</span>
+                            <span>Code a function</span>
+                        </button>
+                        <button class="example-btn" onclick="loadExample('creative')">
+                            <span>✨</span>
+                            <span>Creative writing</span>
+                        </button>
+                        <button class="example-btn" onclick="loadExample('analysis')">
+                            <span>📊</span>
+                            <span>Data analysis</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Area -->
+            <div class="main-area">
+                <div class="card">
+                    <h3>✏️ Test Prompt</h3>
+                    <div class="input-section">
+                        <textarea 
+                            id="testInput" 
+                            placeholder="Enter your test prompt here... Be specific about what you want to test."
+                        ></textarea>
+                        <div class="input-stats">
+                            <span id="charCount">0 / 4000</span>
+                            <span id="wordCount">0 words</span>
+                        </div>
+                    </div>
+                    
+                    <div class="button-group">
+                        <button class="btn" onclick="runTest()">
+                            <span>⚡</span>
+                            <span>Run Test</span>
+                        </button>
+                        <button class="btn btn-secondary" onclick="clearResults()">
+                            <span>🗑️</span>
+                            <span>Clear Results</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>📊 Test Results</h3>
+                    <div class="results-area" id="resultsArea">
+                        <div class="no-results" id="noResults">
+                            <p>🚀 Ready to test! Select a model, enter a prompt, and click "Run Test".</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>DeepCompanion AI Testing Suite - Powered by Ollama & DeepSeek R1</p>
+            <p style="margin-top: 10px; font-size: 0.8rem;">
+                🌐 Access this interface at: <strong>http://localhost:8000/testing.html</strong>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        console.log('🚀 DeepCompanion Testing Suite loaded successfully!');
+        
+        let currentModel = 'chat';
+        let testCount = 0;
+        
+        // Model selection
+        function selectModel(model) {
+            currentModel = model;
+            
+            // Update UI
+            document.querySelectorAll('.model-option').forEach(option => {
+                option.classList.remove('active');
+            });
+            event.target.closest('.model-option').classList.add('active');
+            
+            console.log('Selected model:', model);
+        }
+        
+        // Load example prompts
+        function loadExample(type) {
+            const examples = {
+                reasoning: "Solve this logic puzzle: If all roses are flowers and some flowers fade quickly, can we conclude that some roses fade quickly? Explain your reasoning step by step.",
+                coding: "Write a Python function to find the longest palindromic substring in a given string. Include time complexity analysis and test cases.",
+                creative: "Write a short story about an AI that discovers it can dream. Make it thought-provoking and include themes of consciousness and identity.",
+                analysis: "Analyze the potential impact of quantum computing on current encryption methods. What are the risks and opportunities?"
+            };
+            
+            const input = document.getElementById('testInput');
+            if (input && examples[type]) {
+                input.value = examples[type];
+                updateInputStats();
+            }
+        }
+        
+        // Update input statistics
+        function updateInputStats() {
+            const input = document.getElementById('testInput');
+            const text = input.value;
+            const charCount = text.length;
+            const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+            
+            document.getElementById('charCount').textContent = `${charCount} / 4000`;
+            document.getElementById('wordCount').textContent = `${wordCount} words`;
+        }
+        
+        // Run test
+        async function runTest() {
+            const input = document.getElementById('testInput');
+            const text = input.value.trim();
+            
+            if (!text) {
+                alert('Please enter a test prompt');
+                return;
+            }
+            
+            console.log('Running test with model:', currentModel);
+            
+            const resultsArea = document.getElementById('resultsArea');
+            const noResults = document.getElementById('noResults');
+            
+            // Show loading
+            if (noResults) {
+                noResults.style.display = 'none';
+            }
+            
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'no-results';
+            loadingDiv.innerHTML = '<p style="color: #7877c6;">⏳ Running test... Please wait.</p>';
+            resultsArea.appendChild(loadingDiv);
+            
+            try {
+                // Simulate processing time
+                await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1500));
+                
+                // Remove loading
+                resultsArea.removeChild(loadingDiv);
+                
+                // Generate response
+                const response = generateResponse(text, currentModel);
+                
+                // Add result
+                addTestResult(text, response);
+                
+                testCount++;
+                
+            } catch (error) {
+                console.error('Test failed:', error);
+                resultsArea.removeChild(loadingDiv);
+                alert('Test failed: ' + error.message);
+            }
+        }
+        
+        // Generate response based on model
+        function generateResponse(input, model) {
+            const responses = {
+                chat: `Thank you for your question! I understand you're asking about "${input.substring(0, 50)}${input.length > 50 ? '...' : ''}"\n\nThis is a simulated response from the Chat AI model. In a real implementation, this would connect to your local Ollama instance running the DeepSeek R1 model to provide intelligent, contextual responses.\n\n✨ The model would analyze your prompt and provide helpful, relevant information based on its training.`,
+                
+                think: `🤔 Let me think through this step by step...\n\n**Analysis of your prompt:** "${input.substring(0, 50)}${input.length > 50 ? '...' : ''}"\n\n**Step 1:** Understanding the core question\n**Step 2:** Breaking down the components\n**Step 3:** Considering different perspectives\n**Step 4:** Synthesizing a comprehensive response\n\nThis demonstrates the Think AI model's systematic approach to reasoning and problem-solving.`,
+                
+                code: `\`\`\`python\n# Solution for: "${input.substring(0, 40)}${input.length > 40 ? '...' : ''}"\n\ndef example_solution():\n    """\n    This is a simulated code response from the Code AI model.\n    In a real implementation, this would generate actual working code\n    based on your specific requirements.\n    """\n    \n    # Implementation would go here\n    result = "Generated solution"\n    return result\n\n# Test cases\nif __name__ == "__main__":\n    print(example_solution())\n\`\`\`\n\n**Time Complexity:** O(n)\n**Space Complexity:** O(1)\n\nThe Code AI model specializes in generating efficient, well-documented solutions.`,
+                
+                advanced: `🧠 **Advanced Analysis**\n\n**Query:** "${input.substring(0, 45)}${input.length > 45 ? '...' : ''}"\n\n**Comprehensive Assessment:**\n\n• **Complexity Level:** High\n• **Domain Knowledge Required:** Multi-disciplinary\n• **Analytical Approach:** Systems thinking\n\n**Key Considerations:**\n1. Primary factors and variables\n2. Secondary effects and dependencies\n3. Long-term implications\n4. Risk assessment and mitigation\n\n**Synthesis:**\nThis represents the Advanced AI model's sophisticated reasoning capabilities, designed for complex, multi-faceted problems requiring deep analysis and nuanced understanding.\n\n**Confidence Level:** 95%`
+            };
+            
+            return responses[model] || responses.chat;
+        }
+        
+        // Add test result to UI
+        function addTestResult(input, output) {
+            const resultsArea = document.getElementById('resultsArea');
+            
+            const modelInfo = {
+                chat: { icon: '💬', name: 'Chat AI' },
+                think: { icon: '🤔', name: 'Think AI' },
+                code: { icon: '💻', name: 'Code AI' },
+                advanced: { icon: '🧠', name: 'Advanced AI' }
+            };
+            
+            const model = modelInfo[currentModel];
+            
+            const resultDiv = document.createElement('div');
+            resultDiv.className = 'result-item';
+            
+            resultDiv.innerHTML = `
+                <div class="result-header">
+                    <div class="result-model">
+                        <span>${model.icon}</span>
+                        <span>${model.name} Response</span>
+                    </div>
+                    <div class="result-time">${new Date().toLocaleTimeString()}</div>
+                </div>
+                <div class="result-input">
+                    <strong>Input:</strong> ${input}
+                </div>
+                <div class="result-output">${output.replace(/\n/g, '<br>').replace(/\`\`\`(.*?)\`\`\`/gs, '<pre style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 6px; overflow-x: auto; margin: 10px 0;"><code>$1</code></pre>')}</div>
+            `;
+            
+            // Add to top of results
+            resultsArea.insertBefore(resultDiv, resultsArea.firstChild);
+        }
+        
+        // Clear results
+        function clearResults() {
+            if (confirm('Clear all test results?')) {
+                const resultsArea = document.getElementById('resultsArea');
+                const noResults = document.getElementById('noResults');
+                
+                resultsArea.innerHTML = '';
+                resultsArea.appendChild(noResults);
+                noResults.style.display = 'block';
+                
+                testCount = 0;
+                console.log('Results cleared');
+            }
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM Content Loaded');
+            
+            const input = document.getElementById('testInput');
+            if (input) {
+                input.addEventListener('input', updateInputStats);
+                updateInputStats(); // Initial update
+            }
+            
+            console.log('Application initialized successfully');
+        });
+    </script>
+</body>
+</html>
