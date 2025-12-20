@@ -15,8 +15,12 @@
       "dest": "/companion_baas/api/api_server.py"
     },
     {
-      "src": "/(.*)",
+      "src": "/(.*\\.(css|js|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot))$",
       "dest": "/website/frontend/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/website/frontend/index.html"
     }
   ],
   "env": {
