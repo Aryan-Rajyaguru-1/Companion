@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import os
 import time
 import logging
@@ -26,22 +26,20 @@ import asyncio
 import json
 import uuid
 
-# Import database
+# Import unified chat controller
 try:
-    from ..core.database import db
+    from ..core.chat_controller import chat_controller
 except ImportError:
     # Fallback for direct execution
     import sys
     import os
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from core.database import db
+    from core.chat_controller import chat_controller
 
 # Configuration
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-change-this")
-PROVIDER = os.getenv("PROVIDER", "groq").lower()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # Logging
 logging.basicConfig(
@@ -53,8 +51,8 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI
 app = FastAPI(
     title="Companion Brain API",
-    description=f"AI Assistant powered by {PROVIDER}",
-    version="3.0.0"
+    description="Professional-grade AI Assistant API with unified chat management",
+    version="4.0.0"
 )
 
 # CORS
@@ -66,36 +64,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize clients based on provider
-groq_client = None
-if PROVIDER == "groq" and GROQ_API_KEY:
-    try:
-        groq_client = Groq(api_key=GROQ_API_KEY)
-        logger.info("✅ Groq client initialized successfully!")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Groq: {e}")
-elif PROVIDER == "groq":
-    logger.warning("⚠️  PROVIDER=groq but no GROQ_API_KEY - will use fallback")
-
-# Conversation storage now handled by database
-# conversations = {}
-
 # Request/Response Models
-class ThinkRequest(BaseModel):
-    message: str
-    use_agi: Optional[bool] = True
-    max_tokens: Optional[int] = 2048
-    temperature: Optional[float] = 0.7
-
 class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None
+    agent: Optional[str] = "companion"  # companion, groq, minimal
     stream: Optional[bool] = False
-
-class ConversationResponse(BaseModel):
-    conversation_id: str
-    messages: list
-    created_at: str
+    max_tokens: Optional[int] = 2048
+    temperature: Optional[float] = 0.7
 
 class MessageResponse(BaseModel):
     id: str
@@ -104,12 +80,22 @@ class MessageResponse(BaseModel):
     content: str
     agent: Optional[str] = None
     timestamp: str
+    metadata: Optional[Dict[str, Any]] = {}
 
-class ThinkResponse(BaseModel):
-    response: str
-    processing_time: float
-    model_used: str
-    success: bool
+class ConversationResponse(BaseModel):
+    conversation_id: str
+    messages: List[Dict[str, Any]]
+    created_at: str
+    updated_at: str
+
+class ConversationSummary(BaseModel):
+    id: str
+    message_count: int
+    created_at: str
+    updated_at: str
+
+class CreateConversationResponse(BaseModel):
+    conversation_id: str
 
 # Authentication
 async def verify_api_key(x_api_key: str = Header(None)):
@@ -117,224 +103,165 @@ async def verify_api_key(x_api_key: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return True
 
-# AI Response Generator
-def generate_response(message: str, max_tokens: int = 2048, temperature: float = 0.7) -> str:
-    """Generate response based on provider"""
-    
-    if PROVIDER == "groq" and groq_client:
-        return generate_groq_response(message, max_tokens, temperature)
-    elif PROVIDER == "local":
-        return generate_local_response(message, max_tokens, temperature)
-    else:  # minimal or fallback
-        return generate_minimal_response(message, max_tokens, temperature)
-
-def generate_groq_response(message: str, max_tokens: int = 2048, temperature: float = 0.7) -> str:
-    """Generate response using Groq API"""
-    try:
-        chat_completion = groq_client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are Companion Brain, an intelligent AI assistant. Provide helpful, accurate, and friendly responses."
-                },
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ],
-            model="llama-3.3-70b-versatile",
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-        return chat_completion.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Groq API error: {e}")
-        return f"⚠️ Groq API error: {str(e)}"
-
-def generate_local_response(message: str, max_tokens: int = 2048, temperature: float = 0.7) -> str:
-    """Generate response using local companion_baas brain"""
-    try:
-        # Import and use local brain
-        from companion_baas.core.brain import Brain
-        
-        brain = Brain()
-        response = brain.think(message, use_agi=True)
-        return response.get('response', 'Local brain response unavailable')
-    except Exception as e:
-        logger.error(f"Local brain error: {e}")
-        return f"⚠️ Local brain error: {str(e)}"
-
-def generate_minimal_response(message: str, max_tokens: int = 2048, temperature: float = 0.7) -> str:
-    """Generate minimal fallback response"""
-    return f"Hello! I received your message: '{message}'. This is a minimal response - configure a proper provider for full functionality."
-
 # API Endpoints
 @app.get("/")
 async def root():
     return {
         "message": "Companion Brain API Server",
-        "version": "3.0.0",
-        "provider": PROVIDER,
-        "status": "running"
+        "version": "4.0.0",
+        "description": "Professional-grade AI Assistant API with unified chat management",
+        "status": "running",
+        "agents": list(chat_controller.agents.keys())
     }
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "provider": PROVIDER}
+    return {
+        "status": "healthy",
+        "version": "4.0.0",
+        "agents_available": list(chat_controller.agents.keys())
+    }
 
 @app.post("/chat", response_model=MessageResponse)
 async def chat(request: ChatRequest, authenticated: bool = Depends(verify_api_key)):
-    conversation_id = request.conversation_id or f"conv_{int(time.time())}"
-    
-    # Initialize conversation if it doesn't exist
-    conversation = db.get_conversation(conversation_id)
-    if not conversation:
-        db.create_conversation(conversation_id)
-    
-    # Add user message
-    user_message = {
-        "id": str(uuid.uuid4()),
-        "role": "user",
-        "type": "user",
-        "content": request.message,
-        "timestamp": str(time.time())
-    }
-    db.add_message(conversation_id, user_message)
-    
-    # Generate response
+    """Send a chat message and get response"""
     try:
-        response_content = generate_response(request.message)
-        
-        ai_message = {
-            "id": str(uuid.uuid4()),
-            "role": "assistant",
-            "type": "assistant",
-            "content": response_content,
-            "timestamp": str(time.time())
-        }
-        db.add_message(conversation_id, ai_message)
-        
-        return MessageResponse(**ai_message)
+        # Create conversation if not provided
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            conversation_id = chat_controller.create_conversation()
+
+        # Send message through chat controller
+        response_message = chat_controller.send_message(
+            conversation_id=conversation_id,
+            message=request.message,
+            agent=request.agent,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature
+        )
+
+        return MessageResponse(**response_message.to_dict())
     except Exception as e:
-        error_message = {
-            "id": str(uuid.uuid4()),
-            "role": "system",
-            "type": "error",
-            "content": f"Error: {str(e)}",
-            "timestamp": str(time.time())
-        }
-        db.add_message(conversation_id, error_message)
-        return MessageResponse(**error_message)
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest, authenticated: bool = Depends(verify_api_key)):
-    conversation_id = request.conversation_id or f"conv_{int(time.time())}"
-    
-    # Initialize conversation if it doesn't exist
-    conversation = db.get_conversation(conversation_id)
-    if not conversation:
-        db.create_conversation(conversation_id)
-    
-    # Add user message
-    user_message = {
-        "id": str(uuid.uuid4()),
-        "role": "user",
-        "type": "user",
-        "content": request.message,
-        "timestamp": str(time.time())
-    }
-    db.add_message(conversation_id, user_message)
-    
-    return StreamingResponse(
-        stream_response(request.message, conversation_id),
-        media_type="text/plain"
-    )
-
-async def stream_response(message: str, conversation_id: str):
-    """Stream the AI response"""
+    """Stream a chat response"""
     try:
-        # Simulate streaming by yielding chunks
-        response_text = generate_response(message)
-        
-        # Split response into chunks for streaming effect
-        words = response_text.split()
-        ai_message = {
-            "id": str(uuid.uuid4()),
-            "role": "assistant",
-            "type": "assistant",
-            "content": "",
-            "timestamp": str(time.time())
-        }
-        
-        for i, word in enumerate(words):
-            ai_message["content"] += word + " "
-            
-            # Yield the current message state
-            yield f"data: {json.dumps(ai_message)}\n\n"
-            
-            # Small delay for streaming effect
-            await asyncio.sleep(0.05)
-        
-        # Add final message to conversation
-        db.add_message(conversation_id, ai_message)
-        
+        # Create conversation if not provided
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            conversation_id = chat_controller.create_conversation()
+
+        return StreamingResponse(
+            stream_chat_response(
+                conversation_id=conversation_id,
+                message=request.message,
+                agent=request.agent,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature
+            ),
+            media_type="text/plain"
+        )
+    except Exception as e:
+        logger.error(f"Stream chat error: {e}")
+        raise HTTPException(status_code=500, detail=f"Stream chat error: {str(e)}")
+
+async def stream_chat_response(conversation_id: str, message: str, agent: str = "companion",
+                              max_tokens: int = 2048, temperature: float = 0.7):
+    """Stream chat response from chat controller"""
+    try:
+        # Send message through chat controller
+        response_message = chat_controller.send_message(
+            conversation_id=conversation_id,
+            message=message,
+            agent=agent,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+
+        # Stream the response content word by word
+        words = response_message.content.split()
+        current_content = ""
+
+        for word in words:
+            current_content += word + " "
+            streamed_message = response_message.to_dict()
+            streamed_message["content"] = current_content.strip()
+
+            yield f"data: {json.dumps(streamed_message)}\n\n"
+            await asyncio.sleep(0.05)  # Small delay for streaming effect
+
         # Send completion signal
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        
+
     except Exception as e:
+        logger.error(f"Streaming error: {e}")
         error_message = {
             "id": str(uuid.uuid4()),
             "role": "system",
             "type": "error",
-            "content": f"Error: {str(e)}",
-            "timestamp": str(time.time())
+            "content": f"Streaming error: {str(e)}",
+            "timestamp": time.time(),
+            "agent": agent
         }
-        db.add_message(conversation_id, error_message)
-        yield f"data: {json.dumps(error_message)}\n\n"
-
 @app.get("/conversations")
 async def get_conversations(authenticated: bool = Depends(verify_api_key)):
-    conversations = db.get_all_conversations()
-    return {
-        "conversations": [
-            {
-                "id": conv["id"],
-                "message_count": conv["message_count"],
-                "created_at": conv["created_at"],
-                "updated_at": conv["updated_at"]
-            }
-            for conv in conversations
-        ]
-    }
+    """Get all conversations"""
+    try:
+        conversations = chat_controller.list_conversations()
+        return {"conversations": conversations}
+    except Exception as e:
+        logger.error(f"Get conversations error: {e}")
+        raise HTTPException(status_code=500, detail=f"Get conversations error: {str(e)}")
 
-@app.get("/conversations/{conversation_id}")
+@app.get("/conversations/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(conversation_id: str, authenticated: bool = Depends(verify_api_key)):
-    conversation = db.get_conversation(conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    
-    return ConversationResponse(
-        conversation_id=conversation_id,
-        messages=conversation["messages"],
-        created_at=conversation["created_at"]
-    )
+    """Get a specific conversation with message history"""
+    try:
+        conversation = chat_controller.get_conversation(conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        return ConversationResponse(
+            conversation_id=conversation_id,
+            messages=conversation.get_messages(),
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get conversation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Get conversation error: {str(e)}")
 
 @app.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str, authenticated: bool = Depends(verify_api_key)):
-    conversation = db.get_conversation(conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    
-    db.delete_conversation(conversation_id)
-    return {"message": "Conversation deleted"}
+    """Delete a conversation"""
+    try:
+        success = chat_controller.delete_conversation(conversation_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
-@app.post("/conversations")
+        return {"message": "Conversation deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete conversation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Delete conversation error: {str(e)}")
+
+@app.post("/conversations", response_model=CreateConversationResponse)
 async def create_conversation(authenticated: bool = Depends(verify_api_key)):
-    conversation_id = f"conv_{int(time.time())}"
-    db.create_conversation(conversation_id)
-    return {"conversation_id": conversation_id}
-
+    """Create a new conversation"""
+    try:
+        conversation_id = chat_controller.create_conversation()
+        return CreateConversationResponse(conversation_id=conversation_id)
+    except Exception as e:
+        logger.error(f"Create conversation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Create conversation error: {str(e)}")
 if __name__ == "__main__":
     import uvicorn
-    logger.info(f"🚀 Starting Companion Brain API Server on {HOST}:{PORT} with provider: {PROVIDER}")
+    logger.info(f"🚀 Starting Companion Brain API Server v4.0.0 on {HOST}:{PORT}")
+    logger.info(f"Available agents: {list(chat_controller.agents.keys())}")
     uvicorn.run(app, host=HOST, port=PORT)

@@ -159,6 +159,38 @@ body, html, * {
     transform: translateY(-1px);
 }
 
+/* Agent Selector */
+.agent-selector {
+    margin-top: 12px;
+    display: flex;
+    justify-content: center;
+}
+
+.agent-dropdown {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    padding: 8px 16px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+    cursor: pointer;
+    transition: var(--transition);
+    min-width: 180px;
+    text-align: center;
+}
+
+.agent-dropdown:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.2);
+}
+
+.agent-dropdown option {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
 .sidebar.collapsed {
     width: 60px;
 }

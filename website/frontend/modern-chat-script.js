@@ -296,65 +296,103 @@ class ModernChatInterface {
         if (this.isWelcomeState) {
             this.switchToChatView();
         }
-        
+
         // Create new conversation if none exists
         if (!this.currentChatId) {
             await this.createNewConversation();
         }
-        
+
+        // Get selected agent
+        const agentSelect = document.getElementById('agentSelect');
+        const selectedAgent = agentSelect ? agentSelect.value : 'companion';
+
         // Add user message to UI immediately
         this.addMessage('user', message);
-        
+
         // Show typing indicator
         this.showTypingIndicator();
-        
-        try {
-        // Collect active tools from checkboxes
-        const activeTools = Array.from(document.querySelectorAll('.tool-checkbox:checked')).map(cb => cb.dataset.tool);
 
-        // Show progress bar for tool operations
-        if (activeTools.length > 0) {
-            this.showProgressBar(activeTools[0]); // Show progress for the first active tool
-        }
-        
-        // Send message to backend (with auth, 401 auto-handling)
-        const response = await this.authFetch(`${this.apiBaseUrl}/conversations/${this.currentChatId}/messages`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ 
-                message: message,
-                tools: activeTools  // Include selected tools
-            })
-        });
-        if (!response.ok) {
-            throw new Error('Failed to send message');
-        }
-        const data = await response.json();
-        
-        // Hide progress bar
-        this.hideProgressBar();
-        
-        // Remove typing indicator
-        this.removeTypingIndicator();
-            
-            // Add AI response with learned status and thinking data if available
-            const thinkingData = data.assistant_message.thinking || null;
-            this.addMessage('assistant', data.assistant_message.content, data.message_id, data.is_learned || false, thinkingData);
-            
-            // Update chat history sidebar
-            this.loadChatHistory();
-            
+        try {
+            // Send message using the new chat API
+            const response = await chatApi.sendMessageStreaming(
+                message,
+                this.currentChatId,
+                selectedAgent,  // Use selected agent
+                (chunk) => {
+                    // Handle streaming chunks
+                    this.updateStreamingMessage(chunk);
+                },
+                () => {
+                    // On complete
+                    this.finalizeStreamingMessage();
+                    this.hideProgressBar();
+                    this.removeTypingIndicator();
+                    this.loadChatHistory();
+                },
+                (error) => {
+                    // On error
+                    console.error('Streaming error:', error);
+                    this.hideProgressBar();
+                    this.removeTypingIndicator();
+                    this.addMessage('assistant', 'Sorry, I encountered an error. Please try again.', null, false, null, selectedAgent);
+                }
+            );
+
         } catch (error) {
             console.error('Error sending message:', error);
-            this.hideProgressBar(); // Hide progress bar on error
+            this.hideProgressBar();
             this.removeTypingIndicator();
-            this.addMessage('assistant', 'Sorry, I encountered an error. Please try again.');
+            this.addMessage('assistant', 'Sorry, I encountered an error. Please try again.', null, false, null, selectedAgent);
         }
     }
 
-    addMessage(type, content, messageId = null, isLearned = false, thinkingData = null) {
+    // Streaming message handling
+    updateStreamingMessage(chunk) {
+        // Find or create the streaming message element
+        let streamingMessage = document.querySelector('.message.assistant-message.streaming');
+        if (!streamingMessage) {
+            streamingMessage = document.createElement('div');
+            streamingMessage.className = 'message assistant-message streaming';
+            streamingMessage.innerHTML = `
+                <div class="message-bubble">
+                    <div class="message-header">
+                        <img src="Logo.png" alt="Companion" class="message-avatar companion-logo">
+                        <span class="message-sender">${this.getAgentDisplayName(chunk.agent || 'companion')}</span>
+                        <span class="message-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                    </div>
+                    <div class="message-content streaming-content"></div>
+                </div>
+            `;
+            this.messagesContainer.appendChild(streamingMessage);
+            this.scrollToBottom();
+        }
+
+        // Update the content
+        const contentElement = streamingMessage.querySelector('.streaming-content');
+        if (contentElement) {
+            contentElement.innerHTML = this.formatMessage(chunk.content || '');
+        }
+    }
+
+    finalizeStreamingMessage() {
+        // Convert streaming message to final message
+        const streamingMessage = document.querySelector('.message.assistant-message.streaming');
+        if (streamingMessage) {
+            streamingMessage.classList.remove('streaming');
+            // Add any final styling or processing here
+        }
+    }
+
+    getAgentDisplayName(agent) {
+        const agentNames = {
+            'companion': 'Companion Brain',
+            'groq': 'Groq AI',
+            'minimal': 'Minimal AI'
+        };
+        return agentNames[agent] || 'AI Assistant';
+    }
+
+    addMessage(type, content, messageId = null, isLearned = false, thinkingData = null, agent = 'companion') {
         const messageElement = document.createElement('div');
         messageElement.className = `message ${type}-message`;
         messageElement.dataset.messageId = messageId || this.generateMessageId();
@@ -382,7 +420,7 @@ class ModernChatInterface {
                 <div class="message-bubble">
                     <div class="message-header">
                         <img src="Logo.png" alt="Companion" class="message-avatar companion-logo">
-                        <span class="message-sender">Companion</span>
+                        <span class="message-sender">${this.getAgentDisplayName(agent)}</span>
                         <span class="message-time">${time}</span>
                         <button class="show-thinking-btn" title="Show thinking process" style="display: ${thinkingData ? 'flex' : 'none'};">
                             <span>🧠</span>
