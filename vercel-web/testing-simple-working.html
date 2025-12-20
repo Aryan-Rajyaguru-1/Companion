@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepCompanion - Simple Testing</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0a0a12;
+            color: white;
+            margin: 0;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            color: #7877c6;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .test-section {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .model-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .model-btn {
+            background: rgba(120, 119, 198, 0.2);
+            color: white;
+            border: 1px solid #7877c6;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .model-btn:hover,
+        .model-btn.active {
+            background: #7877c6;
+        }
+        
+        textarea {
+            width: 100%;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 5px;
+            padding: 15px;
+            color: white;
+            font-size: 14px;
+            resize: vertical;
+        }
+        
+        .run-btn {
+            background: #7877c6;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        
+        .run-btn:hover {
+            background: #6b6bb6;
+        }
+        
+        .results {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 20px;
+            min-height: 100px;
+        }
+        
+        .result-item {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        
+        .result-header {
+            color: #7877c6;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 DeepCompanion - AI Testing Suite</h1>
+        
+        <div class="test-section">
+            <h3>1. Select AI Model</h3>
+            <div class="model-selector">
+                <button class="model-btn active" onclick="selectModel('chat')">💬 Chat AI</button>
+                <button class="model-btn" onclick="selectModel('think')">🤔 Think AI</button>
+                <button class="model-btn" onclick="selectModel('code')">💻 Code AI</button>
+                <button class="model-btn" onclick="selectModel('advanced')">🧠 Advanced AI</button>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h3>2. Enter Your Test Prompt</h3>
+            <textarea id="testInput" placeholder="Enter your test prompt here..."></textarea>
+            <div style="margin-top: 10px;">
+                <button class="run-btn" onclick="runTest()">Run Test</button>
+                <span style="margin-left: 20px; color: #888;">Selected: <span id="selectedModel">Chat AI</span></span>
+            </div>
+        </div>
+        
+        <div class="test-section">
+            <h3>3. Test Results</h3>
+            <div class="results" id="results">
+                <p style="color: #888; text-align: center;">No tests run yet. Enter a prompt above and click "Run Test".</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        console.log('DeepCompanion Simple Testing loaded!');
+        
+        let currentModel = 'chat';
+        
+        function selectModel(model) {
+            currentModel = model;
+            
+            // Update button states
+            document.querySelectorAll('.model-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Update display
+            const modelNames = {
+                chat: 'Chat AI',
+                think: 'Think AI', 
+                code: 'Code AI',
+                advanced: 'Advanced AI'
+            };
+            
+            document.getElementById('selectedModel').textContent = modelNames[model];
+            console.log('Selected model:', model);
+        }
+        
+        async function runTest() {
+            const input = document.getElementById('testInput').value.trim();
+            const resultsDiv = document.getElementById('results');
+            
+            if (!input) {
+                alert('Please enter a test prompt!');
+                return;
+            }
+            
+            console.log('Running test with:', currentModel, input);
+            
+            // Show loading
+            resultsDiv.innerHTML = '<p style="color: #7877c6;">⏳ Running test...</p>';
+            
+            // Simulate processing
+            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+            
+            // Generate response
+            const responses = {
+                chat: `💬 **Chat AI Response:**\n\nI understand your query: "${input.substring(0, 50)}${input.length > 50 ? '...' : ''}"\n\nThis is a simulated response from the Chat AI model. In a real deployment, this would connect to your local Ollama instance.`,
+                think: `🤔 **Think AI Response:**\n\nLet me analyze this step by step...\n\nYour prompt: "${input.substring(0, 40)}${input.length > 40 ? '...' : ''}"\n\nThis demonstrates the analytical thinking capabilities of the Think AI model.`,
+                code: `💻 **Code AI Response:**\n\n\`\`\`python\n# Solution for: "${input.substring(0, 30)}${input.length > 30 ? '...' : ''}"\ndef example_solution():\n    """Generated code response"""\n    return "This is a simulated code solution"\n\`\`\``,
+                advanced: `🧠 **Advanced AI Response:**\n\nComplex analysis for: "${input.substring(0, 25)}${input.length > 25 ? '...' : ''}"\n\nThis represents the Advanced AI model's sophisticated reasoning capabilities.`
+            };
+            
+            // Add result
+            const resultHTML = `
+                <div class="result-item">
+                    <div class="result-header">${responses[currentModel].split('\n')[0]} - ${new Date().toLocaleTimeString()}</div>
+                    <div>${responses[currentModel].substring(responses[currentModel].indexOf('\n') + 1).replace(/\n/g, '<br>')}</div>
+                </div>
+            `;
+            
+            if (resultsDiv.innerHTML.includes('No tests run yet')) {
+                resultsDiv.innerHTML = resultHTML;
+            } else {
+                resultsDiv.innerHTML = resultHTML + resultsDiv.innerHTML;
+            }
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM ready');
+        });
+    </script>
+</body>
+</html>
