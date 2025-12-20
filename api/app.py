@@ -60,7 +60,7 @@ async def health():
     """Health check endpoint"""
     return {"status": "healthy", "version": "1.0.0"}
 
-@app.post("/v1/chat", response_model=ChatResponse)
+@app.post("/v1/chat")  # response_model=ChatResponse
 async def chat_v1(request: ChatRequest):  # x_api_key: str = Header(None)
     """Unified chat endpoint with agent routing"""
     # Temporarily disable auth for testing
@@ -95,19 +95,18 @@ async def chat_v1(request: ChatRequest):  # x_api_key: str = Header(None)
     message_id = str(uuid.uuid4())
     timestamp = datetime.utcnow().isoformat() + "Z"
 
-    response = ChatResponse(
-        message=MessageResponse(
-            role="assistant",
-            content=content,
-            type="assistant",
-            id=message_id,
-            conversation_id=request.conversation_id,
-            timestamp=timestamp
-        ),
-        conversation_id=request.conversation_id
-    )
-
-    return response
+    # Simple response for testing
+    return {
+        "message": {
+            "role": "assistant",
+            "content": content,
+            "type": "assistant",
+            "id": message_id,
+            "conversation_id": request.conversation_id,
+            "timestamp": timestamp
+        },
+        "conversation_id": request.conversation_id
+    }
 
 @app.get("/v1/conversations")
 async def get_conversations():  # x_api_key: str = Header(None)
