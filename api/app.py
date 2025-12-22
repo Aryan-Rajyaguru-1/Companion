@@ -203,12 +203,6 @@ async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
             else:
                 content = "Brain interface not supported."
                 response_type = "error"
-                    )
-                    content = result.get('response', 'I apologize, but I could not generate a response.')
-                    response_type = "assistant"
-            else:
-                content = "Brain interface not supported."
-                response_type = "error"
         except Exception as e:
             print(f"Brain error: {e}")
             content = "I encountered an error while processing your request. Please try again."
