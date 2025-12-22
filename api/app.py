@@ -15,6 +15,10 @@ from typing import Optional
 import json
 import time
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Add companion_baas to path for brain imports
 current_dir = Path(__file__).parent
 baas_dir = current_dir.parent / "companion_baas"
@@ -77,7 +81,7 @@ class ChatResponse(BaseModel):
 conversations = {}
 
 # API Key authentication
-API_KEY = os.getenv("COMPANION_API_KEY", "your-secret-api-key-change-this")
+API_KEY = os.getenv("API_KEY", "your-secret-api-key-change-this")
 
 async def verify_api_key(x_api_key: str = Header(None)):
     if not x_api_key or x_api_key != API_KEY:
@@ -139,17 +143,6 @@ async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
     }
 
     return response
-    return {
-        "message": {
-            "role": "assistant",
-            "content": content,
-            "type": "assistant",
-            "id": message_id,
-            "conversation_id": conversation_id,
-            "timestamp": timestamp
-        },
-        "conversation_id": conversation_id
-    }
 
 @app.get("/v1/conversations")
 async def get_conversations(x_api_key: str = Header(None)):
