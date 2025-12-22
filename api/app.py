@@ -29,8 +29,16 @@ try:
     from sdk.client import Brain
     BRAIN_AVAILABLE = True
 except ImportError as e:
-    print(f"Warning: Brain not available: {e}")
+    print(f"Warning: Full brain not available: {e}")
     BRAIN_AVAILABLE = False
+
+# Import Bytez client for Vercel (lighter alternative)
+try:
+    from core.bytez_client import BytezClient
+    BYTEZ_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Bytez client not available: {e}")
+    BYTEZ_AVAILABLE = False
 
 # Vercel-compatible FastAPI app
 app = FastAPI(title="Companion AI API", version="1.0.0")
@@ -41,14 +49,37 @@ brain_instance = None
 def get_brain():
     """Lazy initialization of brain for Vercel cold starts"""
     global brain_instance
-    if brain_instance is None and BRAIN_AVAILABLE:
-        try:
-            print("🚀 Initializing Companion Brain...")
-            brain_instance = Brain(app_type="chatbot", enable_agi=True)
-            print("✅ Brain initialized successfully")
-        except Exception as e:
-            print(f"❌ Failed to initialize brain: {e}")
+    if brain_instance is None:
+        # Check if we're on Vercel (serverless environment)
+        is_vercel = os.getenv("VERCEL") == "1" or os.getenv("VERCEL_ENV") is not None
+
+        if is_vercel and BYTEZ_AVAILABLE:
+            # Use Bytez client for Vercel (lighter, serverless-compatible)
+            try:
+                api_key = os.getenv("BYTEZ_API_KEY")
+                if api_key:
+                    print("🚀 Initializing Bytez brain for Vercel...")
+                    brain_instance = BytezClient(api_key)
+                    print("✅ Bytez brain initialized successfully")
+                else:
+                    print("❌ BYTEZ_API_KEY not found")
+                    brain_instance = None
+            except Exception as e:
+                print(f"❌ Failed to initialize Bytez brain: {e}")
+                brain_instance = None
+        elif BRAIN_AVAILABLE:
+            # Use full brain for local/development
+            try:
+                print("🚀 Initializing Companion Brain...")
+                brain_instance = Brain(app_type="chatbot", enable_agi=True)
+                print("✅ Brain initialized successfully")
+            except Exception as e:
+                print(f"❌ Failed to initialize brain: {e}")
+                brain_instance = None
+        else:
+            print("❌ No brain implementation available")
             brain_instance = None
+
     return brain_instance
 
 # CORS middleware
@@ -110,14 +141,27 @@ async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
         response_type = "error"
     else:
         try:
-            # Use real brain for response
-            result = brain.chat(
-                message=message,
-                conversation_id=conversation_id,
-                user_id="vercel_user"  # Default user for Vercel
-            )
-            content = result.get('response', 'I apologize, but I could not generate a response.')
-            response_type = "assistant"
+            # Use brain for response - handle different brain types
+            if hasattr(brain, 'chat'):
+                if isinstance(brain, BytezClient):
+                    # Bytez client returns string directly
+                    content = brain.chat(
+                        prompt=message,
+                        system_prompt="You are a helpful AI assistant. Be friendly and informative."
+                    )
+                    response_type = "assistant"
+                else:
+                    # Full brain returns dict with 'response' key
+                    result = brain.chat(
+                        message=message,
+                        conversation_id=conversation_id,
+                        user_id="vercel_user"
+                    )
+                    content = result.get('response', 'I apologize, but I could not generate a response.')
+                    response_type = "assistant"
+            else:
+                content = "Brain interface not supported."
+                response_type = "error"
         except Exception as e:
             print(f"Brain error: {e}")
             content = "I encountered an error while processing your request. Please try again."
