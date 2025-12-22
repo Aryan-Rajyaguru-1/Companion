@@ -5,6 +5,7 @@ A professional-grade AI companion system with modular architecture, conversation
 ## Features
 
 - **Modular Architecture**: Clean separation between frontend, backend, and AI components
+- **Real Brain Integration**: Vercel API connected to Companion Brain with advanced reasoning capabilities
 - **Conversation Management**: Persistent chat history with SQLite database storage
 - **Agent System**: Extensible agent framework for various AI tasks
 - **Multiple LLM Providers**: Support for Groq, local models, and fallback responses

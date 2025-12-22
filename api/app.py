@@ -15,8 +15,37 @@ from typing import Optional
 import json
 import time
 
+# Add companion_baas to path for brain imports
+current_dir = Path(__file__).parent
+baas_dir = current_dir.parent / "companion_baas"
+sys.path.insert(0, str(baas_dir))
+
+# Import the real brain
+try:
+    from sdk.client import Brain
+    BRAIN_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Brain not available: {e}")
+    BRAIN_AVAILABLE = False
+
 # Vercel-compatible FastAPI app
 app = FastAPI(title="Companion AI API", version="1.0.0")
+
+# Global brain instance (lazy initialization for Vercel)
+brain_instance = None
+
+def get_brain():
+    """Lazy initialization of brain for Vercel cold starts"""
+    global brain_instance
+    if brain_instance is None and BRAIN_AVAILABLE:
+        try:
+            print("🚀 Initializing Companion Brain...")
+            brain_instance = Brain(app_type="chatbot", enable_agi=True)
+            print("✅ Brain initialized successfully")
+        except Exception as e:
+            print(f"❌ Failed to initialize brain: {e}")
+            brain_instance = None
+    return brain_instance
 
 # CORS middleware
 app.add_middleware(
@@ -62,33 +91,33 @@ async def health():
 
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
-    """Unified chat endpoint with agent routing"""
+    """Unified chat endpoint with real brain integration"""
     if not x_api_key or x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-    message = request.get("message", "")
-    conversation_id = request.get("conversation_id", "default")
+    message = request.message
+    conversation_id = request.conversation_id or "default"
 
-    # Simple agent routing based on keywords
-    message_lower = message.lower()
-    agent = "general"
-
-    if any(keyword in message_lower for keyword in ["code", "function", "python", "javascript", "program"]):
-        agent = "code"
-    elif any(keyword in message_lower for keyword in ["research", "find", "search", "information"]):
-        agent = "research"
-    elif any(keyword in message_lower for keyword in ["review", "check", "analyze", "test"]):
-        agent = "review"
-
-    # Generate response based on agent
-    if agent == "code":
-        content = f"I understand you need help with coding. Here's a simple Python example:\n\n```python\ndef fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n\n# Example usage\nfor i in range(10):\n    print(f'F({i}) = {fibonacci(i)}')\n```"
-    elif agent == "research":
-        content = "I can help you research topics. For Vercel deployment, I'm running in a serverless environment with limited access to external resources. Please provide more specific details about what you'd like to research."
-    elif agent == "review":
-        content = "I'll help you review your code. Please share the specific code you'd like me to analyze, and I'll provide feedback on potential improvements, bugs, or best practices."
+    # Get brain instance
+    brain = get_brain()
+    if not brain:
+        # Fallback to simple response if brain not available
+        content = "I'm sorry, the brain is currently unavailable. Please try again later."
+        response_type = "error"
     else:
-        content = f"Hello! I'm your Companion AI assistant. I detected that your message might be best handled by our {agent} agent. How can I help you today?"
+        try:
+            # Use real brain for response
+            result = brain.chat(
+                message=message,
+                conversation_id=conversation_id,
+                user_id="vercel_user"  # Default user for Vercel
+            )
+            content = result.get('response', 'I apologize, but I could not generate a response.')
+            response_type = "assistant"
+        except Exception as e:
+            print(f"Brain error: {e}")
+            content = "I encountered an error while processing your request. Please try again."
+            response_type = "error"
 
     # Create response
     import uuid
@@ -97,7 +126,19 @@ async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
     message_id = str(uuid.uuid4())
     timestamp = datetime.utcnow().isoformat() + "Z"
 
-    # Simple response for testing
+    response = {
+        "message": {
+            "role": "assistant",
+            "content": content,
+            "type": response_type,
+            "id": message_id,
+            "conversation_id": conversation_id,
+            "timestamp": timestamp
+        },
+        "conversation_id": conversation_id
+    }
+
+    return response
     return {
         "message": {
             "role": "assistant",

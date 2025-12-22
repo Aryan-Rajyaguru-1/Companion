@@ -84,6 +84,16 @@ After deployment, your API will be available at:
 - **API Routes**: `https://your-app.vercel.app/api/*`
 - **Frontend**: `https://your-app.vercel.app/*`
 
+### Brain Integration ✅
+
+The Vercel API is now fully connected to the Companion Brain system:
+- **Real AI Processing**: Messages are processed by the advanced Companion Brain
+- **Tool Calling**: Supports web search, code execution, and reasoning tools
+- **Fallback Handling**: Graceful degradation when API keys are missing
+- **Session Management**: Conversation persistence across requests
+
+For full AI capabilities, ensure you set the API keys listed above.
+
 ## Testing Deployment
 
 ```bash
