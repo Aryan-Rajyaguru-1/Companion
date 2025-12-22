@@ -240,6 +240,83 @@ async def get_conversations(x_api_key: str = Header(None)):
     # Return empty list for Vercel compatibility
     return []
 
+@app.post("/v1/conversations")
+async def create_conversation(x_api_key: str = Header(None)):
+    """Create new conversation"""
+    if not x_api_key or x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    import uuid
+    conversation_id = str(uuid.uuid4())
+    return {"conversation_id": conversation_id}
+
+@app.get("/v1/conversations/{conversation_id}/messages")
+async def get_conversation_messages(conversation_id: str, x_api_key: str = Header(None)):
+    """Get messages for a conversation"""
+    if not x_api_key or x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    # Return empty list for Vercel compatibility
+    return []
+
+@app.post("/v1/conversations/{conversation_id}/messages")
+async def send_message_to_conversation(conversation_id: str, request: ChatRequest, x_api_key: str = Header(None)):
+    """Send message to conversation (alias for /v1/chat)"""
+    if not x_api_key or x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    # Use the same logic as /v1/chat but with conversation_id from URL
+    message = request.message
+
+    # Get brain instance
+    brain = get_brain()
+    if not brain:
+        # Fallback to simple response if brain not available
+        content = "I'm sorry, the brain is currently unavailable. Please try again later."
+        response_type = "error"
+    else:
+        try:
+            # Use brain for response - handle different brain types
+            if isinstance(brain, VercelBytezClient):
+                # Vercel Bytez client
+                content = brain.chat(
+                    prompt=message,
+                    system_prompt="You are Companion AI, a helpful and intelligent AI assistant. Be friendly, informative, and engaging in your responses."
+                )
+                response_type = "assistant"
+            elif hasattr(brain, 'chat'):
+                # Full brain returns dict with 'response' key
+                result = brain.chat(
+                    message=message,
+                    conversation_id=conversation_id,
+                    user_id="vercel_user"
+                )
+                content = result.get('response', 'I apologize, but I could not generate a response.')
+                response_type = "assistant"
+            else:
+                content = "Brain interface not supported."
+                response_type = "error"
+        except Exception as e:
+            print(f"Brain error: {e}")
+            content = "I encountered an error while processing your request. Please try again."
+            response_type = "error"
+
+    # Create response in the format expected by frontend
+    import uuid
+    from datetime import datetime
+
+    message_id = str(uuid.uuid4())
+    timestamp = datetime.utcnow().isoformat() + "Z"
+
+    return {
+        "message_id": message_id,
+        "assistant_message": {
+            "content": content,
+            "type": response_type
+        },
+        "is_learned": False
+    }
+
 # ============================================================================
 # Authentication endpoints (simplified for Vercel)
 # ============================================================================
