@@ -94,11 +94,13 @@ def get_brain():
     if brain_instance is None:
         # Check if we're on Vercel (serverless environment)
         is_vercel = os.getenv("VERCEL") == "1" or os.getenv("VERCEL_ENV") is not None
+        print(f"Environment check: VERCEL={os.getenv('VERCEL')}, VERCEL_ENV={os.getenv('VERCEL_ENV')}, is_vercel={is_vercel}")
 
         if is_vercel and REQUESTS_AVAILABLE:
             # Use lightweight Bytez client for Vercel
             try:
                 api_key = os.getenv("BYTEZ_API_KEY")
+                print(f"Bytez API key present: {bool(api_key)}")
                 if api_key:
                     print("🚀 Initializing Vercel Bytez brain...")
                     brain_instance = VercelBytezClient(api_key)
