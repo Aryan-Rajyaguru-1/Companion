@@ -34,11 +34,53 @@ except ImportError as e:
 
 # Import Bytez client for Vercel (lighter alternative)
 try:
-    from core.bytez_client import BytezClient
-    BYTEZ_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Bytez client not available: {e}")
-    BYTEZ_AVAILABLE = False
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+
+class VercelBytezClient:
+    """Lightweight Bytez client for Vercel using direct API calls"""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.bytez.com"
+        self.model = "Qwen/Qwen2.5-3B-Instruct"  # Light model that works well
+
+    def chat(self, prompt: str, system_prompt: str = None) -> str:
+        """Simple chat using Bytez API directly"""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        data = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": 1000,
+            "temperature": 0.7
+        }
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            print(f"Bytez API error: {e}")
+            raise Exception(f"Failed to get response from Bytez: {str(e)}")
 
 # Vercel-compatible FastAPI app
 app = FastAPI(title="Companion AI API", version="1.0.0")
@@ -53,19 +95,19 @@ def get_brain():
         # Check if we're on Vercel (serverless environment)
         is_vercel = os.getenv("VERCEL") == "1" or os.getenv("VERCEL_ENV") is not None
 
-        if is_vercel and BYTEZ_AVAILABLE:
-            # Use Bytez client for Vercel (lighter, serverless-compatible)
+        if is_vercel and REQUESTS_AVAILABLE:
+            # Use lightweight Bytez client for Vercel
             try:
                 api_key = os.getenv("BYTEZ_API_KEY")
                 if api_key:
-                    print("🚀 Initializing Bytez brain for Vercel...")
-                    brain_instance = BytezClient(api_key)
-                    print("✅ Bytez brain initialized successfully")
+                    print("🚀 Initializing Vercel Bytez brain...")
+                    brain_instance = VercelBytezClient(api_key)
+                    print("✅ Vercel Bytez brain initialized successfully")
                 else:
                     print("❌ BYTEZ_API_KEY not found")
                     brain_instance = None
             except Exception as e:
-                print(f"❌ Failed to initialize Bytez brain: {e}")
+                print(f"❌ Failed to initialize Vercel Bytez brain: {e}")
                 brain_instance = None
         elif BRAIN_AVAILABLE:
             # Use full brain for local/development
@@ -142,20 +184,25 @@ async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
     else:
         try:
             # Use brain for response - handle different brain types
-            if hasattr(brain, 'chat'):
-                if isinstance(brain, BytezClient):
-                    # Bytez client returns string directly
-                    content = brain.chat(
-                        prompt=message,
-                        system_prompt="You are a helpful AI assistant. Be friendly and informative."
-                    )
-                    response_type = "assistant"
-                else:
-                    # Full brain returns dict with 'response' key
-                    result = brain.chat(
-                        message=message,
-                        conversation_id=conversation_id,
-                        user_id="vercel_user"
+            if isinstance(brain, VercelBytezClient):
+                # Vercel Bytez client
+                content = brain.chat(
+                    prompt=message,
+                    system_prompt="You are Companion AI, a helpful and intelligent AI assistant. Be friendly, informative, and engaging in your responses."
+                )
+                response_type = "assistant"
+            elif hasattr(brain, 'chat'):
+                # Full brain returns dict with 'response' key
+                result = brain.chat(
+                    message=message,
+                    conversation_id=conversation_id,
+                    user_id="vercel_user"
+                )
+                content = result.get('response', 'I apologize, but I could not generate a response.')
+                response_type = "assistant"
+            else:
+                content = "Brain interface not supported."
+                response_type = "error"
                     )
                     content = result.get('response', 'I apologize, but I could not generate a response.')
                     response_type = "assistant"
