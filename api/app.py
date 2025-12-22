@@ -231,7 +231,7 @@ async def chat_v1(request: ChatRequest, x_api_key: str = Header(None)):
 
     return response
 
-@app.get("/v1/conversations")
+@app.get("/api/conversations")
 async def get_conversations(x_api_key: str = Header(None)):
     """Get conversations (simplified for Vercel)"""
     if not x_api_key or x_api_key != API_KEY:
@@ -240,7 +240,7 @@ async def get_conversations(x_api_key: str = Header(None)):
     # Return empty list for Vercel compatibility
     return []
 
-@app.post("/v1/conversations")
+@app.post("/api/conversations")
 async def create_conversation(x_api_key: str = Header(None)):
     """Create new conversation"""
     if not x_api_key or x_api_key != API_KEY:
@@ -250,7 +250,7 @@ async def create_conversation(x_api_key: str = Header(None)):
     conversation_id = str(uuid.uuid4())
     return {"conversation_id": conversation_id}
 
-@app.get("/v1/conversations/{conversation_id}/messages")
+@app.get("/api/conversations/{conversation_id}/messages")
 async def get_conversation_messages(conversation_id: str, x_api_key: str = Header(None)):
     """Get messages for a conversation"""
     if not x_api_key or x_api_key != API_KEY:
@@ -259,7 +259,7 @@ async def get_conversation_messages(conversation_id: str, x_api_key: str = Heade
     # Return empty list for Vercel compatibility
     return []
 
-@app.post("/v1/conversations/{conversation_id}/messages")
+@app.post("/api/conversations/{conversation_id}/messages")
 async def send_message_to_conversation(conversation_id: str, request: ChatRequest, x_api_key: str = Header(None)):
     """Send message to conversation (alias for /v1/chat)"""
     if not x_api_key or x_api_key != API_KEY:
