@@ -1,7 +1,9 @@
 # Companion workspace — root gitignore
 
 # Bridge firmware — keep personal WiFi credentials out of git
-companion-ide/esp32-bridge-firmware/esp32_bridge/config.local.h
+# config.local.h is tracked as a sanitized TEMPLATE (placeholders only).
+# Keep personal credentials out of git after editing it locally:
+#   git update-index --skip-worktree companion-ide/esp32-bridge-firmware/esp32_bridge/config.local.h
 
 # Built Go CLI binaries (built with `go build -o companion .`)
 companion-cli/companion

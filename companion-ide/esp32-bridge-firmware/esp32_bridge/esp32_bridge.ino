@@ -24,9 +24,12 @@
 #include <ArduinoOTA.h>
 
 // ── WiFi configuration (overridable) ──────────────────────────
-// Users should copy config.example.h to config.local.h and edit it for
-// their own network (config.local.h is git-ignored so credentials are
-// never committed). If it's absent, safe AP-mode defaults below are used.
+// config.local.h (this folder) is tracked as a sanitized TEMPLATE with
+// placeholder values so testers can edit it directly. After putting in
+// personal credentials, run:
+//   git update-index --skip-worktree config.local.h
+// so they are never committed. If the file is absent, the safe AP-mode
+// defaults below are used.
 #if __has_include("config.local.h")
   #include "config.local.h"
 #endif

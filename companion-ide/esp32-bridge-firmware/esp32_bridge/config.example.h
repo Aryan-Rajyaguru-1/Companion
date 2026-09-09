@@ -1,9 +1,13 @@
 /**
- * Companion IDE — ESP32 Bridge WiFi configuration
+ * Companion IDE — ESP32 Bridge WiFi configuration (example copy)
  * ================================================
- * Copy this file to `config.local.h` (same folder as esp32_bridge.ino) and
- * edit the values for your network. `config.local.h` is git-ignored, so your
- * personal credentials never get committed.
+ * NOTE: `config.local.h` is now shipped in the repo as a tracked TEMPLATE
+ * with placeholder values — you can edit it directly. This example file is
+ * kept as a reference for the shape of the configuration.
+ *
+ * After entering your personal credentials in config.local.h, run:
+ *   git update-index --skip-worktree config.local.h
+ * so your values are never committed.
  *
  * If `config.local.h` does not exist, the firmware falls back to the safe
  * defaults defined in esp32_bridge.ino (Access Point mode).

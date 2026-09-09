@@ -3,8 +3,9 @@ dist/
 release/
 bin/arduino-cli
 bin/arduino-cli.exe
-# Bridge firmware local config (personal WiFi credentials)
-esp32-bridge-firmware/esp32_bridge/config.local.h
+# Bridge firmware config: shipped as a sanitized TEMPLATE (placeholders only).
+# After editing it with personal credentials, run inside the firmware folder:
+#   git update-index --skip-worktree esp32-bridge-firmware/esp32_bridge/config.local.h
 .env
 *.log
 .DS_Store
