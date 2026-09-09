@@ -7,6 +7,15 @@ not derived from its source code — **MIT licensed, no GPL obligations.**
 
 ---
 
+## Get the code
+
+```bash
+git clone -b cli https://github.com/Aryan-Rajyaguru-1/Companion.git
+cd Companion
+```
+
+Already cloned? Run `git pull` to update.
+
 ## Quick Start
 
 ```bash
