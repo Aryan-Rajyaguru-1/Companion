@@ -5,6 +5,13 @@ Powered by Companion CLI (MIT licensed, no GPL obligations).
 
 ## One-command setup
 
+Get the code first (or `git pull` inside an existing clone):
+
+```bash
+git clone -b ide https://github.com/Aryan-Rajyaguru-1/Companion.git
+cd Companion
+```
+
 Installs everything — downloads the prebuilt CLI binary for your OS/arch (or builds it from source if Go is installed), initializes config + board index, and installs IDE dependencies:
 
 ```bash
