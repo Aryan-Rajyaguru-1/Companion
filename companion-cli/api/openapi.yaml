@@ -1,0 +1,236 @@
+openapi: 3.1.0
+info:
+  title: Companion Core Service API
+  version: "1.0"
+  description: |
+    The single API layer consumed by all Companion frontends
+    (desktop IDE, web app, mobile app).
+
+    ## Authentication
+    Every endpoint except `GET /ping` requires a bearer token:
+
+        Authorization: Bearer <token>
+
+    The daemon generates a fresh token at startup and writes it to
+    `~/.companion-cli/daemon/auth-token` (mode 0600). It is also printed to
+    stdout as `COMPANION_DAEMON_TOKEN=<token>` for programmatic discovery.
+
+    ## Streaming conventions
+    - Compile and upload streams emit newline-delimited JSON events
+      (`application/x-ndjson`): `{"type":"output"|"done"|"cancelled", ...}`.
+    - The serial monitor uses Server-Sent Events with base64-encoded data
+      frames so arbitrary binary output survives transport.
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "44444"
+security:
+  - bearerAuth: []
+
+paths:
+  /ping:
+    get:
+      summary: Health check (no auth)
+      security: []
+      responses:
+        "200":
+          description: Daemon alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string }
+
+  /rpc:
+    post:
+      summary: JSON-RPC 2.0 endpoint
+      description: |
+        Methods: `version`, `compile.cancel`, `board.list`, `board.search`,
+        `board.packages`, `board.update-index`, `cache.stats`, `cache.evict`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, method]
+              properties:
+                id: { description: Any JSON value; echoed in the response }
+                method:
+                  type: string
+                  example: board.list
+                params: { description: Method-specific parameters }
+      responses:
+        "200":
+          description: JSON-RPC response (success or error object)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      id: {}
+                      result: {}
+                  - type: object
+                    properties:
+                      id: {}
+                      error:
+                        type: object
+                        properties:
+                          code:
+                            type: integer
+                            description: JSON-RPC code (-32700 parse, -32602 params, -32000 server, -32001 unauthorized, -32002 invalid state)
+                          message: { type: string }
+                          errCode:
+                            type: string
+                            description: Machine-readable CompanionError code (e.g. CORE_NOT_INSTALLED)
+                          suggestion: { type: string }
+
+  /api/v1/stream-compile:
+    post:
+      summary: Compile a sketch with real-time NDJSON event stream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sketchDir, fqbn]
+              properties:
+                sketchDir: { type: string }
+                fqbn: { type: string, example: arduino:avr:uno }
+                exportBin: { type: boolean, default: false }
+                verbose: { type: boolean, default: false }
+                warnings:
+                  type: string
+                  enum: [none, default, more, all]
+      responses:
+        "200":
+          description: Stream of compile events; terminal event has type done or cancelled
+          content:
+            application/x-ndjson:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StreamEvent"
+
+  /api/v1/upload:
+    post:
+      summary: Wireless upload of a pre-built binary with live progress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [binaryPath, mcu, host, port]
+              properties:
+                binaryPath: { type: string }
+                mcu:
+                  type: string
+                  enum: [esp32, esp8266, avr, stm32, generic]
+                host: { type: string, example: 192.168.4.1 }
+                port: { type: integer, example: 3333 }
+                baud: { type: integer, default: 115200 }
+                fqbn: { type: string }
+                verbose: { type: boolean }
+      responses:
+        "200":
+          description: Stream of upload progress events
+          content:
+            application/x-ndjson:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StreamEvent"
+
+  /api/v1/serial:
+    post:
+      summary: Connect/disconnect the serial monitor bridge session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [connect, disconnect]
+                host: { type: string }
+                port: { type: integer }
+                baud: { type: integer, default: 115200 }
+      responses:
+        "200":
+          description: Result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
+  /api/v1/serial/send:
+    post:
+      summary: Send text to the target MCU
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text: { type: string }
+                lineEnding:
+                  type: string
+                  enum: ["", "\n", "\r", "\r\n"]
+      responses:
+        "200":
+          description: Sent
+
+  /api/v1/serial/stream:
+    get:
+      summary: Subscribe to serial data (Server-Sent Events)
+      description: |
+        Events are JSON lines:
+          - `{"type":"data","b64":"<base64 chunk>"}` — bytes from the target
+          - `{"type":"closed"}` — bridge connection dropped (terminal)
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    StreamEvent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [output, done, cancelled, error]
+        text:
+          type: string
+          description: One output line (type=output)
+        success:
+          type: boolean
+          description: Terminal success flag (type=done)
+        binaryPath:
+          type: string
+          description: Built artifact path on success (stream-compile)
+        error:
+          type: string
+        output:
+          type: array
+          items: { type: string }
+          description: Full captured output attached to the terminal event

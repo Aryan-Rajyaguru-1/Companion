@@ -1,0 +1,258 @@
+/* ── Panel container ───────────────────────────────────────────── */
+.ac-panel {
+  background: var(--bg-panel);
+  border-top: 2px solid var(--red);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow: hidden;
+  animation: ac-slide-in 0.18s ease-out;
+}
+
+@keyframes ac-slide-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+.ac-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  background: rgba(248, 81, 73, 0.08);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ac-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--red);
+}
+
+.ac-fixable-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  background: rgba(0, 151, 157, 0.15);
+  border: 1px solid var(--teal);
+  border-radius: 8px;
+  color: var(--teal);
+  letter-spacing: 0.03em;
+}
+
+/* ── Action buttons ─────────────────────────────────────────────── */
+.ac-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ac-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ac-fix-btn {
+  background: var(--teal-dark);
+  border-color: var(--teal);
+  font-weight: 600;
+}
+
+.ac-fix-btn:hover:not(:disabled) {
+  background: var(--teal);
+}
+
+.ac-dismiss {
+  padding: 4px 8px;
+  color: var(--text-dim);
+}
+
+.ac-applied-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--green);
+  font-weight: 600;
+  padding: 4px 10px;
+  background: rgba(63, 185, 80, 0.1);
+  border: 1px solid var(--green);
+  border-radius: 6px;
+}
+
+/* ── Fix list ───────────────────────────────────────────────────── */
+.ac-fix-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.ac-fix-list-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 5px 12px 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+
+.ac-fix-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+
+.ac-fix-item:hover { background: var(--bg-surface); }
+
+.ac-fix-item.disabled {
+  opacity: 0.45;
+}
+
+.ac-fix-checkbox {
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ac-fix-checkbox input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--teal);
+  cursor: pointer;
+}
+
+.ac-fix-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.ac-fix-desc {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  padding: 1px 0;
+}
+
+.ac-fix-rule-badge {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  padding: 1px 5px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ac-fix-text {
+  font-size: 12px;
+  color: var(--text-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-fix-line {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.ac-expand-btn {
+  font-size: 9px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  transition: color 0.1s;
+}
+.ac-fix-desc:hover .ac-expand-btn { color: var(--teal); }
+
+/* ── Diff view ──────────────────────────────────────────────────── */
+.ac-diff {
+  margin: 5px 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.ac-diff-line {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+.ac-diff-gutter {
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.ac-diff-del {
+  background: rgba(248, 81, 73, 0.08);
+  border-bottom: 1px solid rgba(248, 81, 73, 0.15);
+}
+.ac-diff-del .ac-diff-gutter { color: var(--red); background: rgba(248, 81, 73, 0.15); }
+.ac-diff-del code { color: var(--red); }
+
+.ac-diff-add {
+  background: rgba(63, 185, 80, 0.07);
+}
+.ac-diff-add .ac-diff-gutter { color: var(--green); background: rgba(63, 185, 80, 0.15); }
+.ac-diff-add code { color: var(--green); }
+
+.ac-diff-line code {
+  padding: 3px 8px;
+  display: block;
+  white-space: pre;
+  overflow-x: auto;
+  flex: 1;
+}
+
+/* ── Error reference text ───────────────────────────────────────── */
+.ac-fix-error-ref {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  line-height: 1.4;
+  font-style: normal;
+}
+.ac-fix-error-ref em {
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+/* ── No fix message ─────────────────────────────────────────────── */
+.ac-no-fix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}

@@ -1,0 +1,426 @@
+import { useRef, useEffect, useImperativeHandle, forwardRef, useState } from 'react';
+import MonacoEditor from '@monaco-editor/react';
+import './Editor.css';
+
+// Fallback rendering if Monaco fails
+const MonacoFallback = () => (
+  <div style={{ padding: '20px', color: '#abb2bf' }}>
+    Monaco editor failed to load. Using basic text editor instead.
+  </div>
+);
+
+// ── Arduino keyword / function lists ───────────────────────────
+const ARDUINO_KEYWORDS = [
+  'void','int','long','unsigned','char','byte','boolean','bool',
+  'float','double','String','word','short',
+  'if','else','for','while','do','switch','case','break',
+  'continue','return','default','goto',
+  'true','false','null','NULL','HIGH','LOW','INPUT','OUTPUT',
+  'INPUT_PULLUP','LED_BUILTIN','CHANGE','RISING','FALLING',
+  'const','static','volatile','extern','typedef','struct','class',
+  'public','private','protected','new','delete','this','namespace',
+  '#include','#define','#ifdef','#ifndef','#endif','#if','#else','#elif','#pragma',
+];
+
+const ARDUINO_FUNCTIONS = [
+  'pinMode','digitalWrite','digitalRead','analogWrite','analogRead','analogReference',
+  'delay','delayMicroseconds','millis','micros',
+  'attachInterrupt','detachInterrupt','interrupts','noInterrupts',
+  'Serial','Serial1','Serial2','print','println','begin','end',
+  'available','read','write','flush','parseInt','parseFloat',
+  'Wire','requestFrom','beginTransmission','endTransmission',
+  'SPI','transfer','setBitOrder','setClockDivider','setDataMode',
+  'abs','constrain','map','max','min','pow','sq','sqrt',
+  'sin','cos','tan','asin','acos','atan','atan2',
+  'bit','bitClear','bitRead','bitSet','bitWrite','highByte','lowByte',
+  'random','randomSeed','tone','noTone','pulseIn',
+  'setup','loop',
+];
+
+// ── Registered flags — prevent duplicate registration ──────────
+let _arduinoRegistered = false;
+let _themeRegistered   = false;
+
+function registerArduino(monaco) {
+  if (_arduinoRegistered) return;
+  _arduinoRegistered = true;
+
+  const existingLangs = monaco.languages.getLanguages();
+  if (!existingLangs.find(l => l.id === 'arduino')) {
+    monaco.languages.register({ id: 'arduino', extensions: ['.ino', '.pde'] });
+  }
+
+  monaco.languages.setMonarchTokensProvider('arduino', {
+    keywords: ARDUINO_KEYWORDS.filter(k => !k.startsWith('#')),
+    functions: ARDUINO_FUNCTIONS,
+    tokenizer: {
+      root: [
+        [/^\s*#\s*\w+/,                                     'keyword.control.directive'],
+        [/\/.*/,                                           'comment'],
+        [/\/\*/,                                            { token: 'comment', next: '@comment' }],
+        [/"(?:[^"\\]|\\.)*"/,                               'string'],
+        [/'(?:[^'\\]|\\.)*'/,                               'string'],
+        [/0[xX][0-9a-fA-F]+[uUlL]*/,                       'number.hex'],
+        [/\d+\.?\d*(?:[eE][+-]?\d+)?[fFuUlL]*/,           'number'],
+        [/\b(?:void|int|long|unsigned|char|byte|boolean|bool|float|double|String|word|short)\b/, 'keyword.type'],
+        [/\b(?:if|else|for|while|do|switch|case|break|continue|return|default|goto)\b/, 'keyword.control'],
+        [/\b(?:const|static|volatile|extern|typedef|struct|class|public|private|protected|new|delete|this|namespace)\b/, 'keyword'],
+        [/\b(?:HIGH|LOW|INPUT|OUTPUT|INPUT_PULLUP|LED_BUILTIN|CHANGE|RISING|FALLING|true|false|null|NULL)\b/, 'constant'],
+        [/\b(?:pinMode|digitalWrite|digitalRead|analogWrite|analogRead|delay|delayMicroseconds|millis|micros|Serial|Wire|SPI|attachInterrupt|detachInterrupt|setup|loop)\b/, 'type.identifier'],
+        [/[a-zA-Z_]\w*/,                                    'identifier'],
+        [/[{}()\[\]]/,                                      '@brackets'],
+        [/[=!<>+\-*/%&|^~?:]/,                             'operator'],
+        [/[;,.]/,                                           'delimiter'],
+        [/\s+/,                                             'white'],
+      ],
+      comment: [
+        [/[^/*]+/, 'comment'],
+        [/\*\//,   { token: 'comment', next: '@pop' }],
+        [/[/*]/,   'comment'],
+      ],
+    },
+  });
+
+  monaco.languages.setLanguageConfiguration('arduino', {
+    comments: { lineComment: '//', blockComment: ['/*', '*/'] },
+    brackets: [['{','}'],['[',']'],['(',')']],
+    autoClosingPairs: [
+      { open: '{', close: '}' },
+      { open: '[', close: ']' },
+      { open: '(', close: ')' },
+      { open: '"', close: '"', notIn: ['string'] },
+      { open: "'", close: "'", notIn: ['string','comment'] },
+    ],
+    indentationRules: {
+      increaseIndentPattern: /^((?!\/\/).)*({\s*$|\(\s*$|\[\s*$)/,
+      decreaseIndentPattern: /^\s*(}|\]|\))/,
+    },
+  });
+
+  monaco.languages.registerCompletionItemProvider('arduino', {
+    provideCompletionItems(model, position) {
+      const word  = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber, endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,        endColumn:    word.endColumn,
+      };
+      const suggestions = [
+        ...ARDUINO_KEYWORDS.map(k => ({
+          label: k, kind: monaco.languages.CompletionItemKind.Keyword,
+          insertText: k, range,
+        })),
+        ...ARDUINO_FUNCTIONS.map(f => ({
+          label: f, kind: monaco.languages.CompletionItemKind.Function,
+          insertText: f, range,
+        })),
+        { label: 'setup', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'void setup() {\n\t$0\n}',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          documentation: 'Arduino setup() function', range },
+        { label: 'loop', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'void loop() {\n\t$0\n}',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          documentation: 'Arduino loop() function', range },
+        { label: 'Serial.begin', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'Serial.begin(${1:115200});',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range },
+        { label: 'Serial.println', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'Serial.println(${1:"text"});',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range },
+        { label: 'pinMode', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'pinMode(${1:pin}, ${2:OUTPUT});',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range },
+        { label: 'digitalWrite', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'digitalWrite(${1:pin}, ${2:HIGH});',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range },
+        { label: 'for loop', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'for (int ${1:i} = 0; ${1:i} < ${2:10}; ${1:i}++) {\n\t$0\n}',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range },
+        { label: 'if', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'if (${1:condition}) {\n\t$0\n}',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range },
+        { label: 'delay', kind: monaco.languages.CompletionItemKind.Snippet,
+          insertText: 'delay(${1:1000});',
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range },
+      ];
+      return { suggestions };
+    },
+  });
+}
+
+function defineArduinoTheme(monaco) {
+  if (_themeRegistered) return;
+  _themeRegistered = true;
+  monaco.editor.defineTheme('companion-dark', {
+    base: 'vs-dark',
+    inherit: true,
+    rules: [
+      { token: 'keyword',                   foreground: '#00979D', fontStyle: 'bold' },
+      { token: 'keyword.type',              foreground: '#00979D', fontStyle: 'bold' },
+      { token: 'keyword.control',           foreground: '#C678DD' },
+      { token: 'keyword.control.directive', foreground: '#C678DD' },
+      { token: 'constant',                  foreground: '#56B6C2' },
+      { token: 'type.identifier',           foreground: '#61AFEF' },
+      { token: 'string',                    foreground: '#98C379' },
+      { token: 'number',                    foreground: '#D19A66' },
+      { token: 'number.hex',                foreground: '#D19A66' },
+      { token: 'comment',                   foreground: '#5C6370', fontStyle: 'italic' },
+      { token: 'operator',                  foreground: '#ABB2BF' },
+      { token: 'delimiter',                 foreground: '#ABB2BF' },
+      { token: 'identifier',                foreground: '#E06C75' },
+    ],
+    colors: {
+      'editor.background':                '#1a1e24',
+      'editor.foreground':                '#ABB2BF',
+      'editorLineNumber.foreground':      '#495162',
+      'editorLineNumber.activeForeground':'#8B949E',
+      'editor.selectionBackground':       '#264F78',
+      'editor.inactiveSelectionBackground':'#3A3F4B',
+      'editor.lineHighlightBackground':   '#21262D',
+      'editorCursor.foreground':          '#528BFF',
+      'editor.findMatchBackground':       '#42557B',
+      'editorGutter.background':          '#1a1e24',
+      'editorWidget.background':          '#21262D',
+      'editorWidget.border':              '#30363D',
+      'input.background':                 '#161B22',
+      'input.foreground':                 '#E6EDF3',
+      'scrollbarSlider.background':       '#30363D88',
+      'scrollbarSlider.hoverBackground':  '#444C5688',
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Editor component
+// ─────────────────────────────────────────────────────────────────
+const Editor = forwardRef(function Editor(
+  { value, onChange, fontSize = 14, wordWrap = false, errorMarkers = [], onCursorChange },
+  ref
+) {
+  const editorRef = useRef(null);
+  const monacoRef = useRef(null);
+  const [editorError, setEditorError] = useState(false);
+  const [useFallback, setUseFallback] = useState(false);
+  const fallbackTextareaRef = useRef(null);
+
+  // Set timeout for Monaco loading - use fallback if takes too long
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (!editorRef.current && !editorError) {
+        console.warn('Monaco editor loading timeout - switching to fallback');
+        setUseFallback(true);
+      }
+    }, 6000); // 6 second timeout
+
+    return () => clearTimeout(timeout);
+  }, [editorError]);
+
+  // ── Imperative API exposed to parent ─────────────────────────
+  // #6  formatDocument  — Ctrl+Shift+F
+  // #7  goToLine        — programmatic (auto-jump on error)
+  //     goToLineWidget  — Ctrl+G (Monaco built-in Go to Line dialog)
+  // #8  findWidget      — Ctrl+F (Monaco Find)
+  //     replaceWidget   — Ctrl+H (Monaco Find & Replace)
+  useImperativeHandle(ref, () => ({
+    // #6 Auto-format
+    formatDocument: () =>
+      editorRef.current?.getAction('editor.action.formatDocument')?.run(),
+
+    // #7 Programmatic line jump (used after compile error)
+    goToLine: (line) => {
+      const ed = editorRef.current;
+      if (!ed) return;
+      ed.revealLineInCenter(line);
+      ed.setPosition({ lineNumber: line, column: 1 });
+      ed.focus();
+    },
+
+    // #7 Go to Line dialog (Ctrl+G menu item)
+    goToLineWidget: () =>
+      editorRef.current?.getAction('editor.action.gotoLine')?.run(),
+
+    // #8 Find widget (Ctrl+F)
+    findWidget:    () =>
+      editorRef.current?.getAction('actions.find')?.run(),
+
+    // #8 Find & Replace widget (Ctrl+H)
+    replaceWidget: () =>
+      editorRef.current?.getAction('editor.action.startFindReplaceAction')?.run(),
+
+    focus: () => editorRef.current?.focus(),
+  }));
+
+  // ── #1 Apply Monaco error/warning markers ────────────────────
+  useEffect(() => {
+    const ed  = editorRef.current;
+    const mon = monacoRef.current;
+    if (!ed || !mon) return;
+    const model = ed.getModel();
+    if (!model) return;
+    mon.editor.setModelMarkers(model, 'companion-compiler', errorMarkers);
+  }, [errorMarkers]);
+
+  const handleMount = (editor, monaco) => {
+    editorRef.current  = editor;
+    monacoRef.current  = monaco;
+
+    console.log('✓ Monaco mounted successfully');
+    console.log('  - Editor instance:', !!editor);
+    console.log('  - Monaco instance:', !!monaco);
+    
+    try {
+      registerArduino(monaco);
+      console.log('✓ Arduino language registered');
+    } catch (e) {
+      console.error('✗ Failed to register Arduino:', e);
+    }
+    
+    try {
+      defineArduinoTheme(monaco);
+      console.log('✓ Arduino theme defined');
+    } catch (e) {
+      console.error('✗ Failed to define theme:', e);
+    }
+
+    try {
+      monaco.editor.setTheme('companion-dark');
+      console.log('✓ Theme set to companion-dark');
+    } catch (e) {
+      console.error('✗ Failed to set theme:', e);
+    }
+
+    const model = editor.getModel();
+    console.log('  - Current language:', model?.getLanguageId());
+    
+    if (model && model.getLanguageId() !== 'arduino') {
+      try {
+        monaco.editor.setModelLanguage(model, 'arduino');
+        console.log('✓ Model language set to arduino');
+      } catch (e) {
+        console.error('✗ Failed to set model language:', e);
+      }
+    }
+
+    // ── Cursor position → StatusBar ──────────────────────────
+    editor.onDidChangeCursorPosition((e) => {
+      onCursorChange?.({
+        line: e.position.lineNumber,
+        col:  e.position.column,
+      });
+    });
+
+    // ── Keybindings ─────────────────────────────────────────
+    // #8 Ctrl+/ — toggle line comment
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.Slash,
+      () => editor.getAction('editor.action.commentLine')?.run()
+    );
+
+    // #6 Ctrl+Shift+F — format document
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
+      () => editor.getAction('editor.action.formatDocument')?.run()
+    );
+
+    // #7 Ctrl+G — Go to Line dialog
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyG,
+      () => editor.getAction('editor.action.gotoLine')?.run()
+    );
+
+    // #8 Ctrl+H — Find & Replace (Monaco default, re-assert to avoid Electron intercept)
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyH,
+      () => editor.getAction('editor.action.startFindReplaceAction')?.run()
+    );
+
+    // #8 Ctrl+F — Find (re-assert for clarity)
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF,
+      () => editor.getAction('actions.find')?.run()
+    );
+  };
+
+  return (
+    <div className="editor-wrapper">
+      {useFallback ? (
+        // Fallback basic editor - renders immediately
+        <textarea
+          ref={fallbackTextareaRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          style={{
+            width: '100%',
+            height: '100%',
+            padding: '12px',
+            fontSize: `${fontSize}px`,
+            fontFamily: "'Fira Code','Consolas',monospace",
+            backgroundColor: '#1a1e24',
+            color: '#abb2bf',
+            border: 'none',
+            outline: 'none',
+            wordWrap: wordWrap ? 'break-word' : 'off',
+            resize: 'none',
+          }}
+          placeholder="// Write your Arduino code here..."
+        />
+      ) : editorError ? (
+        <div className="editor-loading" style={{ color: '#ef4444', padding: '20px' }}>
+          ✕ Monaco editor failed to load.{' '}
+          <button 
+            onClick={() => { setUseFallback(true); setEditorError(false); }} 
+            style={{ textDecoration: 'underline', cursor: 'pointer', marginLeft: '8px' }}
+          >
+            Use Basic Editor
+          </button>
+        </div>
+      ) : (
+        <MonacoEditor
+          height="100%"
+          defaultLanguage="arduino"
+          language="arduino"
+          theme="companion-dark"
+          value={value}
+          onChange={(v) => onChange(v ?? '')}
+          onMount={handleMount}
+          onError={(error) => {
+            console.error('✗ Monaco editor error:', error);
+            setEditorError(true);
+          }}
+          loading={
+            <div className="editor-loading" style={{ padding: '20px', color: '#abb2bf' }}>
+              ⏳ Loading Monaco editor…
+            </div>
+          }
+          options={{
+            fontSize,
+            fontFamily: "'JetBrains Mono','Fira Code','Cascadia Code','Consolas',monospace",
+            fontLigatures: true,
+            lineHeight: 22,
+            tabSize: 2,
+            insertSpaces: true,
+            wordWrap: wordWrap ? 'on' : 'off',
+            minimap: { enabled: true, scale: 1 },
+            scrollBeyondLastLine: false,
+            renderLineHighlight: 'gutter',
+            cursorBlinking: 'smooth',
+            cursorSmoothCaretAnimation: 'on',
+            smoothScrolling: true,
+            formatOnPaste: true,
+            autoIndent: 'full',
+            bracketPairColorization: { enabled: true },
+            guides: { bracketPairs: true, indentation: true },
+            suggest: { showKeywords: true, showFunctions: true, showSnippets: true },
+            quickSuggestions: { other: true, comments: false, strings: false },
+            scrollbar: { verticalScrollbarSize: 6, horizontalScrollbarSize: 6, useShadows: false },
+            padding: { top: 12, bottom: 12 },
+            overviewRulerLanes: 3,   // show error/warning decorations in overview ruler
+            hideCursorInOverviewRuler: false,
+          }}
+        />
+      )}
+    </div>
+  );
+});
+
+export default Editor;

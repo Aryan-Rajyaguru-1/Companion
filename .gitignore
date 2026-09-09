@@ -1,0 +1,39 @@
+# Companion workspace — root gitignore
+
+# Bridge firmware — keep personal WiFi credentials out of git
+companion-ide/esp32-bridge-firmware/esp32_bridge/config.local.h
+
+# Built Go CLI binaries (built with `go build -o companion .`)
+companion-cli/companion
+companion-cli/companion-cli
+companion-cli/companion_test
+companion-cli/companion.exe
+companion-cli/companion-cli.exe
+companion-ide/bin/companion
+companion-ide/bin/companion-cli
+
+# IDE build/cache dirs (companion-ide/.gitignore also covers these)
+companion-ide/node_modules/
+companion-ide/dist/
+companion-ide/release/
+
+# Vite cache
+.vite/
+
+# Legal hygiene (Phase 6 #15): Arduino reference trees are AGPL/GPL sources
+# used ONLY as offline reference. Never commit or publish these — everything
+# shipped must be from-scratch code so the MIT claim stays valid.
+Arduino for refs/
+ARDUINO_ARCHITECTURE_ANALYSIS.md
+ARDUINO_PATTERNS_ACTION_PLAN.md
+ARDUINO_PATTERNS_VISUAL_GUIDE.md
+
+# OS junk
+.DS_Store
+Thumbs.db
+*.log
+
+# Release / build artifacts (never push; rebuilt via make build-all / electron-builder)
+companion-cli/dist/
+companion-cli/companion_test
+companion-ide/esp32-bridge-firmware/esp32_bridge/build/

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+bin/arduino-cli
+bin/arduino-cli.exe
+# Bridge firmware local config (personal WiFi credentials)
+esp32-bridge-firmware/esp32_bridge/config.local.h
+.env
+*.log
+.DS_Store
+Thumbs.db
