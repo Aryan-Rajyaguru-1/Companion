@@ -8,7 +8,19 @@ companion-workspace/
 └── companion-ide/     ← Electron + React IDE  (MIT)
 ```
 
-## Quick Setup
+## One-command setup
+
+Installs everything — CLI binary (built from source if Go is present, otherwise downloaded prebuilt for your OS/arch), first-run config, board index, and IDE dependencies:
+
+```bash
+bash scripts/setup.sh          # macOS / Linux
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
+```
+
+## Manual setup
 
 ```bash
 # 1. Build CLI
