@@ -1,16 +1,31 @@
-# Companion Workspace
+# 🛰️ Companion
 
-Complete wireless Arduino programming environment — MIT-licensed.
+**Upload & program Arduino/ESP32 boards over WiFi — no USB cable, no cloud, no accounts.**
 
-```
-companion-workspace/
-├── companion-cli/     ← Original Go CLI  (MIT)
-└── companion-ide/     ← Electron + React IDE  (MIT)
-```
+![Release](https://img.shields.io/github/v/release/Aryan-Rajyaguru-1/Companion?include_prereleases&label=release)
+![License](https://img.shields.io/github/license/Aryan-Rajyaguru-1/Companion)
+![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)
+![Stars](https://img.shields.io/github/stars/Aryan-Rajyaguru-1/Companion?style=social)
 
-## One-command setup
+**Companion** pairs a from-scratch **Go CLI** with an **Electron IDE** that compile Arduino sketches locally and flash them *over the air* through a $5 ESP32 bridge — with serial monitor, serial plotter, and live GCC error squiggles in the editor.
 
-Installs everything — CLI binary (built from source if Go is present, otherwise downloaded prebuilt for your OS/arch), first-run config, board index, and IDE dependencies:
+## ✨ Why Companion?
+
+- 📡 **Truly wireless upload** — flash Uno/Mega/Nano/ESP32 through an ESP32 bridge on your WiFi; leave the USB cable in the drawer
+- 🔒 **100% local toolchain** — compiles on your machine, no cloud accounts, no telemetry
+- ⚡ **Content-addressed build cache** — warm builds finish in seconds, not minutes
+- 🖥️ **CLI-first + full IDE** — scriptable `companion` binary *and* a GUI with tabs, plotter, error markers
+- ⚖️ **MIT-licensed** — no GPL obligations anywhere in the tree
+
+## 📥 Download prebuilt binaries
+
+Grab the release for your OS — CLI binaries for Windows/Linux/macOS, plus a Linux `.deb` and `.AppImage` for the IDE:
+
+**→ [Latest release (v0.1.0-alpha)](https://github.com/Aryan-Rajyaguru-1/Companion/releases/latest)**
+
+Then run the one-command setup below — it builds the CLI from source if you have Go, or fetches the right prebuilt binary automatically.
+
+## ⚡ One-command setup
 
 ```bash
 bash scripts/setup.sh          # macOS / Linux
