@@ -27,6 +27,18 @@ Then run the one-command setup below — it builds the CLI from source if you ha
 
 ## ⚡ One-command setup
 
+**Step 1 — get the code** (if you already cloned it earlier, just run `git pull` inside the folder instead):
+
+```bash
+git clone https://github.com/Aryan-Rajyaguru-1/Companion.git
+cd Companion
+
+# later, to update an existing copy to the latest:
+git pull
+```
+
+**Step 2 — run the setup:**
+
 ```bash
 bash scripts/setup.sh          # macOS / Linux
 ```
