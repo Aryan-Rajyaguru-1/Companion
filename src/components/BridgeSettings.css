@@ -1,0 +1,189 @@
+.bridge-modal {
+  max-width: 620px;
+  width: 96vw;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+/* ── Sections ───────────────────────────────────────────────── */
+.bs-section {
+  margin-bottom: 20px;
+}
+
+.bs-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── Fields ─────────────────────────────────────────────────── */
+.bs-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.bs-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bs-field-grow { flex: 1; }
+
+.bs-field-port { width: 90px; }
+
+.bs-field input {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.bs-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.bs-hint code {
+  background: var(--bg-surface);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  color: var(--teal);
+  font-size: 11px;
+}
+
+/* ── Ping row ───────────────────────────────────────────────── */
+.bs-ping-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.bs-ping-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.bs-ping-result.ok   { color: var(--green); }
+.bs-ping-result.fail { color: var(--red); }
+
+/* ── MCU cards ──────────────────────────────────────────────── */
+.bs-mcu-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.bs-mcu-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+  gap: 10px;
+  color: var(--text-primary);
+}
+
+.bs-mcu-card:hover {
+  background: var(--bg-surface);
+  border-color: var(--border-light);
+}
+
+.bs-mcu-card.selected {
+  background: var(--teal-dim);
+  border-color: var(--teal);
+}
+
+.bs-mcu-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.bs-mcu-note {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.bs-mcu-card.selected .bs-mcu-note {
+  color: var(--teal);
+}
+
+/* ── Baud ───────────────────────────────────────────────────── */
+.bs-baud-select {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 5px 10px;
+  width: 200px;
+}
+
+/* ── Wiring table ───────────────────────────────────────────── */
+.bs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.bs-table th,
+.bs-table td {
+  text-align: left;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bs-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  background: var(--bg-app);
+}
+
+.bs-table td:first-child {
+  font-family: var(--font-mono);
+  color: var(--teal);
+  font-size: 11px;
+}
+
+.bs-table td:nth-child(2) {
+  font-family: var(--font-mono);
+  color: var(--blue);
+  font-size: 11px;
+}
+
+.bs-table td:last-child {
+  color: var(--text-muted);
+}
+
+.bs-table tr:last-child td {
+  border-bottom: none;
+  color: var(--yellow);
+}
+
+/* ── Footer ─────────────────────────────────────────────────── */
+.bs-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}

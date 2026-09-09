@@ -1,0 +1,143 @@
+.cli-setup-modal {
+  max-width: 560px;
+  width: 96vw;
+}
+
+.cs-intro {
+  margin-bottom: 16px;
+}
+
+.cs-warning {
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid var(--yellow);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--yellow);
+  margin-bottom: 10px;
+}
+
+.cs-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* Step nav dots */
+.cs-steps-nav {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+
+.cs-step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cs-step-dot.active {
+  background: var(--teal-dark);
+  border-color: var(--teal);
+  color: #fff;
+  box-shadow: 0 0 8px rgba(0, 151, 157, 0.4);
+}
+
+.cs-step-dot.done {
+  background: var(--teal-dim);
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+/* Step content */
+.cs-step-content {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  min-height: 160px;
+  margin-bottom: 16px;
+}
+
+.cs-step-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.cs-step-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.cs-step-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cs-step-body p {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+
+.cs-step-body code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  margin: 4px 0;
+  color: var(--teal);
+}
+
+.cs-step-body .hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.cs-step-body .hint code {
+  display: inline;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+}
+
+.cs-step-body a {
+  color: var(--blue);
+  text-decoration: none;
+}
+.cs-step-body a:hover { text-decoration: underline; }
+
+/* Footer */
+.cs-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cs-found {
+  font-size: 12px;
+  color: var(--green);
+  font-weight: 600;
+}

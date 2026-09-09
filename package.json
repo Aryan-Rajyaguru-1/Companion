@@ -1,0 +1,65 @@
+{
+  "name": "companion-ide",
+  "version": "1.0.0",
+  "description": "Wireless Arduino-compatible IDE — no cable needed",
+  "main": "electron/main.js",
+  "homepage": "./",
+  "scripts": {
+    "dev": "concurrently -k -p \"[{name}]\" -n \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
+    "build": "vite build && electron-builder",
+    "start": "electron .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui"
+  },
+  "build": {
+    "appId": "com.companion.ide",
+    "productName": "Companion IDE",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/**/*",
+      "bin/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "monaco-editor": "^0.45.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-split": "^2.0.14",
+    "react-virtualized-auto-sizer": "^1.0.20",
+    "react-window": "^1.8.10"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.0",
+    "@vitest/ui": "^1.6.0",
+    "concurrently": "^8.2.0",
+    "cross-env": "^7.0.3",
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.0",
+    "jsdom": "^29.1.1",
+    "vite": "^5.0.0",
+    "vitest": "^1.6.0",
+    "wait-on": "^7.2.0"
+  },
+  "vitest": {
+    "environment": "jsdom",
+    "globals": true,
+    "include": [
+      "src/**/*.test.{js,jsx}"
+    ]
+  }
+}

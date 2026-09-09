@@ -1,0 +1,31 @@
+.error-list { display: flex; flex-direction: column; background: var(--bg-panel); border-top: 1px solid var(--border); max-height: 240px; overflow: hidden; outline: none; }
+.el-header { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.el-header-left { display: flex; align-items: center; gap: 6px; }
+.el-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
+.el-badge { font-size: 10px; font-weight: 700; border-radius: 8px; padding: 1px 7px; }
+.el-badge-err  { background: rgba(248,81,73,.2);  color: var(--red,#f85149); }
+.el-badge-warn { background: rgba(210,153,34,.2); color: var(--yellow,#d29922); }
+.el-close { background: none; border: none; cursor: pointer; color: var(--text-dim); font-size: 14px; padding: 0 2px; border-radius: 3px; }
+.el-close:hover { color: var(--text-primary); background: var(--bg-surface); }
+.el-body { overflow-y: auto; flex: 1; }
+.el-group-header { display: flex; align-items: center; gap: 5px; padding: 4px 8px; cursor: pointer; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.el-group-header:hover { background: rgba(255,255,255,.04); }
+.el-chevron { font-size: 10px; color: var(--text-dim); width: 10px; }
+.el-group-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.el-group-path { font-size: 10px; color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 4px; }
+.el-group-counts { display: flex; gap: 4px; flex-shrink: 0; }
+.el-mini { font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 8px; }
+.el-mini.err  { background: rgba(248,81,73,.2);  color: var(--red,#f85149); }
+.el-mini.warn { background: rgba(210,153,34,.2); color: var(--yellow,#d29922); }
+.el-row { display: flex; align-items: center; gap: 8px; padding: 4px 20px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.03); transition: background .1s; }
+.el-row:hover    { background: rgba(255,255,255,.05); }
+.el-row.selected { background: rgba(0,151,157,.12); }
+.el-row.error    .el-message { color: var(--red,#f85149); }
+.el-row.warning  .el-message { color: var(--yellow,#d29922); }
+.el-row.note     .el-message { color: var(--text-dim); }
+.el-sev-dot { font-size: 11px; width: 14px; text-align: center; flex-shrink: 0; }
+.el-sev-dot.err  { color: var(--red,#f85149); }
+.el-sev-dot.warn { color: var(--yellow,#d29922); }
+.el-sev-dot.note { color: var(--text-dim); }
+.el-message  { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'JetBrains Mono','Consolas',monospace; }
+.el-location { font-size: 10px; color: var(--text-dim); flex-shrink: 0; font-family: 'JetBrains Mono',monospace; }
