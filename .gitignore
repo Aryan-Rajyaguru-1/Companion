@@ -2,6 +2,8 @@ node_modules/
 dist/
 release/
 bin/arduino-cli
+bin/companion
+bin/companion.exe
 bin/arduino-cli.exe
 # Bridge firmware local config (personal WiFi credentials)
 # Bridge firmware config: shipped as a sanitized TEMPLATE (placeholders only).
