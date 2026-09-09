@@ -22,9 +22,10 @@ function Warn($m){ Write-Host " !!  $m" -ForegroundColor Yellow }
 
 $Root = Split-Path -Parent $PSScriptRoot
 
-# Layout detection: full workspace vs IDE-only checkout
+# Layout detection: full workspace vs IDE-only vs CLI-only checkout
 $IdeDir = if (Test-Path "$Root\companion-ide") { "$Root\companion-ide" } else { $Root }
 $CliDir = "$Root\companion-cli"
+if (-not (Test-Path $CliDir) -and (Test-Path "$Root\go.mod")) { $CliDir = $Root }
 $BinDir = "$IdeDir\bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $Bin    = "$BinDir\companion.exe"

@@ -37,9 +37,11 @@ case "$(uname -m)" in
   *) die "Unsupported architecture: $(uname -m)" ;;
 esac
 
-# ── Layout detection: full workspace vs IDE-only checkout ───────────────────
+# ── Layout detection: full workspace vs IDE-only vs CLI-only checkout ───────
 if [ -d "$ROOT/companion-ide" ]; then IDE_DIR="$ROOT/companion-ide"; else IDE_DIR="$ROOT"; fi
 CLI_DIR="$ROOT/companion-cli"; [ -d "$CLI_DIR" ] || CLI_DIR=""
+# CLI-at-root checkouts (e.g. the 'cli' branch / Companion_cli repo)
+if [ -z "$CLI_DIR" ] && [ -f "$ROOT/go.mod" ]; then CLI_DIR="$ROOT"; fi
 BIN="$IDE_DIR/bin/companion"
 mkdir -p "$IDE_DIR/bin"
 
