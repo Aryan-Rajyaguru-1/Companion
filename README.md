@@ -10,8 +10,14 @@ not derived from its source code — **MIT licensed, no GPL obligations.**
 ## Quick Start
 
 ```bash
-# Build
-cd companion-cli
+# One-command setup (recommended)
+bash scripts/setup.sh          # macOS / Linux
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
+
+Builds the CLI from source (Go) or downloads the prebuilt binary, then
+initializes config and board indexes automatically.
+
+# Manual build
 go mod tidy
 go build -o companion .
 
