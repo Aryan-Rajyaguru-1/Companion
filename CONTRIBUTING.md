@@ -22,9 +22,11 @@ cd ../companion-ide && npm test
 - Never commit credentials, tokens, or `config.local.h` with real WiFi values
 - One feature/fix per PR, with a short "how was it tested" note
 
-## Good first issues
-Issues labeled `good first issue` are scoped for newcomers. Claim one by
-commenting, and ask questions in the issue or Discussions — happy to help.
+## Finding work
+Issues in the tracker come from real users and testers, so what's open is
+genuine. Newcomers are welcome to pick any open issue or propose one —
+ask questions in the issue or Discussions. Maintainer planning notes live
+in `docs/PROJECT_IDEAS.md`.
 
 ## Reporting bugs
 Use the bug template and include `companion version`, OS, and board.
