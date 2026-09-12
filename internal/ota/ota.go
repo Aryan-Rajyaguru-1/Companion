@@ -204,7 +204,13 @@ func Push(ctx context.Context, opts Options) error {
 		return fmt.Errorf("accept failed on %s:%d", hostIP, hostPort)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Time{}) // streaming may be slow; no overall deadline
+
+	// Overall transfer timeout so a stalled device cannot hang Push forever.
+	// 10 minutes covers large images on slow links; ctx cancellation (user
+	// abort) still aborts promptly via streamImage's ctx checks plus the
+	// per-operation read deadlines set there.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
 
 	return streamImage(ctx, conn, img, size, inv, opts)
 }
@@ -347,6 +353,18 @@ func streamImage(ctx context.Context, conn net.Conn, img io.Reader, size int64,
 	_ inviteResult, opts Options) error {
 
 	opts.log("» Device connected — streaming image…")
+	// Abort a blocked ACK read promptly on cancellation: closing the conn
+	// unblocks the in-flight Read, and streamImage's ctx checks surface
+	// ctx.Err(). (Double Close with Push's deferred Close is harmless.)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-done:
+		}
+	}()
 	reader := bufio.NewReader(conn)
 	buf := make([]byte, chunkSize)
 	var sent int64
@@ -357,10 +375,19 @@ func streamImage(ctx context.Context, conn net.Conn, img io.Reader, size int64,
 		}
 		n, rerr := img.Read(buf)
 		if n > 0 {
+			if err := conn.SetWriteDeadline(time.Now().Add(60 * time.Second)); err != nil {
+				return fmt.Errorf("set write deadline: %w", err)
+			}
 			if _, werr := conn.Write(buf[:n]); werr != nil {
 				return fmt.Errorf("write to device: %w", werr)
 			}
 			// ArduinoOTA ACKs every chunk with the count of bytes written.
+			// Per-operation read deadline: a wedged device must not stall
+			// the transfer past the overall Push timeout, and ctx
+			// cancellation closes in via the conn deadline expiring.
+			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+				return fmt.Errorf("set ACK read deadline: %w", err)
+			}
 			line, aerr := readACKLine(reader)
 			if aerr != nil {
 				return fmt.Errorf("device stopped ACKing at %d/%d bytes: %w", sent, size, aerr)
@@ -447,13 +474,18 @@ func readFinal(r *bufio.Reader) (string, error) {
 
 // otaResponse computes the challenge response for a device that stores
 // SHA256(password) (the default of ArduinoOTA.setPassword).
-// password may be "sha256:<64hex>" to supply a pre-hashed secret.
+// password may be "sha256:<64hex>" to supply a pre-hashed secret
+// ("sk-sha256:" is accepted as a legacy alias).
 func otaResponse(password, nonce, cnonce string) (string, error) {
 	pwHash := password
-	if strings.HasPrefix(password, "sk-sha256:") {
+	if strings.HasPrefix(password, "sha256:") || strings.HasPrefix(password, "sk-sha256:") {
 		pwHash = strings.TrimPrefix(password, "sk-sha256:")
+		pwHash = strings.TrimPrefix(pwHash, "sha256:")
 		if len(pwHash) != 64 {
-			return "", errors.New("sk-sha256: password must be 64 hex chars")
+			return "", errors.New("sha256: password must be 64 hex chars")
+		}
+		if _, err := hex.DecodeString(pwHash); err != nil {
+			return "", errors.New("sha256: password must be 64 hex chars")
 		}
 	} else {
 		sum := sha256.Sum256([]byte(password))

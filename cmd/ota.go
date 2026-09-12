@@ -145,7 +145,7 @@ func newOTAUploadCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&password, "auth", "a", "",
-		"OTA password (device must call ArduinoOTA.setPassword with the same secret)")
+		"OTA password (device must call ArduinoOTA.setPassword with the same secret; prefix \"sha256:\" for a pre-hashed value)")
 	cmd.Flags().IntVarP(&port, "port", "p", 3232, "Device OTA port")
 	return cmd
 }

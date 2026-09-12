@@ -259,9 +259,18 @@ func (u *Uploader) uploadESP(opts Options) error {
 	if err := bc.Connect(); err != nil {
 		return err
 	}
-	bc.SetProfile(opts.MCU)
-	bc.SetBaud(opts.Baud)
-	bc.EnterBootloader()
+	if err := bc.SetProfile(opts.MCU); err != nil {
+		bc.Close()
+		return err
+	}
+	if err := bc.SetBaud(opts.Baud); err != nil {
+		bc.Close()
+		return err
+	}
+	if err := bc.EnterBootloader(); err != nil {
+		bc.Close()
+		return err
+	}
 	time.Sleep(300 * time.Millisecond) // wait for bootloader to settle
 	bc.Close()
 
@@ -348,15 +357,25 @@ func (u *Uploader) uploadSTM32(opts Options) error {
 		return err
 	}
 	defer func() {
-		bc.Release()
+		if err := bc.Release(); err != nil {
+			u.log("  (warning) bridge release: " + err.Error())
+		}
 		time.Sleep(100 * time.Millisecond)
-		bc.Reset()
+		if err := bc.Reset(); err != nil {
+			u.log("  (warning) bridge reset: " + err.Error())
+		}
 		bc.Close()
 	}()
 
-	bc.SetProfile("stm32")
-	bc.SetBaud(opts.Baud)
-	bc.EnterBootloader()
+	if err := bc.SetProfile("stm32"); err != nil {
+		return err
+	}
+	if err := bc.SetBaud(opts.Baud); err != nil {
+		return err
+	}
+	if err := bc.EnterBootloader(); err != nil {
+		return err
+	}
 	time.Sleep(500 * time.Millisecond)
 
 	// Sync
@@ -365,8 +384,10 @@ func (u *Uploader) uploadSTM32(opts Options) error {
 		return err
 	}
 
-	// Get bootloader info
-	stm32GetInfo(bc, u.onOutput)
+	// Get bootloader info (info-only: failure is non-fatal)
+	if err := stm32GetInfo(bc, u.onOutput); err != nil {
+		u.log("  (warning) bootloader info query failed: " + err.Error() + " — continuing")
+	}
 
 	// Mass erase
 	u.log("» Erasing flash (mass erase)…")
@@ -424,16 +445,22 @@ func stm32SendCmd(bc *bridge.Client, opcode byte) error {
 	return nil
 }
 
-func stm32GetInfo(bc *bridge.Client, log func(string)) {
+func stm32GetInfo(bc *bridge.Client, log func(string)) error {
 	if err := stm32SendCmd(bc, 0x00); err != nil {
-		return
+		return err
 	}
-	n, _ := bc.ReadByteTimeout(2 * time.Second)
-	data := make([]byte, int(n)+2)
-	io.ReadFull(bc, data)
+	n, err := bc.ReadByteTimeout(2 * time.Second)
+	if err != nil {
+		return err
+	}
+	data := make([]byte, int(n)+1)
+	if _, err := io.ReadFull(bc, data); err != nil {
+		return err
+	}
 	if log != nil {
-		log(fmt.Sprintf("  BL version 0x%02X — %d commands", data[0], len(data)-2))
+		log(fmt.Sprintf("  BL version 0x%02X — %d commands", data[0], len(data)-1))
 	}
+	return nil
 }
 
 func stm32MassErase(bc *bridge.Client) error {
@@ -512,9 +539,18 @@ func (u *Uploader) uploadAVR(opts Options) error {
 	if err := bc.Connect(); err != nil {
 		return err
 	}
-	bc.SetProfile("avr")
-	bc.SetBaud(opts.Baud)
-	bc.EnterBootloader()
+	if err := bc.SetProfile("avr"); err != nil {
+		bc.Close()
+		return err
+	}
+	if err := bc.SetBaud(opts.Baud); err != nil {
+		bc.Close()
+		return err
+	}
+	if err := bc.EnterBootloader(); err != nil {
+		bc.Close()
+		return err
+	}
 	time.Sleep(200 * time.Millisecond)
 	bc.Close()
 	time.Sleep(100 * time.Millisecond)
@@ -613,8 +649,12 @@ func (u *Uploader) uploadGeneric(opts Options) error {
 	}
 	defer bc.Close()
 
-	bc.SetBaud(opts.Baud)
-	bc.EnterBootloader()
+	if err := bc.SetBaud(opts.Baud); err != nil {
+		return err
+	}
+	if err := bc.EnterBootloader(); err != nil {
+		return err
+	}
 	time.Sleep(500 * time.Millisecond)
 
 	u.log(fmt.Sprintf("» Streaming %d bytes (raw binary)…", len(fw)))
@@ -625,7 +665,9 @@ func (u *Uploader) uploadGeneric(opts Options) error {
 		if end > len(fw) {
 			end = len(fw)
 		}
-		bc.Write(fw[i:end])
+		if _, err := bc.Write(fw[i:end]); err != nil {
+			return fmt.Errorf("bridge write: %w", err)
+		}
 		time.Sleep(8 * time.Millisecond)
 
 		pct := end * 100 / len(fw)
@@ -634,9 +676,13 @@ func (u *Uploader) uploadGeneric(opts Options) error {
 		}
 	}
 
-	bc.Release()
+	if err := bc.Release(); err != nil {
+		u.log("  (warning) bridge release: " + err.Error())
+	}
 	time.Sleep(100 * time.Millisecond)
-	bc.Reset()
+	if err := bc.Reset(); err != nil {
+		u.log("  (warning) bridge reset: " + err.Error())
+	}
 	u.log("» Generic upload complete")
 	return nil
 }

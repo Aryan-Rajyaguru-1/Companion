@@ -218,9 +218,6 @@ func (r *Registry) RunDiagnostics(ctx context.Context, output, fqbn string) []Pl
 	return all
 }
 
-// Global is the default plugin registry used by the CLI.
-var Global = NewRegistry()
-
 // ── Discovery / loading ───────────────────────────────────────────
 
 // LoadAll builds a fresh registry containing first-party builtins plus any

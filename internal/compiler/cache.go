@@ -107,55 +107,6 @@ func (bc *BuildCache) ObjectKey(srcPath, fqbn string, flags []string) (string, e
 	return hex.EncodeToString(h.Sum(nil))[:32], nil
 }
 
-// CoreKey computes a cache key for a compiled core library (libcore.a).
-// Inputs:
-//   - All .c/.cpp file paths + their content hashes from the core dir
-//   - Compiler flags
-func (bc *BuildCache) CoreKey(coreDir, fqbn string, flags []string) (string, error) {
-	h := sha256.New()
-
-	// Scan all source files in core directory, sorted for determinism
-	var coreSources []string
-	err := filepath.Walk(coreDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext == ".c" || ext == ".cpp" || ext == ".s" || ext == ".S" {
-			coreSources = append(coreSources, path)
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	sort.Strings(coreSources)
-
-	for _, src := range coreSources {
-		f, err := os.Open(src)
-		if err != nil {
-			continue
-		}
-		h.Write([]byte(src)) // include path so renames invalidate
-		io.Copy(h, f)
-		f.Close()
-	}
-
-	// Compiler flags
-	sorted := make([]string, len(flags))
-	copy(sorted, flags)
-	sort.Strings(sorted)
-	for _, flag := range sorted {
-		h.Write([]byte(flag))
-	}
-	h.Write([]byte(fqbn))
-
-	return hex.EncodeToString(h.Sum(nil))[:32], nil
-}
-
 // ── Get / Put ─────────────────────────────────────────────────────
 
 // GetObject returns the path to a cached object file, or "" if not cached.
