@@ -163,6 +163,14 @@ Grouped from top-reacted issues:
     (`internal/fleet`: select/tag/match, persistence round-trip, retry,
     concurrency cap, cancellation) and e2e-smoke-tested against the real
     binary incl. both confirm paths.
+    **Anti-wrong-board hardening:** `fleet push` runs an mDNS **identity
+    preflight** before the confirm prompt — each target's live advertisement is
+    matched against the registry (MAC-suffix mismatch → hard abort, missing
+    advertisement / name drift → warn, address or name reuse across entries →
+    fail) so a swapped board can't silently receive another device's firmware
+    (`--no-verify` opts out explicitly). `fleet discover [--register]` mDNS-browses
+    the network and can auto-seed/refresh the registry with the advertised
+    `companion-XXXXXX` identity.
 
 ---
 

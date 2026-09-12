@@ -59,9 +59,18 @@ companion fleet list
 companion fleet push firmware.bin @office            # flash the office boards only
 ```
 
+Or let mDNS find your boards for you:
+
+```bash
+companion fleet discover --register                  # scan + auto-add companion-XXXXXX boards
+```
+
 `fleet push` shows the exact target list and **asks for confirmation before
 flashing anything** — then runs with bounded concurrency, one automatic retry
-per failing device, and prints a per-device result table.
+per failing device, and prints a per-device result table. Before the prompt it
+runs an mDNS **identity preflight**: if a registered host now advertises a
+different MAC (wrong/swapped board), the push hard-aborts; missing or drifted
+advertisements are surfaced as warnings (`--no-verify` to skip).
 
 ## Manual setup
 
