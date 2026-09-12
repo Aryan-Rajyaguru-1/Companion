@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  cli:
+    name: CLI binaries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  targets: 'linux-amd64 linux-arm64' }
+          - { os: windows-latest, targets: 'windows-amd64.exe windows-arm64.exe' }
+          - { os: macos-latest,   targets: 'darwin-amd64 darwin-arm64' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: 'stable' }
+      - name: Build
+        working-directory: companion-cli
+        shell: bash
+        run: |
+          mkdir -p ../dist-cli
+          for t in ${{ matrix.targets }}; do
+            os=${t%%-*}; ext=${t#*.}; arch=${ext%%.*}; suffix=${ext##*.}
+            name=companion-$os-$arch${suffix:+.$suffix}
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "../dist-cli/$name" .
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.os }}
+          path: dist-cli/
+
+  ide:
+    name: IDE installers (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  path: 'release/*.AppImage release/*.deb' }
+          - { os: windows-latest, path: 'release/*.exe' }
+          - { os: macos-latest,   path: 'release/*.dmg' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Build installers
+        working-directory: companion-ide
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ide-${{ matrix.os }}
+          path: companion-ide/release/
+
+  publish:
+    name: Attach to GitHub Release
+    needs: [cli, ide]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { merge-multiple: true, path: artifacts }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
