@@ -61,6 +61,17 @@ Say "Downloading board package index (one-time, may take a moment)"
 if ($LASTEXITCODE -eq 0) { Ok "board index cached" }
 else { Warn "board index download failed (run '$Bin board update-index' later)" }
 
+# Pre-install the default AVR platform so a fresh clone compiles the Uno
+# example immediately (first-run wall reported by testers).
+$installed = (& $Bin board list 2>$null) -join "`n"
+if ($installed -match 'arduino:avr') { Ok "arduino:avr platform already installed" }
+else {
+    Say "Installing default platform arduino:avr (one-time download)"
+    & $Bin board install arduino:avr
+    if ($LASTEXITCODE -eq 0) { Ok "arduino:avr installed" }
+    else { Warn "arduino:avr install failed (run '$Bin board install arduino:avr' later)" }
+}
+
 # ── 3. IDE dependencies (skipped when no IDE checkout is present) ────────────
 $HasIde = Test-Path "$IdeDir\package.json"
 if ($HasIde) {

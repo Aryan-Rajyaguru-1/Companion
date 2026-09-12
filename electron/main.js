@@ -318,6 +318,8 @@ function registerIPC() {
   ipcMain.handle('arduino:search-cores',     async (_, q)  => companionCLI.searchBoards(q));
   ipcMain.handle('arduino:search-packages',  async (_, q)  => companionCLI.searchBoardPackages(q));
   ipcMain.handle('arduino:install-core',     async (_, id) => companionCLI.installCore(id, emit));
+  ipcMain.handle('compile:flags',            async (_, { sketchDir, file }) => companionCLI.compileFlags(sketchDir, file));
+  ipcMain.handle('ota:discover',             async (_, { waitMs } = {}) => companionCLI.otaDiscover(waitMs || 3000));
   ipcMain.handle('arduino:update-index',     async ()      => companionCLI.updateIndex(emit));
 
   // Libraries

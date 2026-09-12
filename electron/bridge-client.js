@@ -161,27 +161,48 @@ class BridgeClient {
   // Upload firmware (dispatcher)
   // ══════════════════════════════════════════════════════════════
   async uploadFirmware({ host, port, baud = 115200, mcu = 'generic', avrMcu = 'atmega328p', binaryPath, onProgress }) {
-    const stat = fs.statSync(binaryPath);
-    onProgress?.(`» Binary: ${path.basename(binaryPath)} (${(stat.size / 1024).toFixed(1)} KB)\n`);
-    onProgress?.(`» Target MCU family: ${mcu}  Baud: ${baud}\n`);
+    let stat;
+    try {
+      stat = await fs.promises.stat(binaryPath);
+    } catch (e) {
+      return { success: false, error: `Binary not found: ${binaryPath} (${e?.message || e})` };
+    }
+    // Wrap the progress-stream write so a broken/closed stream surfaces as a
+    // returned error instead of an uncaught exception.
+    const safeProgress = (msg) => {
+      try { onProgress?.(msg); } catch (e) { throw new Error(`Progress stream failed: ${e?.message || e}`); }
+    };
+    try {
+      safeProgress(`» Binary: ${path.basename(binaryPath)} (${(stat.size / 1024).toFixed(1)} KB)\n`);
+      safeProgress(`» Target MCU family: ${mcu}  Baud: ${baud}\n`);
+    } catch (e) {
+      return { success: false, error: e?.message || String(e) };
+    }
+    // From here on, forward safeProgress (guarded) instead of raw onProgress.
 
-    const key = mcu.toLowerCase();
-    if (key === 'esp32' || key === 'esp8266') {
-      return this._uploadESP(host, port, baud, mcu, binaryPath, onProgress);
+    const guardedProgress = (msg) => { try { onProgress?.(msg); } catch (e) { throw new Error(`Progress stream failed: ${e?.message || e}`); } };
+    const key = String(mcu || 'generic').toLowerCase();
+    try {
+      if (key === 'esp32' || key === 'esp8266') {
+        return await this._uploadESP(host, port, baud, mcu, binaryPath, guardedProgress);
+      }
+      if (key === 'stm32') {
+        return await this._uploadSTM32(host, port, baud, binaryPath, guardedProgress);
+      }
+      if (key === 'avr' || key === 'arduino') {
+        return await this._uploadAVR(host, port, baud, avrMcu, binaryPath, guardedProgress);
+      }
+      return await this._uploadGeneric(host, port, baud, binaryPath, guardedProgress);
+    } catch (e) {
+      return { success: false, error: e?.message || String(e) };
     }
-    if (key === 'stm32') {
-      return this._uploadSTM32(host, port, baud, binaryPath, onProgress);
-    }
-    if (key === 'avr' || key === 'arduino') {
-      return this._uploadAVR(host, port, baud, avrMcu, binaryPath, onProgress);
-    }
-    return this._uploadGeneric(host, port, baud, binaryPath, onProgress);
   }
 
   // ══════════════════════════════════════════════════════════════
   // ESP32 / ESP8266  — delegates to esptool
   // ══════════════════════════════════════════════════════════════
   async _uploadESP(host, port, baud, chip, binaryPath, onProgress) {
+    try { await fs.promises.access(binaryPath, fs.constants.R_OK); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
     // Step 1: open a control socket, assert bootloader, then keep it open
     // until esptool has fully connected and is running.  Closing it too
     // early (the old bug) means the bridge accepts esptool as a brand-new
@@ -280,7 +301,8 @@ class BridgeClient {
   // STM32  — native UART bootloader (AN3155)
   // ══════════════════════════════════════════════════════════════
   async _uploadSTM32(host, port, baud, binaryPath, onProgress) {
-    const fw = fs.readFileSync(binaryPath);
+    let fw;
+    try { fw = await fs.promises.readFile(binaryPath); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
 
     return new Promise((resolve) => {
       let settled = false;
@@ -353,6 +375,7 @@ class BridgeClient {
   // AVR / Arduino  — delegates to avrdude
   // ══════════════════════════════════════════════════════════════
   async _uploadAVR(host, port, baud, avrMcu, binaryPath, onProgress) {
+    try { await fs.promises.access(binaryPath, fs.constants.R_OK); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
     // Enter bootloader via bridge, then release for avrdude
     await new Promise((resolve) => {
       let settled = false;
@@ -407,7 +430,8 @@ class BridgeClient {
   // Generic  — raw binary stream for custom bootloaders
   // ══════════════════════════════════════════════════════════════
   async _uploadGeneric(host, port, baud, binaryPath, onProgress) {
-    const fw = fs.readFileSync(binaryPath);
+    let fw;
+    try { fw = await fs.promises.readFile(binaryPath); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
 
     return new Promise((resolve) => {
       const sock = new net.Socket();

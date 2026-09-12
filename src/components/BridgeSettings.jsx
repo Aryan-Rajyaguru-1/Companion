@@ -101,12 +101,42 @@ export default function BridgeSettings({
               {pinging ? <span className="spin">⟳</span> : <PingIcon />}
               {pinging ? 'Pinging…' : 'Test Connection'}
             </button>
+            <button
+              className="btn"
+              onClick={handleDiscover}
+              disabled={discovering}
+              title="Scan the network (mDNS _arduino._tcp) for OTA devices"
+            >
+              {discovering ? <span className="spin">⟳</span> : <WifiIcon />}
+              {discovering ? 'Discovering…' : 'Discover OTA devices'}
+            </button>
 
             {pingResult && (
               <div className={`bs-ping-result ${pingResult.success ? 'ok' : 'fail'}`}>
                 {pingResult.success
                   ? <><span className="status-dot connected" />{pingResult.info}</>
                   : <><span className="status-dot disconnected" />✗ {pingResult.error}</>}
+              </div>
+            )}
+            {discoverError && (
+              <div className="bs-ping-result fail">
+                <><span className="status-dot disconnected" />✗ {discoverError}</>
+              </div>
+            )}
+            {otaDevices.length > 0 && (
+              <div className="bs-ota-devices">
+                <div className="bs-section-title" style={{ marginTop: 8 }}>OTA devices on this network</div>
+                {otaDevices.map((d, i) => (
+                  <button key={`${d.host}:${d.port}-${i}`} className="bs-ota-device"
+                    onClick={() => setLocalHost(d.host)}
+                    title={`Use ${d.host} as the Bridge/OTA address`}>
+                    <span className="status-dot connected" />
+                    <span className="bs-ota-name">{d.name || d.host}</span>
+                    <span className="bs-ota-host">{d.host}:{d.port || 3232}</span>
+                    <span className="bs-ota-pick">Use</span>
+                  </button>
+                ))}
+                <div className="bs-hint">Click a device to use its IP as the Bridge Address (also the OTA target).</div>
               </div>
             )}
           </div>
