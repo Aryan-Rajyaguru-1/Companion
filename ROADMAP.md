@@ -144,6 +144,7 @@ Grouped from top-reacted issues:
     Verified: `config get directories.data` resolves to the exe dir.
 
 ### Phase 6 — Polish / distribution ✅
+
 13. ✅ `companion lsp [dir]` — compiles (warm-cache, `--export-compile-commands`),
     then execs clangd with `--compile-commands-dir` so any LSP editor gets real
     IntelliSense (closes Arduino-cli #849 end-to-end).
@@ -152,6 +153,16 @@ Grouped from top-reacted issues:
     matrix. `make -C companion-cli publish` builds a publish bundle.
 15. ✅ Legal hygiene: `Arduino for refs/` + analysis .md files are now in `.gitignore`
     (never committed), and the `publish` target excludes them — MIT claim stays valid.
+16. ✅ `companion fleet list|register|remove|push` — durable device registry
+    (`devices.yaml` in the data dir, keyed by name/MAC-hostname with mcu + tags),
+    selector engine (`@tag` / substring AND), and **batch OTA push with a
+    mandatory confirm step showing the exact resolved target list**, bounded
+    concurrency worker pool (semaphore, never full-parallel), one automatic
+    retry pass per failing device, a per-device result table, a single shared
+    compile for the whole batch, and prompt Ctrl-C abort. Unit-tested
+    (`internal/fleet`: select/tag/match, persistence round-trip, retry,
+    concurrency cap, cancellation) and e2e-smoke-tested against the real
+    binary incl. both confirm paths.
 
 ---
 

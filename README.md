@@ -12,6 +12,7 @@
 ## ✨ Why Companion?
 
 - 📡 **Truly wireless upload** — flash Uno/Mega/Nano/ESP32 through an ESP32 bridge on your WiFi; leave the USB cable in the drawer
+- 🚀 **Fleet OTA** — register boards once (name/MAC/tags), then `companion fleet push` flashes many at once with a confirm step, bounded concurrency, and a per-device result table
 - 🔒 **100% local toolchain** — compiles on your machine, no cloud accounts, no telemetry
 - ⚡ **Content-addressed build cache** — warm builds finish in seconds, not minutes
 - 🖥️ **CLI-first + full IDE** — scriptable `companion` binary *and* a GUI with tabs, plotter, error markers
@@ -46,6 +47,21 @@ bash scripts/setup.sh          # macOS / Linux
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
 ```
+
+## 🚀 Fleet OTA (batch flash)
+
+Register your boards once, then update many over WiFi in one command:
+
+```bash
+companion fleet register 192.168.1.11 kitchen-uno --mcu avr --tags kitchen,uno
+companion fleet register 192.168.1.12 office-esp32 --mcu esp32 --tags office
+companion fleet list
+companion fleet push firmware.bin @office            # flash the office boards only
+```
+
+`fleet push` shows the exact target list and **asks for confirmation before
+flashing anything** — then runs with bounded concurrency, one automatic retry
+per failing device, and prints a per-device result table.
 
 ## Manual setup
 
