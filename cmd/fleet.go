@@ -45,6 +45,7 @@ selectors are ANDed. Always confirms the resolved target list before flashing.`,
 		newFleetListCmd(),
 		newFleetRegisterCmd(),
 		newFleetRemoveCmd(),
+		newFleetDiscoverCmd(),
 		newFleetPushCmd(),
 	)
 	return cmd

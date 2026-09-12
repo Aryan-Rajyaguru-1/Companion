@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/companion-ide/companion-cli/internal/boards"
 	"github.com/companion-ide/companion-cli/internal/compiler"
@@ -24,6 +25,7 @@ func newFleetPushCmd() *cobra.Command {
 		concurrency int
 		retries     int
 		yes         bool
+		noVerify    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push <image.bin|sketch-dir> [selectors...]",
@@ -55,6 +57,26 @@ func newFleetPushCmd() *cobra.Command {
 			devs := r.Select(selectors)
 			if len(devs) == 0 {
 				return fmt.Errorf("no registered devices match selectors %v — run 'companion fleet list' and 'companion fleet register <host>'", selectors)
+			}
+
+			// ── Identity preflight: verify each target against live mDNS ──
+			if !noVerify {
+				preflights := fleet.VerifyTargets(r, devs, discoverAdvertisements(cmd.Context()))
+				fmt.Println("\nIdentity preflight (mDNS):")
+				failed := 0
+				for _, p := range preflights {
+					mark := "✓"
+					if p.State == fleet.PreflightWarn {
+						mark = "⚠"
+					} else if p.State == fleet.PreflightFail {
+						mark = "✗"
+						failed++
+					}
+					fmt.Printf("  %s %-22s %s\n", mark, p.Device.Key(), p.Detail)
+				}
+				if failed > 0 {
+					return fmt.Errorf("identity preflight failed for %d device(s) — fix the registry or re-run with --no-verify only if you are certain", failed)
+				}
 			}
 
 			// ── Mandatory confirmation showing the exact target list ──
@@ -105,7 +127,17 @@ func newFleetPushCmd() *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "workers", 4, "bounded worker concurrency")
 	cmd.Flags().IntVar(&retries, "retries", 1, "automatic retries per failing device")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
+	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "skip the mDNS identity preflight")
 	return cmd
+}
+
+// discoverAdvertisements runs an mDNS scan and returns host → advertised name.
+func discoverAdvertisements(ctx context.Context) map[string]string {
+	m := map[string]string{}
+	for _, d := range ota.Discover(ctx, 3*time.Second) {
+		m[d.Host] = d.Name
+	}
+	return m
 }
 
 // fleetImage compiles a sketch dir (once for the whole batch) or
