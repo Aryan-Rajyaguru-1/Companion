@@ -90,6 +90,7 @@ func init() {
 		newLSPCmd(),     // P6: clangd IntelliSense over compile_commands.json
 		newOutdatedCmd(),
 		newUpgradeCmd(),
+		newFleetCommand(), // device registry + batch OTA push
 	)
 }
 
