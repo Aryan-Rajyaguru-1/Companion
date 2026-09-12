@@ -24,6 +24,7 @@ import (
 	"github.com/companion-ide/companion-cli/internal/config"
 	cerrors "github.com/companion-ide/companion-cli/internal/errors"
 	"github.com/companion-ide/companion-cli/internal/ota"
+	"github.com/companion-ide/companion-cli/internal/plugins"
 	"github.com/companion-ide/companion-cli/internal/uploader"
 	"github.com/spf13/cobra"
 )
@@ -75,9 +76,10 @@ type streamEvent struct {
 // ── Daemon server ───────────────────────────────────────────────
 
 type daemonServer struct {
-	cfg   *config.Config
-	bm    *boards.Manager
-	cache *compiler.BuildCache
+	cfg      *config.Config
+	bm       *boards.Manager
+	cache    *compiler.BuildCache
+	registry *plugins.Registry
 
 	// Bearer token written to disk for IDE/web/mobile clients.
 	tokenPath string
@@ -124,10 +126,12 @@ func newDaemonServer(cfg *config.Config) (*daemonServer, error) {
 		return nil, fmt.Errorf("write auth token: %w", err)
 	}
 
+	reg := pluginRegistry(cfg)
 	return &daemonServer{
 		cfg:           cfg,
 		bm:            bm,
 		cache:         cache,
+		registry:      reg,
 		token:         token,
 		tokenPath:     tokenPath,
 		serialReaders: make(map[chan serialFrame]struct{}),
@@ -263,7 +267,7 @@ func (d *daemonServer) handleStreamCompile(w http.ResponseWriter, r *http.Reques
 		outMu.Unlock()
 		sendEvent(streamEvent{Type: "output", Text: line})
 	})
-	cmp.SetPlugins(pluginRegistry(d.cfg))
+	cmp.SetPlugins(d.registry)
 	if d.cfg.Cache.Enabled {
 		if bc, err := compiler.NewBuildCache(compiler.DefaultCacheDir(d.cfg.Directories.Data)); err == nil {
 			cmp.SetCache(bc)

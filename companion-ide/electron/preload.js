@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchCores:     (q)   => ipcRenderer.invoke('arduino:search-cores', q),
   searchPackages:  (q)   => ipcRenderer.invoke('arduino:search-packages', q),
   installCore:     (id)  => ipcRenderer.invoke('arduino:install-core', id),
+  getCompileFlags: (sketchDir, file) => ipcRenderer.invoke('compile:flags', { sketchDir, file }),
+  otaDiscover:     (waitMs) => ipcRenderer.invoke('ota:discover', { waitMs }),
   updateIndex:     ()    => ipcRenderer.invoke('arduino:update-index'),
 
   // ── Libraries ────────────────────────────────────────────────

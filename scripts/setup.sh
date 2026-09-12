@@ -69,6 +69,14 @@ say "Initializing CLI configuration"
 "$BIN" config init >/dev/null && ok "config ready (~/.companion-cli/config.yaml)" || warn "config init failed (run '$BIN config init' manually)"
 say "Downloading board package index (one-time, may take a moment)"
 "$BIN" board update-index >/dev/null 2>&1 && ok "board index cached" || warn "board index download failed (run '$BIN board update-index' later)"
+# Pre-install the default AVR platform so a fresh clone compiles the Uno
+# example immediately (first-run wall reported by testers).
+if "$BIN" board list 2>/dev/null | grep -q "arduino:avr"; then
+  ok "arduino:avr platform already installed"
+else
+  say "Installing default platform arduino:avr (one-time download)"
+  "$BIN" board install arduino:avr >/dev/null 2>&1 && ok "arduino:avr installed" || warn "arduino:avr install failed (run '$BIN board install arduino:avr' later)"
+fi
 
 # ── 3. IDE dependencies (skipped when no IDE checkout is present) ────────────
 if [ -f "$IDE_DIR/package.json" ]; then

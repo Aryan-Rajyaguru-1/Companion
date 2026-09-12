@@ -20,6 +20,10 @@
 .cf-count.err  { background: rgba(248,81,73,.2);  color: var(--red,#f85149); }
 .cf-count.warn { background: rgba(210,153,34,.2); color: var(--yellow,#d29922); }
 .cf-ok { color: var(--green,#3fb950); font-size: 11px; }
+.cf-fail { color: var(--red,#f85149); font-size: 11px; font-weight: 700; }
+.cf-install-btn { font-size: 11px; font-weight: 700; color: #fff; background: var(--teal,#00979D); border: none; border-radius: 10px; padding: 1px 10px; cursor: pointer; }
+.cf-install-btn:disabled { opacity: .6; cursor: default; }
+.cf-install-btn:not(:disabled):hover { filter: brightness(1.15); }
 .console-icon-btn { display: flex; align-items: center; justify-content: center; background: none; border: none; cursor: pointer; color: var(--text-dim); width: 24px; height: 24px; border-radius: 4px; transition: background .1s, color .1s; }
 .console-icon-btn:hover  { background: var(--bg-surface); color: var(--text-primary); }
 .console-icon-btn.active { background: var(--teal-dim,rgba(0,151,157,.18)); color: var(--teal,#00979D); }

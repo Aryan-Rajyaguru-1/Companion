@@ -334,6 +334,61 @@ class CompanionCLI {
     } catch {}
     return [];
   }
+  // P-batch: read compile_commands.json flags (include paths + defines) for one file.
+  // No new CLI surface: parses build/<fqbn-dots>/compile_commands.json written by
+  // `companion compile --export-compile-commands` (arduino-cli #849 parity).
+  async compileFlags(sketchDir, fileName) {
+    try {
+      const entries = fs.readdirSync(sketchDir, { withFileTypes: true });
+      const buildDir = entries.filter(e => e.isDirectory() && e.name === 'build').map(e => e.name)[0]
+        ? require('path').join(sketchDir, 'build') : null;
+      if (!buildDir) return { success: false, error: 'no build directory yet — compile first' };
+      const subdirs = fs.readdirSync(buildDir, { withFileTypes: true }).filter(e => e.isDirectory());
+      for (const sub of subdirs) {
+        const cc = require('path').join(buildDir, sub.name, 'compile_commands.json');
+        if (!fs.existsSync(cc)) continue;
+        let arr;
+        try { arr = JSON.parse(fs.readFileSync(cc, 'utf-8')); } catch { continue; }
+        if (!Array.isArray(arr) || arr.length === 0) continue;
+        const pick = (fileName && arr.find(e => String(e.file || '').endsWith(fileName))) || arr[0];
+        let cmd = pick.command || (Array.isArray(pick.arguments) ? pick.arguments.join(' ') : '');
+        const includes = [];
+        // Pull out -I"dir with spaces" / -I'dir with spaces' before generic tokenizing.
+        cmd = cmd.replace(/-I"([^"]+)"|-I'([^']+)'/g, (_, a, b) => { includes.push(a || b); return ' '; });
+        const qre = /"([^"]+)"|'([^']+)'|(\S+)/g;
+        // -I<dir>, -I <dir>, -isystem <dir>, --include-directory=<dir>
+        const toks = [];
+        let m;
+        while ((m = qre.exec(cmd))) toks.push(m[1] || m[2] || m[3]);
+        for (let i = 0; i < toks.length; i++) {
+          const t = toks[i];
+          if (t === '-I' || t === '-isystem' || t === '-iquote') { if (toks[i+1]) includes.push(toks[i+1]); i++; }
+          else if (t.startsWith('-I') && t.length > 2) includes.push(t.slice(2));
+          else if (t.startsWith('--include-directory=')) includes.push(t.split('=').slice(1).join('='));
+        }
+        const defines = [];
+        const dre = /(?:^|\s)-D(\S+)/g;
+        let dm;
+        while ((dm = dre.exec(cmd))) defines.push(dm[1]);
+        return { success: true, includes: [...new Set(includes)], defines: [...new Set(defines)], file: pick.file || null, directory: pick.directory || null };
+      }
+      return { success: false, error: 'compile_commands.json not found — compile with export-compile-commands' };
+    } catch (e) { return { success: false, error: e?.message || String(e) }; }
+  }
+
+  // P-batch: OTA discovery via existing CLI (`ota discover` → ota.Discover over _arduino._tcp).
+  async otaDiscover(waitMs = 3000) {
+    try {
+      const { stdout } = await this._run(['ota', 'discover', '--wait', `${Math.round(waitMs/1000)}s`]);
+      const devices = [];
+      for (const line of String(stdout || '').split('\n')) {
+        const m = line.match(/^\s*(\d+\.\d+\.\d+\.\d+|\S+\.local|\[?[0-9a-fA-F:]+\]?)\s+(\S+)\s+port\s+(\d+)/);
+        if (m) devices.push({ host: m[1], name: m[2], port: Number(m[3]) });
+      }
+      return { success: true, devices };
+    } catch (err) { return { success: false, error: err.message, devices: [] }; }
+  }
+
   async installCore(platformId, onOutput) {
     try { await this._run(['board', 'install', platformId], onOutput); return { success: true }; }
     catch (err) { return { success: false, error: err.message }; }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/companion-ide/companion-cli/internal/config"
 	"github.com/companion-ide/companion-cli/internal/plugins"
@@ -28,12 +29,33 @@ Plugin types:
 	return cmd
 }
 
+// pluginRegistry returns the cached plugin registry for a config.
+//
+// Builtins call Init() on load, so rebuilding per request would re-run
+// plugin Init for every compile/upload and re-scan for .so files.
+// Registries are cached per plugin dir for the life of the process;
+// the daemon additionally holds one on daemonServer built at startup.
+var (
+	registryMu    sync.Mutex
+	registryByDir = map[string]*plugins.Registry{}
+)
+
 // pluginRegistry loads the plugin registry for a config (best-effort).
 func pluginRegistry(cfg *config.Config) *plugins.Registry {
-	reg, errs := plugins.LoadAll(filepath.Join(cfg.Directories.Data, "plugins"))
+	dir := filepath.Join(cfg.Directories.Data, "plugins")
+	registryMu.Lock()
+	if reg, ok := registryByDir[dir]; ok {
+		registryMu.Unlock()
+		return reg
+	}
+	registryMu.Unlock()
+	reg, errs := plugins.LoadAll(dir)
 	for _, e := range errs {
 		printWarn("plugin: " + e.Error())
 	}
+	registryMu.Lock()
+	registryByDir[dir] = reg
+	registryMu.Unlock()
 	return reg
 }
 

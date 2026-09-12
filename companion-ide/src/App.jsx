@@ -128,6 +128,11 @@ export default function App() {
   // ── Errors + Flash ─────────────────────────────────────────
   const [compileErrors,   setCompileErrors]   = useState([]);
   const [compileSummary,  setCompileSummary]  = useState(null);
+  const [compileStatus,   setCompileStatus]   = useState('idle');
+  const [missingPlatform, setMissingPlatform] = useState(null);   // e.g. 'esp32:esp32'
+  const [installingPlatform, setInstallingPlatform] = useState(false);
+  const [includePaths, setIncludePaths] = useState([]);   // from compile_commands.json (-I)
+  const [defines, setDefines] = useState([]);               // from compile_commands.json (-D)
   const [errorMarkers,    setErrorMarkers]    = useState([]);
   const [showAutoCorrect, setShowAutoCorrect] = useState(false);
   const [showLibResolver, setShowLibResolver] = useState(false);
@@ -148,11 +153,15 @@ export default function App() {
   // Keep refs for stable callbacks
   const bridgeHostRef   = useRef(bridgeHost);
   const bridgePortRef   = useRef(bridgePort);
+  const missingPlatformRef    = useRef(null);
+  const installingPlatformRef = useRef(false);
   const selectedBoardRef = useRef(selectedBoard);
   const selectedMCURef  = useRef(selectedMCU);
   const uploadBaudRef   = useRef(uploadBaud);
   useEffect(() => { bridgeHostRef.current    = bridgeHost;    }, [bridgeHost]);
   useEffect(() => { bridgePortRef.current    = bridgePort;    }, [bridgePort]);
+  useEffect(() => { missingPlatformRef.current = missingPlatform; }, [missingPlatform]);
+  useEffect(() => { installingPlatformRef.current = installingPlatform; }, [installingPlatform]);
   useEffect(() => { selectedBoardRef.current = selectedBoard; }, [selectedBoard]);
   useEffect(() => { selectedMCURef.current   = selectedMCU;   }, [selectedMCU]);
   useEffect(() => { uploadBaudRef.current    = uploadBaud;    }, [uploadBaud]);
@@ -197,31 +206,28 @@ export default function App() {
   }, []);
 
   const handleTabClose = useCallback(idx => {
-    setTabs(prev => {
-      if (prev.length === 1) return [newTab()];
-      const next = prev.filter((_, i) => i !== idx);
-      setActiveTabIdx(cur => Math.min(cur, next.length - 1));
-      return next;
-    });
+    const prev = tabsRef.current;
+    if (prev.length <= 1) { setTabs([newTab()]); setActiveTabIdx(0); return; }
+    const next = prev.filter((_, i) => i !== idx);
+    const curActive = activeTabIdxRef.current;
+    setTabs(next);
+    if (idx < curActive) setActiveTabIdx(curActive - 1);
+    else if (idx === curActive) setActiveTabIdx(Math.max(0, Math.min(idx, next.length - 1)));
   }, []);
 
   // BUG C fix: single setTabs updater — correct index regardless of batching
   const handleNewTab = useCallback(() => {
     if (prefs.get('companion.templates.showOnNew')) { setShowTemplates(true); return; }
-    setTabs(prev => {
-      const next = [...prev, newTab()];
-      setActiveTabIdx(next.length - 1); // BUG C
-      return next;
-    });
+    const next = [...tabsRef.current, newTab()];
+    setTabs(next);
+    setActiveTabIdx(next.length - 1);
   }, []);
 
   // BUG C fix: single updater
   const handleTemplateSelect = useCallback(({ name, code }) => {
-    setTabs(prev => {
-      const next = [...prev, newTab(name, code, null)];
-      setActiveTabIdx(next.length - 1); // BUG C
-      return next;
-    });
+    const next = [...tabsRef.current, newTab(name, code, null)];
+    setTabs(next);
+    setActiveTabIdx(next.length - 1);
     setShowTemplates(false);
   }, []);
 
@@ -235,11 +241,9 @@ export default function App() {
     if (!r?.success) return;
     const name = fileName || filePath.split(/[/\\]/).pop();
     addRecentFile(filePath, name);
-    setTabs(prev => {
-      const next = [...prev, newTab(name, r.content, filePath)];
-      setActiveTabIdx(next.length - 1); // BUG C
-      return next;
-    });
+    const next = [...tabsRef.current, newTab(name, r.content, filePath)];
+    setTabs(next);
+    setActiveTabIdx(next.length - 1);
   }, []);
 
   // ── Console ────────────────────────────────────────────────
@@ -316,19 +320,24 @@ export default function App() {
 
   const handleExportBinary = useCallback(async () => {
     if (inFlightRef.current) return;
-    clearConsole(); setShowErrorList(false);
-    appendConsole('» Exporting compiled binary…\n', 'info');
     inFlightRef.current = true; setIsCompiling(true);
-    await saveCurrentTab();
-    const tab = activeTabRef.current;
-    const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
-    const r = await window.electronAPI?.compile({
-      sketchDir: dir, fqbn: selectedBoardRef.current,
-      exportBin: true, verbose: false, warnings: 'default', json: true,
-    });
-    inFlightRef.current = false; setIsCompiling(false);
-    if (r?.success) appendConsole('✓ Binary exported to sketch/build/\n', 'success');
-    else appendConsole(`✗ Export failed: ${r?.error || 'unknown'}\n`, 'error');
+    try {
+      clearConsole(); setShowErrorList(false);
+      appendConsole('» Exporting compiled binary…\n', 'info');
+      await saveCurrentTab();
+      const tab = activeTabRef.current;
+      const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
+      const r = await window.electronAPI?.compile({
+        sketchDir: dir, fqbn: selectedBoardRef.current,
+        exportBin: true, verbose: false, warnings: 'default', json: true,
+      });
+      if (r?.success) appendConsole('✓ Binary exported to sketch/build/\n', 'success');
+      else appendConsole(`✗ Export failed: ${r?.error || 'unknown'}\n`, 'error');
+    } catch (e) {
+      appendConsole(`✗ Export failed: ${e?.message || e}\n`, 'error');
+    } finally {
+      inFlightRef.current = false; setIsCompiling(false);
+    }
   }, [clearConsole, appendConsole, saveCurrentTab, getTempSketchDir]);
 
   // ── BUG D fix: inFlightRef as synchronous compile lock ─────
@@ -336,83 +345,127 @@ export default function App() {
     // BUG D: synchronous check — not subject to React batching
     if (inFlightRef.current) return null;
     inFlightRef.current = true;
-
     setIsCompiling(true);
-    setShowAutoCorrect(false); setShowLibResolver(false);
-    setShowErrorList(false); setFlashUsage(null);
-    if (!silent) clearConsole();
-    rawOutputRef.current = '';
-    appendConsole('» Verifying sketch…\n', 'info');
+    let compileStatusNext = 'failed';
+    let result = null;
+    try {
+      setShowAutoCorrect(false); setShowLibResolver(false);
+      setShowErrorList(false); setFlashUsage(null); setMissingPlatform(null);
+      if (!silent) clearConsole();
+      rawOutputRef.current = '';
+      appendConsole('» Verifying sketch…\n', 'info');
 
-    // Validate board selection
-    if (!selectedBoardRef.current) {
+      // Validate board selection
+      if (!selectedBoardRef.current) {
+        appendConsole('✗ No board selected. Choose a board in the toolbar.\n', 'error');
+        return null;
+      }
+
+      await saveCurrentTab();
+      const tab = activeTabRef.current;
+      const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
+
+      cancelRef.current = () => window.electronAPI?.cancelCompile?.();
+
+      const t0 = Date.now();
+      try {
+        result = await window.electronAPI?.compile({
+          sketchDir: dir, fqbn: selectedBoardRef.current, exportBin: true,
+          verbose: prefs.get('arduino.compile.verbose'),
+          warnings: prefs.get('arduino.compile.warnings'), json: true,
+        });
+      } catch (e) {
+        result = { success: false, error: e?.message || String(e) };
+      }
+      const elapsed = Date.now() - t0;
+      setLastCompileMs(elapsed);
+
+      if (result?.cancelled) {
+        compileStatusNext = 'idle';
+        appendConsole('\n⊘ Compile cancelled\n', 'muted');
+        return null;
+      }
+
+      const regexErrors = parseCompilerErrors(rawOutputRef.current, dir);
+      const jsonErrors  = parseJsonDiagnostics(result?.diagnostics || []);
+      const errors      = mergeErrors(regexErrors, jsonErrors);
+      const summary     = errorSummary(errors);
+
+      setCompileErrors(errors); setCompileSummary(summary);
+      setErrorMarkers(errorsToMarkers(errors, tab?.path || tab?.name || 'sketch.ino'));
+
+      if (result?.success) {
+        // BUG B fix: parse flash from result.output (complete, not race-prone)
+        // result.output is the array of output lines returned in the compile result,
+        // guaranteed complete when the await resolves.
+        const outputText = (result.output || []).join('\n') || rawOutputRef.current;
+        setFlashUsage(parseFlashUsage(outputText));
+
+        if (!silent) {
+          appendConsole(`\n✓ Compiled in ${(elapsed / 1000).toFixed(1)}s`, 'success');
+          if (result.fromDaemon) appendConsole(' (cache hit)', 'muted');
+          if (summary.warnings > 0) appendConsole(` — ${summary.warnings} warning${summary.warnings > 1 ? 's' : ''}`, 'warning');
+          appendConsole('\n', 'output');
+        }
+        compileStatusNext = 'ok';
+        refreshCacheStats();
+        refreshCompileFlags(dir);
+      } else {
+        // Compilation failed — show error count or CLI error message
+        compileStatusNext = 'failed';
+        // Missing-platform Install button: match "platform <vendor:arch> not installed"
+        // (boards.go) and "Platform '<vendor:arch>' is not installed" (errors.go).
+        try {
+          const hay = [result?.error || '', rawOutputRef.current || '', (result?.output || []).join('\n')].join('\n');
+          const m = hay.match(/platform\s+'?([A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+)'?\s+(is\s+)?not installed/i)
+            || hay.match(/platform\s+(\S+)\s+(is\s+)?not installed/i);
+          if (m) setMissingPlatform(m[1]);
+        } catch {}
+        let failMsg = `\n✗ Compilation failed`;
+        if (summary.errors > 0) {
+          failMsg += ` — ${summary.errors} error${summary.errors > 1 ? 's' : ''}`;
+        } else if (result?.error) {
+          failMsg += ` — ${result.error}`;
+        }
+        appendConsole(`${failMsg}\n`, 'error');
+        if (errors.length > 0) {
+          setShowErrorList(true); setShowLibResolver(true);
+          if (hasAutoFix(errors)) setShowAutoCorrect(true);
+          editorRef.current?.goToLine?.(errors[0].line);
+        }
+      }
+      return result;
+    } catch (e) {
+      compileStatusNext = 'failed';
+      appendConsole(`\n✗ Compile failed: ${e?.message || e}\n`, 'error');
+      return result || { success: false, error: e?.message || String(e) };
+    } finally {
+      cancelRef.current  = null;
       inFlightRef.current = false;
       setIsCompiling(false);
-      appendConsole('✗ No board selected. Choose a board in the toolbar.\n', 'error');
-      return null;
+      setCompileStatus(compileStatusNext);
     }
+  }, [clearConsole, appendConsole, saveCurrentTab, getTempSketchDir])
 
-    await saveCurrentTab();
-    const tab = activeTabRef.current;
-    const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
-
-    cancelRef.current = () => window.electronAPI?.cancelCompile?.();
-
-    const t0 = Date.now();
-    const result = await window.electronAPI?.compile({
-      sketchDir: dir, fqbn: selectedBoardRef.current, exportBin: true,
-      verbose: prefs.get('arduino.compile.verbose'),
-      warnings: prefs.get('arduino.compile.warnings'), json: true,
-    });
-    const elapsed = Date.now() - t0;
-    cancelRef.current  = null;
-    inFlightRef.current = false;
-    setIsCompiling(false); setLastCompileMs(elapsed);
-
-    if (result?.cancelled) {
-      appendConsole('\n⊘ Compile cancelled\n', 'muted');
-      return null;
-    }
-
-    const regexErrors = parseCompilerErrors(rawOutputRef.current, dir);
-    const jsonErrors  = parseJsonDiagnostics(result?.diagnostics || []);
-    const errors      = mergeErrors(regexErrors, jsonErrors);
-    const summary     = errorSummary(errors);
-
-    setCompileErrors(errors); setCompileSummary(summary);
-    setErrorMarkers(errorsToMarkers(errors, tab?.path || tab?.name || 'sketch.ino'));
-
-    if (result?.success) {
-      // BUG B fix: parse flash from result.output (complete, not race-prone)
-      // result.output is the array of output lines returned in the compile result,
-      // guaranteed complete when the await resolves.
-      const outputText = (result.output || []).join('\n') || rawOutputRef.current;
-      setFlashUsage(parseFlashUsage(outputText));
-
-      if (!silent) {
-        appendConsole(`\n✓ Compiled in ${(elapsed / 1000).toFixed(1)}s`, 'success');
-        if (result.fromDaemon) appendConsole(' (cache hit)', 'muted');
-        if (summary.warnings > 0) appendConsole(` — ${summary.warnings} warning${summary.warnings > 1 ? 's' : ''}`, 'warning');
-        appendConsole('\n', 'output');
+  // compile_commands.json -> Monaco (minimal): after a successful compile, read the
+  // -I include paths / -D defines for the active file and feed Editor completions.
+  // Best-effort: silently keeps old values when compile_commands.json is absent
+  // (CLI only writes it with --export-compile-commands; see compile.go/LSP).
+  const refreshCompileFlags = useCallback(async (sketchDirOverride) => {
+    try {
+      const tab = activeTabRef.current;
+      const dir = sketchDirOverride
+        || tab?.path?.replace(/[/\\][^/\\]+$/, '')
+        || null;
+      if (!dir || !window.electronAPI?.getCompileFlags) return;
+      const file = tab?.name || tab?.path?.split(/[/\\]/).pop() || 'sketch.ino';
+      const r = await window.electronAPI.getCompileFlags(dir, file);
+      if (r?.success) {
+        if (Array.isArray(r.includes)) setIncludePaths(r.includes);
+        if (Array.isArray(r.defines)) setDefines(r.defines);
       }
-      refreshCacheStats();
-    } else {
-      // Compilation failed — show error count or CLI error message
-      let failMsg = `\n✗ Compilation failed`;
-      if (summary.errors > 0) {
-        failMsg += ` — ${summary.errors} error${summary.errors > 1 ? 's' : ''}`;
-      } else if (result?.error) {
-        failMsg += ` — ${result.error}`;
-      }
-      appendConsole(`${failMsg}\n`, 'error');
-      if (errors.length > 0) {
-        setShowErrorList(true); setShowLibResolver(true);
-        if (hasAutoFix(errors)) setShowAutoCorrect(true);
-        editorRef.current?.goToLine?.(errors[0].line);
-      }
-    }
-    return result;
-  }, [clearConsole, appendConsole, saveCurrentTab, getTempSketchDir]);
+    } catch {}
+  }, []);
 
   const handleCancel = useCallback(() => {
     cancelRef.current?.(); cancelRef.current = null;
@@ -497,18 +550,26 @@ export default function App() {
     }
 
     inFlightRef.current = true; setIsUploading(true);
-    clearConsole();
-    appendConsole(`» Uploading via USB → ${port} [${selectedBoardRef.current}]\n`, 'info');
-    const r = await window.electronAPI?.uploadUSB?.({
-      binaryPath: c.binaryPath,
-      fqbn: selectedBoardRef.current,
-      serialPort: port,
-      baud: uploadBaudRef.current,
-    });
-    inFlightRef.current = false; setIsUploading(false);
-    if (r?.success) appendConsole('\n✓ Upload complete — device is running\n', 'success');
-    else appendConsole(`\n✗ Upload failed: ${r?.error || 'unknown'}\n`, 'error');
-  }, [handleCompile, clearConsole, appendConsole, selectedPort]);
+    try {
+      clearConsole();
+      appendConsole(`» Uploading via USB → ${port} [${selectedBoardRef.current}]\n`, 'info');
+      let r;
+      try {
+        r = await window.electronAPI?.uploadUSB?.({
+          binaryPath: c.binaryPath,
+          fqbn: selectedBoardRef.current,
+          serialPort: port,
+          baud: uploadBaudRef.current,
+        });
+      } catch (e) {
+        r = { success: false, error: e?.message || String(e) };
+      }
+      if (r?.success) appendConsole('\n✓ Upload complete — device is running\n', 'success');
+      else appendConsole(`\n✗ Upload failed: ${r?.error || 'unknown'}\n`, 'error');
+    } finally {
+      inFlightRef.current = false; setIsUploading(false);
+    }
+  }, [handleCompile, clearConsole, appendConsole, selectedPort])
 
   // Legacy wireless upload path (WiFi bridge)
   const handleUpload = useCallback(async () => {
@@ -525,53 +586,73 @@ export default function App() {
       // Stage 2: wireless upload only (separate IPC) — OTA when enabled for an
     // ESP sketch and a device IP is set (P4c).
       inFlightRef.current = true; setIsUploading(true);
-      clearConsole();
-      const host = bridgeHostRef.current; const port = bridgePortRef.current;
-      const mcu  = selectedMCURef.current; const baud = uploadBaudRef.current;
+      try {
+        clearConsole();
+        const host = bridgeHostRef.current; const port = bridgePortRef.current;
+        const mcu  = selectedMCURef.current; const baud = uploadBaudRef.current;
 
-      if (otaEnabledRef.current && /^(esp32|esp8266):/.test(selectedBoardRef.current || '')) {
-        const tab = activeTabRef.current;
-        const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
-        appendConsole(`» OTA upload (ArduinoOTA) → ${host} [${selectedBoardRef.current}]\n`, 'info');
-        const r = await window.electronAPI?.otaUpload?.(
-          { ip: host, sketchDir: dir, password: otaPasswordRef.current },
-          line => appendConsole(line, 'info')
-        );
-        inFlightRef.current = false; setIsUploading(false);
-        if (r?.success) appendConsole('\n✓ OTA upload complete — device is running\n', 'success');
+        if (otaEnabledRef.current && /^(esp32|esp8266):/.test(selectedBoardRef.current || '')) {
+          const tab = activeTabRef.current;
+          const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
+          appendConsole(`» OTA upload (ArduinoOTA) → ${host} [${selectedBoardRef.current}]\n`, 'info');
+          let r;
+          try {
+            r = await window.electronAPI?.otaUpload?.(
+              { ip: host, sketchDir: dir, password: otaPasswordRef.current },
+              line => appendConsole(line, 'info')
+            );
+          } catch (e) {
+            r = { success: false, error: e?.message || String(e) };
+          }
+          if (r?.success) appendConsole('\n✓ OTA upload complete — device is running\n', 'success');
+          else appendConsole(`\n✗ Upload failed: ${r?.error || 'unknown'}\n`, 'error');
+          return;
+        }
+
+        appendConsole(`» Uploading wirelessly to ${host}:${port} [${mcu}]\n`, 'info');
+
+        let r;
+        try {
+          r = await window.electronAPI?.uploadBinary?.({
+            binaryPath: c.binaryPath,
+            fqbn: selectedBoardRef.current,
+            mcu, host, port, baud,
+            verbose: prefs.get('arduino.upload.verbose'),
+          });
+        } catch (e) {
+          r = { success: false, error: e?.message || String(e) };
+        }
+        if (r?.success) appendConsole('\n✓ Upload complete — device is running\n', 'success');
         else appendConsole(`\n✗ Upload failed: ${r?.error || 'unknown'}\n`, 'error');
         return;
+      } finally {
+        inFlightRef.current = false; setIsUploading(false);
       }
-
-      appendConsole(`» Uploading wirelessly to ${host}:${port} [${mcu}]\n`, 'info');
-
-      const r = await window.electronAPI?.uploadBinary?.({
-        binaryPath: c.binaryPath,
-        fqbn: selectedBoardRef.current,
-        mcu, host, port, baud,
-        verbose: prefs.get('arduino.upload.verbose'),
-      });
-      inFlightRef.current = false; setIsUploading(false);
-      if (r?.success) appendConsole('\n✓ Upload complete — device is running\n', 'success');
-      else appendConsole(`\n✗ Upload failed: ${r?.error || 'unknown'}\n`, 'error');
-      return;
     }
 
     // No auto-verify: fall back to legacy combined IPC
     inFlightRef.current = true; setIsUploading(true);
-    clearConsole();
-    await saveCurrentTab();
-    const tab = activeTabRef.current;
-    const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
-    const r = await window.electronAPI?.upload({
+    try {
+      clearConsole();
+      await saveCurrentTab();
+      const tab = activeTabRef.current;
+      const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
+      let r;
+      try {
+        r = await window.electronAPI?.upload({
       sketchDir: dir, fqbn: selectedBoardRef.current,
       mcu: selectedMCURef.current, host: bridgeHostRef.current,
       port: bridgePortRef.current, baud: uploadBaudRef.current,
-      verbose: prefs.get('arduino.upload.verbose'),
-    });
-    inFlightRef.current = false; setIsUploading(false);
-    if (r?.success) appendConsole('\n✓ Upload complete — device is running\n', 'success');
-    else appendConsole(`\n✗ Upload failed: ${r?.error || 'unknown'}\n`, 'error');
+        verbose: prefs.get('arduino.upload.verbose'),
+      });
+      } catch (e) {
+        r = { success: false, error: e?.message || String(e) };
+      }
+      if (r?.success) appendConsole('\n✓ Upload complete — device is running\n', 'success');
+      else appendConsole(`\n✗ Upload failed: ${r?.error || 'unknown'}\n`, 'error');
+    } finally {
+      inFlightRef.current = false; setIsUploading(false);
+    }
   }, [handleCompile, clearConsole, appendConsole, saveCurrentTab, getTempSketchDir, uploadTarget, handleUploadUSB]);
 
   // BUG F: pingBridge explicit success check (not ||)
@@ -616,6 +697,31 @@ export default function App() {
     }).filter(Boolean);
     setInstalledPlatforms([...new Set(platforms)]);
   }, []);
+
+  // Missing-platform Install: reuses the BoardManager IPC path (arduino:install-core).
+  const handleInstallMissingPlatform = useCallback(async () => {
+    const platform = missingPlatformRef.current || missingPlatform;
+    if (!platform || installingPlatformRef.current) return;
+    installingPlatformRef.current = true; setInstallingPlatform(true);
+    try {
+      appendConsole(`\n» Installing platform ${platform}\u2026\n`, 'info');
+      let r;
+      try {
+        r = await window.electronAPI?.installCore?.(platform);
+      } catch (e) {
+        r = { success: false, error: e?.message || String(e) };
+      }
+      if (r?.success) {
+        appendConsole(`✓ Platform ${platform} installed — recompile to continue\n`, 'success');
+        setMissingPlatform(null);
+        loadInstalledPlatforms();
+      } else {
+        appendConsole(`\n✗ Install failed: ${r?.error || 'unknown'}\n`, 'error');
+      }
+    } finally {
+      installingPlatformRef.current = false; setInstallingPlatform(false);
+    }
+  }, [missingPlatform, appendConsole, loadInstalledPlatforms]);
 
   const handlePrefsSave = useCallback(async (vals) => {
     if (!vals) { setShowPrefs(false); return; }
@@ -670,11 +776,9 @@ export default function App() {
     api.onFileOpen(({ path, content }) => {
       const name = path.split(/[/\\]/).pop();
       addRecentFile(path, name);
-      setTabs(prev => {
-        const next = [...prev, newTab(name, content, path)];
-        setActiveTabIdx(next.length - 1);
-        return next;
-      });
+      const next = [...tabsRef.current, newTab(name, content, path)];
+      setTabs(next);
+      setActiveTabIdx(next.length - 1);
     });
 
     const stable = {
@@ -775,7 +879,8 @@ export default function App() {
               sizes={sizes} minSize={minSizes} gutterSize={5} snapOffset={20}>
               <Editor ref={editorRef} value={activeTab?.code || ''}
                 onChange={handleCodeChange} fontSize={editorSize} wordWrap={wordWrap}
-                errorMarkers={errorMarkers} onCursorChange={handleCursorChange} />
+                errorMarkers={errorMarkers} onCursorChange={handleCursorChange}
+                includePaths={includePaths} defines={defines} />
               <div className="console-area">
                 <CompileProgress isCompiling={isCompiling} consoleLogs={consoleLogs} />
                 {flashUsage && !isCompiling && <FlashUsageBar flash={flashUsage.flash} ram={flashUsage.ram} />}
@@ -793,7 +898,9 @@ export default function App() {
                     onApply={handleAutoCorrectApply} onDismiss={() => setShowAutoCorrect(false)} />
                 )}
                 <Console lines={consoleLogs} onClear={clearConsole}
-                  compileSummary={compileSummary} onJumpToLine={handleJumpToLine} />
+                  compileSummary={compileSummary} compileStatus={compileStatus} onJumpToLine={handleJumpToLine}
+                  missingPlatform={missingPlatform} installingPlatform={installingPlatform}
+                  onInstallPlatform={handleInstallMissingPlatform} />
               </div>
               {showSerial  && <SerialMonitor host={bridgeHost} port={bridgePort} onClose={() => setShowSerial(false)} onTearOff={() => setShowSerial(false)} />}
               {showPlotter && <SerialPlotter host={bridgeHost} port={bridgePort} onClose={() => setShowPlotter(false)} />}

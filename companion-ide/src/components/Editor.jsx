@@ -150,7 +150,7 @@ if (typeof window !== 'undefined') {
 // ─────────────────────────────────────────────────────────────────
 
 const Editor = forwardRef(function Editor(
-  { value = '', onChange, fontSize = 14, wordWrap = false, errorMarkers = [], onCursorChange },
+  { value = '', onChange, fontSize = 14, wordWrap = false, errorMarkers = [], onCursorChange, includePaths = [], defines = [] },
   ref
 ) {
   const editorRef = useRef(null);
@@ -168,6 +168,7 @@ const Editor = forwardRef(function Editor(
     return () => clearTimeout(timeout);
   }, [editorReady, useFallback]);
 
+  // Diagnostics markers come from App.jsx error-parser (unchanged).
   useEffect(() => {
     const ed = editorRef.current;
     const monaco = monacoRef.current;
@@ -178,6 +179,46 @@ const Editor = forwardRef(function Editor(
       monaco.editor.setModelMarkers(model, 'arduino', errorMarkers);
     }
   }, [errorMarkers]);
+
+  // compile_commands.json integration (minimal): surface -I include paths and -D
+  // defines from the last successful compile as Arduino-language completions.
+  // No worker/config changes; markers still come from error-parser.
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco || (!includePaths.length && !defines.length)) return;
+    let disp = null;
+    try {
+      disp = monaco.languages.registerCompletionItemProvider('arduino', {
+        triggerCharacters: ['<', '"', '#'],
+        provideCompletionItems: (model, position) => {
+          const line = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+          const suggestions = [];
+          const base = (p) => String(p).split(/[/\\]/).pop();
+          if (/#\s*include/.test(line)) {
+            includePaths.slice(0, 60).forEach((inc, i) => suggestions.push({
+              label: base(inc) + '/',
+              kind: monaco.languages.CompletionItemKind.Folder,
+              insertText: String(inc).replace(/\\/g, '/') + '/',
+              detail: 'include path (compile_commands.json)',
+              sortText: '90' + String(i).padStart(3, '0'),
+            }));
+          }
+          defines.slice(0, 100).forEach((d, i) => {
+            const name = String(d).split('=')[0];
+            suggestions.push({
+              label: name,
+              kind: monaco.languages.CompletionItemKind.Constant,
+              insertText: name,
+              detail: 'define (compile_commands.json)',
+              sortText: '91' + String(i).padStart(3, '0'),
+            });
+          });
+          return { suggestions };
+        },
+      });
+    } catch { disp = null; }
+    return () => { try { disp?.dispose?.(); } catch {} };
+  }, [includePaths, defines]);
 
   const handleMount = (editor, monaco) => {
     console.log('✓ handleMount: Editor mounted');

@@ -79,6 +79,14 @@
 .bs-ping-result.ok   { color: var(--green); }
 .bs-ping-result.fail { color: var(--red); }
 
+/* ── OTA discovery list ─────────────────────────────── */
+.bs-ota-devices { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; width: 100%; }
+.bs-ota-device { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; color: var(--text-primary); font-size: 12px; text-align: left; }
+.bs-ota-device:hover { background: var(--bg-surface); border-color: var(--teal); }
+.bs-ota-name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bs-ota-host { font-family: var(--font-mono); color: var(--text-dim); }
+.bs-ota-pick { font-size: 11px; font-weight: 700; color: var(--teal); }
+
 /* ── MCU cards ──────────────────────────────────────────────── */
 .bs-mcu-grid {
   display: flex;

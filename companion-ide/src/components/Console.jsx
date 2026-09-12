@@ -18,7 +18,7 @@ const TYPE_COLOR = {
   muted:   'var(--text-dim)',
 };
 
-export default function Console({ lines, onClear, compileSummary, onJumpToLine }) {
+export default function Console({ lines, onClear, compileSummary, compileStatus = 'idle', onJumpToLine, missingPlatform, installingPlatform, onInstallPlatform }) {
   const [filter,    setFilter]    = useState('all');
   const [search,    setSearch]    = useState('');
   const [searching, setSearching] = useState(false);
@@ -145,8 +145,16 @@ export default function Console({ lines, onClear, compileSummary, onJumpToLine }
       <div className="console-footer">
         <span>{filtered.length.toLocaleString()} line{filtered.length !== 1 ? 's' : ''}</span>
         {totalChars > 0 && <span>{formatBytes(totalChars)}</span>}
-        {compileSummary && !compileSummary.errors && !compileSummary.warnings && (
+        {compileStatus === 'ok' && (
           <span className="cf-ok">✓ Compiled OK</span>
+        )}
+        {compileStatus === 'failed' && (
+          <span className="cf-fail">✗ Compile failed</span>
+        )}
+        {compileStatus === 'failed' && missingPlatform && onInstallPlatform && (
+          <button className="cf-install-btn" onClick={onInstallPlatform} disabled={installingPlatform}>
+            {installingPlatform ? `⟳ Installing ${missingPlatform}…` : `Install ${missingPlatform}`}
+          </button>
         )}
         {!autoscroll && (
           <button className="console-resume-btn"
