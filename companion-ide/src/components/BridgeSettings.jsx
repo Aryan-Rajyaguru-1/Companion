@@ -25,6 +25,30 @@ export default function BridgeSettings({
   const [localBaud, setLocalBaud] = useState(baud);
   const [pinging,   setPinging]   = useState(false);
   const [pingResult,setPingResult]= useState(null);
+  const [discovering,  setDiscovering]  = useState(false);
+  const [discovered,   setDiscovered]   = useState([]);
+  const [discoverError,setDiscoverError]= useState(null);
+
+  const handleDiscover = async () => {
+    setDiscovering(true);
+    setDiscoverError(null);
+    try {
+      const r = await window.electronAPI?.otaDiscover?.(5000);
+      if (r?.success) {
+        // Keep only real IPs (OTA targets); use the bridge TCP port the
+        // user entered for the connection (OTA port 3232 ≠ bridge 3333).
+        const devs = (r.devices || []).filter(d => /^\d+\.\d+\.\d+\.\d+$/.test(d.host || ''));
+        setDiscovered(devs);
+        if (!devs.length) setDiscoverError('No OTA devices found — is the bridge on this network?');
+      } else {
+        setDiscoverError('Discovery failed');
+      }
+    } catch (e) {
+      setDiscoverError('Discovery failed');
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   useEffect(() => { onOpen?.(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
 
@@ -71,11 +95,11 @@ export default function BridgeSettings({
                 type="text"
                 value={localHost}
                 onChange={e => setLocalHost(e.target.value)}
-                placeholder="esp32-bridge.local"
+                placeholder="192.168.4.1"
                 spellCheck={false}
               />
               <div className="bs-hint">
-                Default: <code>esp32-bridge.local</code> (auto-discovers ESP32) — or enter IP like <code>192.168.1.100</code>
+                Default: <code>192.168.4.1</code> when your laptop is on the bridge WiFi (<code>ESP32-OTA</code> / <code>flashme!</code>) — on a router, use the board IP or <code>companion-XXXXXX.local</code>
               </div>
             </div>
 
@@ -123,10 +147,10 @@ export default function BridgeSettings({
                 <><span className="status-dot disconnected" />✗ {discoverError}</>
               </div>
             )}
-            {otaDevices.length > 0 && (
+            {discovered.length > 0 && (
               <div className="bs-ota-devices">
                 <div className="bs-section-title" style={{ marginTop: 8 }}>OTA devices on this network</div>
-                {otaDevices.map((d, i) => (
+                {discovered.map((d, i) => (
                   <button key={`${d.host}:${d.port}-${i}`} className="bs-ota-device"
                     onClick={() => setLocalHost(d.host)}
                     title={`Use ${d.host} as the Bridge/OTA address`}>

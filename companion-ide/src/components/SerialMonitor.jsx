@@ -127,8 +127,14 @@ export default function SerialMonitor({ host, port, onClose, onTearOff, standalo
       api.bridgeSend?.(baudBuf);
       appendLine(`● Connected to ${host}:${port} @ ${b} baud`, 'info');
     } else {
+      const err = result?.error || 'Unknown error';
+      const hint = /ENOTFOUND|EAI_AGAIN/.test(err)
+        ? ' — host name could not be resolved. If your laptop is on the bridge WiFi ("ESP32-OTA"), use 192.168.4.1; on a router, use the board IP or companion-XXXXXX.local'
+        : /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH/.test(err)
+        ? ' — bridge did not answer; check you are on the bridge WiFi and the host/port in Bridge Settings'
+        : '';
       api.offSerial?.();
-      appendLine(`✗ Connection failed: ${result?.error || 'Unknown error'}`, 'error');
+      appendLine(`✗ Connection failed: ${err}${hint}`, 'error');
     }
   }, [connecting, connected, host, port, baud, appendLine]);
 

@@ -139,7 +139,14 @@ export default function App() {
   const [flashUsage,      setFlashUsage]      = useState(null);
 
   // ── Settings ───────────────────────────────────────────────
-  const [bridgeHost,    setBridgeHostSt]    = useState(localStorage.getItem('bridgeHost')    || 'esp32-bridge.local');
+  const [bridgeHost,    setBridgeHostSt]    = useState(() => {
+    const saved = localStorage.getItem('bridgeHost');
+    // v1.0 default was 'esp32-bridge.local', a name the bridge firmware
+    // never announces (AP mode: 192.168.4.1; mDNS: companion-XXXXXX).
+    // Migrate the stale default once — user-set hosts are kept.
+    if (!saved || saved === 'esp32-bridge.local') return '192.168.4.1';
+    return saved;
+  });
   const [uploadBaud,    setUploadBaudSt]    = useState(Number(localStorage.getItem('uploadBaud')) || 115200);
   // P4c: per-sketch OTA switch (persisted in sketch.yaml profile).
   const [otaEnabled,  setOTAEnabled]  = useState(false);
