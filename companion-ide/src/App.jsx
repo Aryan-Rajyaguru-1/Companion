@@ -928,6 +928,7 @@ export default function App() {
       </div>
 
       <UploadProgress isCompiling={isCompiling} isUploading={isUploading}
+        uploadTarget={uploadTarget}
         consoleLogs={consoleLogs}
         onCancel={(isCompiling || isUploading) ? handleCancel : null} />
 
