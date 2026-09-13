@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uploadUSB:      (p)  => ipcRenderer.invoke('arduino:upload-usb', p),
   // Detect connected serial boards (VID/PID → FQBN)
   listSerialPorts: ()  => ipcRenderer.invoke('serial:list-ports'),
+  // Best-guess board detection (board detect --json). probe=true boots the
+  // unidentified board into its ROM to read the chip banner — it resets the
+  // board, so only pass true on an explicit user action.
+  detectBoard:     (probe = false) => ipcRenderer.invoke('board:detect', { probe }),
   // Legacy combined (kept for backward compat)
   upload:         (p)  => ipcRenderer.invoke('arduino:upload', p),
 

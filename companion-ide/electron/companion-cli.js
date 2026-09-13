@@ -195,6 +195,21 @@ class CompanionCLI {
     }
   }
 
+  // ── Board auto-detection (board detect --json) ────────────────
+  // With probe=true, unidentified ports are boot-ROM-probed, which resets
+  // the attached board — callers must only pass true on explicit user action.
+  async detectBoard(probe = false) {
+    try {
+      const { stdout } = await this._run(['board', 'detect', '--json', ...(probe ? ['--probe'] : [])]);
+      const start = stdout.indexOf('{');
+      if (start < 0) return null;
+      return JSON.parse(stdout.slice(start));
+    } catch (err) {
+      console.warn('[CLI] detectBoard failed:', err.message);
+      return null;
+    }
+  }
+
   // ── Compile (daemon streaming → subprocess fallback) ──────────
   async compile(sketchDir, fqbn, onOutput, exportBin = false, verbose = false, warnings = 'default', json = false) {
     if (this._daemon.isDaemonRunning()) {

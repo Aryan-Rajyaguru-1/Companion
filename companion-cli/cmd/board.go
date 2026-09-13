@@ -28,6 +28,7 @@ func newBoardCmd() *cobra.Command {
 		newBoardListAllCmd(),
 		newBoardDetailsCmd(),
 		newBoardListPortsCmd(),
+		newBoardDetectCmd(),
 	)
 
 	return cmd
@@ -87,6 +88,185 @@ Used by the IDE for plug-and-play board detection.`,
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
+	return cmd
+}
+
+// ── board detect ─────────────────────────────────────────────────
+
+// DetectResult is the single best-guess answer from `board detect`.
+type DetectResult struct {
+	Found       bool                              `json:"found"`
+	Port        string                            `json:"port,omitempty"`
+	BoardName   string                            `json:"boardName,omitempty"`
+	FQBN        string                            `json:"fqbn,omitempty"`
+	MCU         string                            `json:"mcu,omitempty"`
+	USBVID      string                            `json:"usbVid,omitempty"`
+	USBPID      string                            `json:"usbPid,omitempty"`
+	ProductName string                            `json:"productName,omitempty"`
+	Confidence  string                            `json:"confidence,omitempty"` // high | medium | low
+	Matches     []boards.SerialPortInfo           `json:"matches,omitempty"`
+	Ports       []boards.SerialPortInfo           `json:"ports,omitempty"` // full scan, always present
+	AllBoards   []SerialPortCandidate             `json:"allBoards,omitempty"`
+	Probed      map[string]boards.BootProbeResult `json:"probed,omitempty"` // --probe results, keyed by port
+}
+
+// SerialPortCandidate pairs a port with a plausible FQBN for IDE pickers.
+type SerialPortCandidate struct {
+	Port      string `json:"port"`
+	FQBN      string `json:"fqbn"`
+	BoardName string `json:"boardName,omitempty"`
+	Source    string `json:"source,omitempty"` // vidpid | usbid | name | unknown
+}
+
+func newBoardDetectCmd() *cobra.Command {
+	var jsonOut bool
+	var probe bool
+	cmd := &cobra.Command{
+		Use:   "detect",
+		Short: "Auto-detect the connected board and its upload port",
+		Long: `Scans USB serial devices and identifies the attached board using
+three chained strategies: (1) installed platforms' boards.txt VID/PID tables,
+(2) Companion's built-in USB identity table, (3) product/manufacturer string
+matching against known boards and every installed board name.
+
+Prints one best guess plus per-port candidates — the IDE consumes the JSON
+form for plug-and-play board + port selection.
+
+With --probe, ports that remain unidentified after table/string matching
+are reset once so their chip's boot-ROM banner can be read (Espressif only).
+This restarts any sketch running on the board, so it is opt-in.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _, err := config.Load(globalFlags.ConfigFile)
+			if err != nil {
+				return err
+			}
+			config.EnsureDirs(cfg)
+			bm := boards.NewManager(cfg)
+
+			ports, err := bm.ListSerialPorts()
+			if err != nil {
+				return err
+			}
+
+			res := DetectResult{Ports: ports}
+			// Prefer ports that carry a resolved FQBN; tie-break by name.
+			for i := range ports {
+				if ports[i].FQBN == "" {
+					continue
+				}
+				res.Matches = append(res.Matches, ports[i])
+			}
+			if len(res.Matches) > 0 {
+				best := res.Matches[0]
+				res.Found, res.Port, res.BoardName, res.FQBN =
+					true, best.Port, best.BoardName, best.FQBN
+				res.USBVID, res.USBPID, res.ProductName =
+					best.USBVID, best.USBPID, best.ProductName
+				res.Confidence = boards.MatchConfidence(best)
+				if d, err := bm.BoardDetails(best.FQBN); err == nil {
+					res.MCU = d.Props["build.mcu"]
+				}
+			}
+			// Candidate list: identified ports first, then bare ports.
+			for _, p := range ports {
+				name := p.BoardName
+				if name == "" {
+					name = p.ProductName
+				}
+				res.AllBoards = append(res.AllBoards, SerialPortCandidate{
+					Port: p.Port, FQBN: p.FQBN, BoardName: name,
+					Source: boards.CandidateSource(p),
+				})
+			}
+
+			// Opt-in last resort: reset unidentified probeable ports and
+			// read their boot-ROM banner. Restart the best guess if a probe
+			// identifies a port (boot-ROM evidence outranks nothing).
+			if probe {
+				var targets []string
+				for _, p := range ports {
+					if p.FQBN == "" {
+						targets = append(targets, p.Port)
+					}
+				}
+				if len(targets) > 0 {
+					printWarn("Probing boot ROM on " + strings.Join(targets, ", ") +
+						" — the attached board(s) will reset")
+				}
+				res.Probed = boards.ProbeUnidentified(ports, targets)
+				probesByPort := make(map[string]boards.BootProbeResult, len(res.Probed))
+				for port, pr := range res.Probed {
+					probesByPort[port] = pr
+				}
+				for i := range ports {
+					if pr, ok := probesByPort[ports[i].Port]; ok && pr.OK {
+						ports[i].BoardName, ports[i].FQBN = pr.Board, pr.FQBN
+						ports[i].MatchSource = boards.MatchBootROM
+						if res.FQBN == "" {
+							res.Found, res.Port = true, ports[i].Port
+							res.BoardName, res.FQBN = pr.Board, pr.FQBN
+							res.Confidence = boards.MatchConfidence(ports[i])
+						}
+					}
+				}
+				res.Matches = nil
+				for i := range ports {
+					if ports[i].FQBN != "" {
+						res.Matches = append(res.Matches, ports[i])
+					}
+				}
+				res.AllBoards = nil
+				for _, p := range ports {
+					name := p.BoardName
+					if name == "" {
+						name = p.ProductName
+					}
+					res.AllBoards = append(res.AllBoards, SerialPortCandidate{
+						Port: p.Port, FQBN: p.FQBN, BoardName: name,
+						Source: boards.CandidateSource(p),
+					})
+				}
+			}
+
+			if jsonOut {
+				return json.NewEncoder(os.Stdout).Encode(res)
+			}
+			if !res.Found {
+				printInfo("No identifiable board found — connect a board via USB and retry")
+				for _, p := range ports {
+					fmt.Printf("  %s (unidentified)\n", colorTeal(p.Port))
+				}
+				return nil
+			}
+			printSuccess(fmt.Sprintf("Detected %s on %s", colorBold(res.BoardName), colorTeal(res.Port)))
+			fmt.Printf("  FQBN:   %s\n", res.FQBN)
+			if res.MCU != "" {
+				fmt.Printf("  MCU:    %s\n", res.MCU)
+			}
+			if res.ProductName != "" {
+				fmt.Printf("  USB:    %s (%s:%s)\n", res.ProductName, res.USBVID, res.USBPID)
+			}
+			fmt.Printf("  Confidence: %s\n", res.Confidence)
+			for _, p := range ports {
+				if p.Port == res.Port {
+					continue
+				}
+				name := p.BoardName
+				if name == "" {
+					name = p.ProductName
+				}
+				if name == "" {
+					name = "(unidentified)"
+				}
+				fmt.Printf("  also:   %s — %s\n", colorTeal(p.Port), name)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
+	cmd.Flags().BoolVar(&probe, "probe", false,
+		"Reset unidentified ports to read the chip's boot-ROM banner (restarts the sketch)")
 	return cmd
 }
 

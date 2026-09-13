@@ -302,6 +302,14 @@ function registerIPC() {
     catch (err) { return { success: false, ports: [], error: err.message }; }
   });
 
+  // Plug-and-play board detection (board detect --json).
+  // probe=true additionally boot-ROM-probes unidentified ports, which
+  // resets the attached board — only pass it on explicit user action.
+  ipcMain.handle('board:detect', async (_, { probe = false } = {}) => {
+    try { return { success: true, detection: await companionCLI.detectBoard(probe) }; }
+    catch (err) { return { success: false, detection: null, error: err.message }; }
+  });
+
   // Legacy combined compile+upload (kept for compatibility)
   ipcMain.handle('arduino:upload', async (_, { sketchDir, fqbn, mcu, host, port, baud, verbose }) => {
     emit(`» Compiling for wireless upload...\n`);
