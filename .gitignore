@@ -37,5 +37,6 @@ Thumbs.db
 
 # Release / build artifacts (never push; rebuilt via make build-all / electron-builder)
 companion-cli/dist/
+dist-cli/
 companion-cli/companion_test
 companion-ide/esp32-bridge-firmware/esp32_bridge/build/
