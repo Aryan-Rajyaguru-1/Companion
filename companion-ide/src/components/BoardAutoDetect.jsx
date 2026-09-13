@@ -15,6 +15,8 @@ export default function BoardAutoDetect({ currentFQBN, onSelect, onClose }) {
   const [installedPlatforms, setInstalledPlatforms] = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
+  const [detected, setDetected] = useState(null);   // { board, fqbn, chip, port }
+  const [probing,  setProbing]  = useState(false);
 
   const loadInstalled = useCallback(async () => {
     setLoading(true);
@@ -31,6 +33,31 @@ export default function BoardAutoDetect({ currentFQBN, onSelect, onClose }) {
   }, []);
 
   useEffect(() => { loadInstalled(); }, [loadInstalled]);
+
+  // Probe the attached hardware on open (read-only VID/PID first; falls
+  // back to a boot-ROM probe — which resets the board — only if needed).
+  const runDetect = useCallback(async () => {
+    setProbing(true);
+    setError(null);
+    try {
+      const r = await window.electronAPI?.detectBoard?.(true);
+      const m = r?.found && r?.matches?.[0];
+      setDetected(m ? {
+        board: m.boardName || m.fqbn,
+        fqbn:  m.fqbn,
+        chip:  m.matchSource === 'bootrom' ? 'via boot ROM probe' : 'via USB VID/PID',
+        port:  m.port,
+      } : null);
+      if (m) {
+        const parts = m.fqbn.split(':');
+        onSelect(m.fqbn, mcuFromFQBN(m.fqbn) || parts[2] || 'esp32');
+      }
+    } finally {
+      setProbing(false);
+    }
+  }, [onSelect]);
+
+  useEffect(() => { runDetect(); }, [runDetect]);
 
   // Build list of boards that are actually installable (platform is installed)
   const installedSet = new Set(installedPlatforms);
@@ -84,16 +111,26 @@ export default function BoardAutoDetect({ currentFQBN, onSelect, onClose }) {
 
         <div className="bad-toolbar">
           <span className="bad-subtitle">
-            {loading ? 'Scanning installed platforms…'
-              : `${installedBoards.length} boards ready · ${notInstalledBoards.length} need install`}
+            {probing ? 'Detecting connected board…'
+              : detected
+              ? `✓ ${detected.board} on ${detected.port} (${detected.chip}) — applied`
+              : 'No board auto-detected · pick one below'}
+            {loading ? '' : ` · ${installedBoards.length} ready · ${notInstalledBoards.length} need install`}
           </span>
-          <button className="btn btn-sm" onClick={loadInstalled} disabled={loading}>
-            {loading ? '⟳' : '↺ Refresh'}
+          <button className="btn btn-sm" onClick={runDetect} disabled={probing}>
+            {probing ? '⟳' : '⌖ Detect'} {probing ? '' : '(resets board)'}
           </button>
         </div>
 
         <div className="bad-body">
           {error && <div className="bad-error">{error}</div>}
+          {probing && <div className="bad-detect-banner">Probing serial ports — attached boards will reset…</div>}
+          {!probing && detected && (
+            <div className="bad-detect-banner ok">
+              Detected <b>{detected.board}</b> on {detected.port} via {detected.chip}
+              {currentFQBN === detected.fqbn ? '' : ' — selection updated'}
+            </div>
+          )}
 
           {loading ? (
             <div className="bad-loading">

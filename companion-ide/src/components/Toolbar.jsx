@@ -92,6 +92,10 @@ export default function Toolbar({
             onClick={() => onRefreshPorts?.()}>
             ⟳
           </button>
+          <button className="tb-btn tb-icon" title="Detect connected board (may boot-ROM-probe — board resets)"
+            onClick={() => onDetectBoard?.()}>
+            ⌖
+          </button>
         </div>
       ) : (
         <button className={`tb-btn tb-bridge-btn ${bridgeStatus}`}

@@ -26,17 +26,35 @@ func ProbeBootROM(portPath string) BootProbeResult {
 	}
 	defer closeFn()
 
+	// Drop anything buffered from earlier traffic BEFORE pulsing reset:
+	// the banner starts printing the moment EN rises, so flushing after
+	// the pulse would eat exactly the bytes we are trying to capture.
+	flushInput(fd)
+
 	// Reset into the ROM and give the banner time to arrive.
 	if err := pulseAutoReset(fd); err != nil {
 		res.Err = "auto-reset failed: " + err.Error()
 		return res
 	}
 
-	// Read the banner at 115200 (ESP32 native boot rate). If nothing
-	// legible arrives, retry once at 74880 — the ESP8266 boot ROM prints
-	// there, so its output is garbage at any other rate.
-	banner, ok := readBanner(fd, 1500*time.Millisecond)
+	// Read the banner at 115200 (ESP32 native boot rate). esptool-style
+	// connect retries: a single reset pulse occasionally misses (line
+	// capacitance, just-enumerated adapter), so pulse up to three times.
+	banner, ok := "", false
+	for attempt := 0; attempt < 3 && !ok; attempt++ {
+		flushInput(fd)
+		if err := pulseAutoReset(fd); err != nil {
+			res.Err = "auto-reset failed: " + err.Error()
+			return res
+		}
+		banner, ok = readBanner(fd, 1200*time.Millisecond)
+	}
+	// Last chance at 74880 — the ESP8266 boot ROM prints there, so its
+	// output is garbage at any other rate. Needs its own reset: at 115200
+	// the 74880 banner reads as pure noise.
 	if !ok {
+		flushInput(fd)
+		_ = pulseAutoReset(fd)
 		banner, ok = readBanner(fd, 600*time.Millisecond)
 	}
 	if !ok {
@@ -47,6 +65,11 @@ func ProbeBootROM(portPath string) BootProbeResult {
 	res.OK, res.Banner = true, banner
 	chip, _ := parseChipToken(banner)
 	res.Chip = chip
+	if chip == "" {
+		// Classic ESP32 banners (rst:0x1 (POWERON_RESET)…) carry no chip
+		// name; report it explicitly instead of an empty token.
+		res.Chip = "esp32"
+	}
 	if def, known := chipFQBNs[chip]; known {
 		res.FQBN, res.Board = def.fqbn, def.name
 	} else {
@@ -59,11 +82,8 @@ func ProbeBootROM(portPath string) BootProbeResult {
 // reset tail to pass, then accumulates output until something matches
 // parseChipToken or the deadline expires. Returns everything captured.
 func readBanner(fd int, wait time.Duration) (string, bool) {
-	speed, _ := ttBaud(0)
-	switch {
-	case wait >= 1200*time.Millisecond: // first pass: ESP32 boot rate
-		speed, _ = ttBaud(115200)
-	default: // retry pass: ESP8266 boot ROM rate
+	speed, _ := ttBaud(115200)
+	if wait < 1200*time.Millisecond { // retry pass: ESP8266 boot ROM rate
 		speed, _ = ttBaud(74880)
 	}
 	termios, err := ttGetTermios(fd)
@@ -76,9 +96,9 @@ func readBanner(fd int, wait time.Duration) (string, bool) {
 		return "", false
 	}
 
-	// Freshly reset chips print a short burst first; drop it so stale
-	// baud-rate garbage cannot pollute the real banner.
-	time.Sleep(150 * time.Millisecond)
+	// No settle sleep here: the banner starts printing the moment EN
+	// rises, so reads begin immediately. Stale pre-reset traffic was
+	// already flushed by the caller before the reset pulse.
 
 	deadline := time.Now().Add(wait)
 	var sb []byte
@@ -142,6 +162,40 @@ func openRawTTY(path string) (int, func(), error) {
 // readTTY reads up to len(buf) bytes with the VTIME timeout applied.
 func readTTY(fd int, buf []byte) (int, error) {
 	return syscall.Read(fd, buf)
+}
+
+// ttFlushInput discards bytes already received but not yet read. The
+// request is TCFLSH with TCIFLUSH as its argument — TCIFLUSH alone is the
+// arg constant (0), not the ioctl request.
+func ttFlushInput(fd int) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TCFLSH), uintptr(syscall.TCIFLUSH))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// flushInput clears buffered input bytes, degrading to a short drain when
+// the driver does not support TCFLSH.
+func flushInput(fd int) {
+	if err := ttFlushInput(fd); err != nil {
+		drainInput(fd, 300*time.Millisecond)
+	}
+}
+
+// drainInput reads and discards until the deadline (best-effort fallback).
+func drainInput(fd int, wait time.Duration) {
+	deadline := time.Now().Add(wait)
+	buf := make([]byte, 512)
+	for time.Now().Before(deadline) {
+		n, err := readTTY(fd, buf)
+		if n == 0 {
+			if err != nil && !isTTYTimeout(err) {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
 }
 
 // isTTYTimeout reports whether an error is a benign timeout/would-block

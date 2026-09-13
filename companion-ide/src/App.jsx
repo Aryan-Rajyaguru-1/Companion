@@ -185,6 +185,7 @@ export default function App() {
   const setBridgePort    = v => { setBridgePortSt(v);    localStorage.setItem('bridgePort', v); };
   const setSelectedBoard = v => {
     const fqbn = normalizeFQBN(v);
+    window.__boardPickedAt = Date.now();   // suppress auto-detect override for 10 s
     setSelectedBoardSt(fqbn); localStorage.setItem('selectedBoard', fqbn);
     prefs.addRecentFQBN(fqbn);
     const mcu = mcuFromFQBN(fqbn);
@@ -508,7 +509,7 @@ export default function App() {
   const serialPortsRef  = useRef([]);
   const selectedPortRef = useRef('');
 
-  const refreshSerialPorts = useCallback(async () => {
+  const refreshSerialPorts = useCallback(async (probe = false) => {
     const r = await window.electronAPI?.listSerialPorts?.();
     if (r?.success) {
       setSerialPorts(r.ports || []);
@@ -521,14 +522,23 @@ export default function App() {
           selectedPortRef.current = best.port;
           return best.port;
         });
-        // Auto-suggest board FQBN when detected and user hasn't picked one
-        if (best.fqbn && (!selectedBoardRef.current || !selectedBoardRef.current.includes(':'))) {
-          setSelectedBoard(best.fqbn);
-          appendConsole(`» Detected ${best.boardName || 'board'} on ${best.port} → ${best.fqbn}\n`, 'info');
-        }
       }
     }
-    return r?.ports || [];
+    // Full detection (VID/PID match, boot-ROM probe when probe=true and
+    // needed). The saved selection may be stale — e.g. a board swapped
+    // since the last session — so hardware evidence outranks it, but a
+    // manual pick within the last 10 s is never overridden.
+    const d = await window.electronAPI?.detectBoard?.(probe);
+    const m = d?.found && d?.matches?.[0];
+    if (!m?.fqbn) return [];
+    const manual = Date.now() - (window.__boardPickedAt || 0) < 10000;
+    if (!manual && selectedBoardRef.current !== m.fqbn) {
+      const wasStale = selectedBoardRef.current && selectedBoardRef.current.includes(':');
+      setSelectedBoard(m.fqbn);
+      appendConsole(`» Detected ${m.boardName || 'board'} on ${m.port} → ${m.fqbn}` +
+        (wasStale ? ` (was ${selectedBoardRef.current})\n` : '\n'), 'info');
+    }
+    return d.ports || r?.ports || [];
   }, [appendConsole]);
 
   // Scan once at startup
@@ -853,7 +863,8 @@ export default function App() {
         uploadTarget={uploadTarget} onUploadTargetChange={setUploadTarget}
         serialPorts={serialPorts} selectedPort={selectedPort}
         onPortChange={(p) => { setSelectedPort(p); selectedPortRef.current = p; }}
-        onRefreshPorts={() => refreshSerialPorts()}
+        onRefreshPorts={(probe) => refreshSerialPorts(probe)}
+        onDetectBoard={() => refreshSerialPorts(true)}
         onCompile={() => handleCompile()} onUpload={handleUpload} onCancel={handleCancel}
         onToggleSerial={() => { setShowPlotter(false); setShowSerial(p => !p); }}
         onTogglePlotter={() => { setShowSerial(false); setShowPlotter(p => !p); }}
