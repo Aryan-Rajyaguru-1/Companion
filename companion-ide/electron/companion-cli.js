@@ -211,18 +211,18 @@ class CompanionCLI {
   }
 
   // ── Compile (daemon streaming → subprocess fallback) ──────────
-  async compile(sketchDir, fqbn, onOutput, exportBin = false, verbose = false, warnings = 'default', json = false) {
+  async compile(sketchDir, fqbn, onOutput, exportBin = false, verbose = false, warnings = 'default', json = false, mainIno = '') {
     if (this._daemon.isDaemonRunning()) {
-      return this._compileDaemonStream(sketchDir, fqbn, onOutput, exportBin, verbose, warnings);
+      return this._compileDaemonStream(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, mainIno);
     }
-    return this._compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, json);
+    return this._compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, json, mainIno);
   }
 
-  async _compileDaemonStream(sketchDir, fqbn, onOutput, exportBin, verbose, warnings) {
+  async _compileDaemonStream(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, mainIno = '') {
     try {
       // BUG A: use streaming path so output arrives in real time
       const streamPromise = this._daemon.callStreaming(
-        { sketchDir, fqbn, exportBin, verbose, warnings: warnings || 'default' },
+        { sketchDir, fqbn, exportBin, verbose, warnings: warnings || 'default', mainIno },
         onOutput
       );
       // BUG A: track the call ID for cancellation
@@ -238,16 +238,17 @@ class CompanionCLI {
       // Daemon failure → fall back to subprocess
       console.warn('[CLI] Daemon stream failed, falling back:', err.message);
       this._daemon.stop();
-      return this._compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, true);
+      return this._compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, true, mainIno);
     }
   }
 
-  async _compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, json = false) {
+  async _compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, json = false, mainIno = '') {
     try {
       const args = ['compile', sketchDir, '--fqbn', fqbn, '--warnings', warnings || 'default'];
       if (exportBin) args.push('--export-binaries');
       if (verbose)   args.push('--verbose');
       if (json)      args.push('--json');
+      if (mainIno)   args.push('--main-ino', mainIno);
       const diagnostics = [];
       await this._run(args, onOutput, d => diagnostics.push(d), 'compile');
       return { success: true, binaryPath: this._findExportedBinary(sketchDir, fqbn), diagnostics, fromDaemon: false };

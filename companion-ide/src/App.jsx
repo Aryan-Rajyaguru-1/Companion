@@ -319,6 +319,26 @@ export default function App() {
     return dir;
   }, []);
 
+  // A sketch folder may hold several independent sketches (each defining
+  // setup()/loop()). Merging them cannot compile, so when that is the case we
+  // compile only the active file via --main-ino. Multi-file sketches (one
+  // setup()/loop() plus helpers) are left alone — those merge correctly.
+  const resolveMainIno = useCallback(async (dir) => {
+    const tab = activeTabRef.current;
+    if (!dir || !/\.ino$/i.test(tab?.name || '')) return '';
+    try {
+      const a = await window.electronAPI?.analyzeSketch?.(dir);
+      if (!a?.success || !a.hasMainConflict) return '';
+      const list = (a.candidates || []).join(', ');
+      if (a.candidates.includes(tab.name)) {
+        appendConsole(`» ${dir} holds ${a.candidates.length} sketches (${list}) — compiling only ${tab.name}\n`, 'warning');
+        return tab.name;
+      }
+      appendConsole(`» ${dir} holds ${a.candidates.length} sketches (${list}) and ${tab.name} is not one of them — open one of those files to compile it\n`, 'warning');
+    } catch { /* best-effort: absence just means "compile the folder as-is" */ }
+    return '';
+  }, [appendConsole]);
+
   // ── Sketch folder / export ─────────────────────────────────
   const handleShowSketchFolder = useCallback(() => {
     const tab = activeTabRef.current;
@@ -335,9 +355,11 @@ export default function App() {
       await saveCurrentTab();
       const tab = activeTabRef.current;
       const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
+      const mainIno = await resolveMainIno(dir);
       const r = await window.electronAPI?.compile({
         sketchDir: dir, fqbn: selectedBoardRef.current,
         exportBin: true, verbose: false, warnings: 'default', json: true,
+        mainIno,
       });
       if (r?.success) appendConsole('✓ Binary exported to sketch/build/\n', 'success');
       else appendConsole(`✗ Export failed: ${r?.error || 'unknown'}\n`, 'error');
@@ -376,11 +398,13 @@ export default function App() {
       cancelRef.current = () => window.electronAPI?.cancelCompile?.();
 
       const t0 = Date.now();
+      const mainIno = await resolveMainIno(dir);
       try {
         result = await window.electronAPI?.compile({
           sketchDir: dir, fqbn: selectedBoardRef.current, exportBin: true,
           verbose: prefs.get('arduino.compile.verbose'),
           warnings: prefs.get('arduino.compile.warnings'), json: true,
+          mainIno,
         });
       } catch (e) {
         result = { success: false, error: e?.message || String(e) };
@@ -453,7 +477,7 @@ export default function App() {
       setIsCompiling(false);
       setCompileStatus(compileStatusNext);
     }
-  }, [clearConsole, appendConsole, saveCurrentTab, getTempSketchDir])
+  }, [clearConsole, appendConsole, saveCurrentTab, getTempSketchDir, resolveMainIno])
 
   // compile_commands.json -> Monaco (minimal): after a successful compile, read the
   // -I include paths / -D defines for the active file and feed Editor completions.

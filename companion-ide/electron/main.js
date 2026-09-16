@@ -250,6 +250,27 @@ function registerIPC() {
     try { return { success: true, content: fs.readFileSync(p, 'utf-8') }; }
     catch (e) { return { success: false, error: e.message }; }
   });
+
+  // Sketch layout analysis: which .ino files in a folder are *complete*
+  // sketches (define setup()/loop())? A folder holding more than one cannot be
+  // merged into a single translation unit — the compile would die with
+  // "redefinition of 'void setup()'". The renderer uses this to compile just
+  // the active sketch via --main-ino instead.
+  ipcMain.handle('sketch:analyze', async (_, { dir } = {}) => {
+    try {
+      if (!dir || !fs.existsSync(dir)) return { success: false, error: 'No such folder' };
+      const complete = /^[ \t]*(?:void|int|auto)[ \t]+(?:setup|loop)[ \t]*\(/m;
+      const inos = fs.readdirSync(dir, { withFileTypes: true })
+        .filter(e => e.isFile() && e.name.toLowerCase().endsWith('.ino'))
+        .map(e => {
+          let isComplete = false;
+          try { isComplete = complete.test(fs.readFileSync(path.join(dir, e.name), 'utf-8')); } catch {}
+          return { name: e.name, complete: isComplete };
+        });
+      const candidates = inos.filter(i => i.complete).map(i => i.name);
+      return { success: true, inos, candidates, hasMainConflict: candidates.length > 1 };
+    } catch (e) { return { success: false, error: e.message }; }
+  });
   ipcMain.handle('file:openFolder', async (_, { dir }) => {
     try { shell.openPath(dir); return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
@@ -272,8 +293,8 @@ function registerIPC() {
   });
 
   // Compile only (no upload)
-  ipcMain.handle('arduino:compile', async (_, { sketchDir, fqbn, exportBin = false, verbose = false, warnings = 'default', json = false }) =>
-    companionCLI.compile(sketchDir, fqbn, emit, exportBin, verbose, warnings, json));
+  ipcMain.handle('arduino:compile', async (_, { sketchDir, fqbn, exportBin = false, verbose = false, warnings = 'default', json = false, mainIno = '' }) =>
+    companionCLI.compile(sketchDir, fqbn, emit, exportBin, verbose, warnings, json, mainIno));
 
   // BUG H FIX: Upload-binary is a separate IPC — only does wireless transfer,
   // not compile. UI calls compile first, checks result, then calls this.

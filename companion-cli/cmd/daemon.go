@@ -281,6 +281,7 @@ func (d *daemonServer) handleStreamCompile(w http.ResponseWriter, r *http.Reques
 		Warnings:     p.Warnings,
 		Verbose:      p.Verbose,
 		ExportBinary: p.ExportBin,
+		MainIno:      p.MainIno,
 	})
 
 	if ctx.Err() == context.Canceled {
@@ -549,6 +550,7 @@ type compileParams struct {
 	ExportBin bool   `json:"exportBin"`
 	Verbose   bool   `json:"verbose"`
 	Warnings  string `json:"warnings"`
+	MainIno   string `json:"mainIno"`
 }
 
 func writeRPCError(w http.ResponseWriter, id interface{}, code int, msg string) {

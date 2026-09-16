@@ -37,6 +37,7 @@ import (
 
 	"github.com/companion-ide/companion-cli/internal/boards"
 	"github.com/companion-ide/companion-cli/internal/config"
+	cerrors "github.com/companion-ide/companion-cli/internal/errors"
 	"github.com/companion-ide/companion-cli/internal/plugins"
 	version "github.com/companion-ide/companion-cli/internal/version"
 )
@@ -57,6 +58,13 @@ type Options struct {
 	// command and writes a clangd-compatible compile_commands.json into the
 	// build directory (closes the Arduino-cli #849 feature gap).
 	CaptureCompileCommands bool
+
+	// MainIno compiles exactly one .ino file (basename or path) instead of
+	// merging every .ino in SketchDir. Needed when a folder holds several
+	// independent sketches (each defining setup()/loop()), which cannot be
+	// merged into one translation unit. Empty = merge all .ino files, with
+	// an up-front error when they are mutually exclusive.
+	MainIno string
 }
 
 // Result is returned from Build().
@@ -281,7 +289,7 @@ func (c *Compiler) buildCustom(opts Options, start time.Time) (res *Result, err 
 
 	// ── Stage 3: Preprocess sketch ────────────────────────────
 	c.log("» Preprocessing sketch…")
-	sketchCPP, err := c.preprocessSketch(opts.SketchDir, sketchDir2)
+	sketchCPP, err := c.preprocessSketch(opts.SketchDir, sketchDir2, opts.MainIno)
 	if err != nil {
 		return nil, fmt.Errorf("preprocess: %w", err)
 	}
@@ -679,9 +687,15 @@ func (c *Compiler) generateSDKConfig(sdkRoot, buildDir, target string) error {
 }
 
 // ── Stage 2: Preprocess sketch ────────────────────────────────────
-// Merges all .ino files into a single .cpp — mirrors the Arduino
+// Merges the sketch's .ino files into a single .cpp — mirrors the Arduino
 // preprocessor that adds forward declarations and the #line markers.
-func (c *Compiler) preprocessSketch(sketchDir, outDir string) (string, error) {
+//
+// A folder may hold several .ino files (Arduino's multi-file sketch support,
+// e.g. a main sketch plus helpers). It may not hold several *complete*
+// sketches: each of those defines setup()/loop(), so merging them fails with
+// "redefinition of 'void setup()'". mainIno selects one file to compile;
+// without it such a folder is rejected up front with the real cause.
+func (c *Compiler) preprocessSketch(sketchDir, outDir, mainIno string) (string, error) {
 	entries, err := os.ReadDir(sketchDir)
 	if err != nil {
 		return "", err
@@ -696,6 +710,40 @@ func (c *Compiler) preprocessSketch(sketchDir, outDir string) (string, error) {
 
 	if len(inoFiles) == 0 {
 		return "", fmt.Errorf("no .ino files found in %s", sketchDir)
+	}
+
+	if mainIno != "" {
+		// Explicit main sketch: compile exactly this file. Sibling .ino files
+		// are deliberately skipped — they are separate sketches, not part of
+		// this one.
+		want := filepath.Join(sketchDir, filepath.Base(mainIno))
+		found := false
+		for _, f := range inoFiles {
+			if f == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", cerrors.Newf(cerrors.ErrNotFound,
+				"--main-ino %q: no such .ino file in %s (found: %s)",
+				mainIno, sketchDir, strings.Join(baseNames(inoFiles), ", ")).
+				WithSuggestion("Use one of the listed .ino files, or omit --main-ino to merge every .ino in the folder.")
+		}
+		if skipped := baseNamesExcept(inoFiles, want); len(skipped) > 0 {
+			c.logf("  Main sketch: %s (skipping %d other .ino file(s): %s)",
+				filepath.Base(want), len(skipped), strings.Join(skipped, ", "))
+		}
+		inoFiles = []string{want}
+	} else if offenders := completeSketchFiles(inoFiles); len(offenders) > 1 {
+		// Each of these defines setup()/loop(), so concatenating them into one
+		// translation unit cannot work. Report it here with the actual cause
+		// instead of letting the compiler emit a wall of
+		// "redefinition of 'void setup()'" errors with no hint of why.
+		return "", cerrors.Newf(cerrors.ErrCompile,
+			"%s contains %d complete sketches: %s",
+			sketchDir, len(offenders), strings.Join(offenders, ", ")).
+			WithSuggestion("Compile one of them with --main-ino <file>, or move each sketch into its own folder.")
 	}
 
 	sort.Strings(inoFiles)
@@ -734,6 +782,44 @@ func (c *Compiler) preprocessSketch(sketchDir, outDir string) (string, error) {
 	}
 
 	return outPath, nil
+}
+
+// baseNames returns the base names of the given paths (order preserved).
+func baseNames(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, filepath.Base(p))
+	}
+	return out
+}
+
+// baseNamesExcept is baseNames minus the skipped path (order preserved).
+func baseNamesExcept(paths []string, skip string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p != skip {
+			out = append(out, filepath.Base(p))
+		}
+	}
+	return out
+}
+
+// completeSketchFiles returns the base names of .ino files that define
+// setup() or loop() — i.e. files that are complete sketches on their own.
+// Two or more of these in one folder cannot be merged into a single TU.
+func completeSketchFiles(paths []string) []string {
+	re := regexp.MustCompile(`(?m)^[ \t]*(?:void|int|auto)[ \t]+(?:setup|loop)[ \t]*\(`)
+	var out []string
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if re.Match(data) {
+			out = append(out, filepath.Base(p))
+		}
+	}
+	return out
 }
 
 // extractForwardDeclarations generates forward declarations for functions

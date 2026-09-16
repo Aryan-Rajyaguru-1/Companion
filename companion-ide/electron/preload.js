@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchPackages:  (q)   => ipcRenderer.invoke('arduino:search-packages', q),
   installCore:     (id)  => ipcRenderer.invoke('arduino:install-core', id),
   getCompileFlags: (sketchDir, file) => ipcRenderer.invoke('compile:flags', { sketchDir, file }),
+  // Which .ino files in a folder are complete sketches (setup()/loop())?
+  analyzeSketch:  (dir) => ipcRenderer.invoke('sketch:analyze', { dir }),
   otaDiscover:     (waitMs) => ipcRenderer.invoke('ota:discover', { waitMs }),
   updateIndex:     ()    => ipcRenderer.invoke('arduino:update-index'),
 
