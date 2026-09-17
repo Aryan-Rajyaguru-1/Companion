@@ -519,11 +519,28 @@ class CompanionCLI {
     }
     return libs;
   }
+  // Resolve the exported binary. Candidates are filtered by plausibility:
+  // an ESP app image is far smaller than the flash it targets, so anything
+  // oversized is a leftover (an old padding bug produced a 268 MB image) and
+  // must never be handed to the flasher. Newest acceptable artifact wins.
   _findExportedBinary(sketchDir, fqbn) {
     const n = path.basename(sketchDir);
     const d = path.join(sketchDir, 'build', fqbn.replace(/:/g, '.'));
-    return [`${n}.ino.bin`,`${n}.ino.hex`,`${n}.bin`,`${n}.hex`,`${n}.ino.merged.bin`]
-      .map(f => path.join(d, f)).find(p => fs.existsSync(p)) || null;
+    const names = [`${n}.ino.bin`, `${n}.ino.hex`, `${n}.bin`, `${n}.hex`, `${n}.ino.merged.bin`];
+    const MAX_APP_BYTES = 64 * 1024 * 1024;   // largest supported flash size
+    let best = null;
+    for (const name of names) {
+      const p = path.join(d, name);
+      let st;
+      try { st = fs.statSync(p); } catch { continue; }
+      if (!st.isFile() || st.size === 0) continue;
+      if (st.size > MAX_APP_BYTES) {
+        console.warn(`[CLI] ignoring implausible artifact (${(st.size / 1048576).toFixed(1)} MB): ${p}`);
+        continue;
+      }
+      if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
+    }
+    return best ? best.p : null;
   }
 }
 

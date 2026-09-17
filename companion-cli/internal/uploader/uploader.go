@@ -101,46 +101,55 @@ func usbFlashOffset(mcu, fqbn string) string {
 // Works with native UART adapters and with the ESP32-S3/C3 USB-Serial-JTAG
 // peripheral (esptool handles entering download mode automatically).
 func (u *Uploader) uploadESPSerial(opts Options) error {
-	chip := ""
-	switch strings.ToLower(opts.MCU) {
-	case "esp8266":
-		chip = "esp8266"
-	default:
-		// Let esptool auto-detect (esp32/s3/s2/c3/c6…): passing a wrong
-		// --chip value is worse than detecting.
-		if strings.Contains(strings.ToLower(opts.FQBN), "esp32s3") {
-			chip = "esp32s3"
-		} else if strings.Contains(strings.ToLower(opts.FQBN), "esp32c3") {
-			chip = "esp32c3"
-		} else if strings.Contains(strings.ToLower(opts.FQBN), "esp32s2") {
-			chip = "esp32s2"
-		} else if strings.Contains(strings.ToLower(opts.FQBN), "esp32c6") {
-			chip = "esp32c6"
-		}
+	chip := espChipFromFQBN(opts.MCU, opts.FQBN)
+
+	esptoolCmd, resetStyle, err := resolveEsptoolPrefix(u.cfg)
+	if err != nil {
+		return err
+	}
+	// esptool 5.x renamed the reset strategies (default_reset → default-reset);
+	// match whichever tool we resolved.
+	before, after := "default_reset", "hard_reset"
+	if resetStyle == "hyphen" {
+		before, after = "default-reset", "hard-reset"
 	}
 
-	python := "python3"
-	if _, err := exec.LookPath("python3"); err != nil {
-		python = "python"
-	}
-
-	args := []string{"-m", "esptool"}
+	args := append([]string{}, esptoolCmd...)
 	if chip != "" {
 		args = append(args, "--chip", chip)
 	}
 	args = append(args,
 		"--port", opts.SerialPort,
 		"--baud", fmt.Sprintf("%d", opts.Baud),
-		"--before", "default_reset",
-		"--after", "hard_reset",
+		"--before", before,
+		"--after", after,
 		"write_flash",
-		"--flash_mode", "dio",
-		"--flash_size", "detect",
-		usbFlashOffset(opts.MCU, opts.FQBN), opts.BinaryPath,
 	)
 
-	u.log("» Running esptool over USB…")
-	cmd := exec.Command(python, args...)
+	// Full image set (bootloader + partition table + OTA selector + app) when
+	// the build produced arduino-cli's flash_args file — that is what makes a
+	// blank chip bootable. Otherwise write the app alone: correct for a board
+	// that already boots, insufficient for a factory-fresh chip, so say so.
+	if images, ok := readFlashArgs(opts.BinaryPath); ok {
+		args = append(args, images...)
+		u.log("» Running esptool over USB — full image set (bootloader + partitions + app)…")
+	} else {
+		// `keep` uses the flash mode/frequency/size already baked into the
+		// image header by elf2image (read from boards.txt). Forcing values
+		// here — as the old code did with dio/detect — could contradict that
+		// header and mis-configure modules with quad/OCT flash.
+		args = append(args,
+			"--flash_mode", "keep",
+			"--flash_freq", "keep",
+			"--flash_size", "keep",
+			usbFlashOffset(opts.MCU, opts.FQBN), opts.BinaryPath,
+		)
+		u.log("» Running esptool over USB…")
+		u.log("  Note: application image only — bootloader/partition table untouched")
+		u.log("        (a board that already boots is fine; a blank chip needs the full set)")
+	}
+
+	cmd := exec.Command(esptoolCmd[0], args[1:]...)
 	var outBuf syncBuffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &outBuf
@@ -148,7 +157,8 @@ func (u *Uploader) uploadESPSerial(opts Options) error {
 
 	for _, line := range outBuf.allLines() {
 		if strings.Contains(line, "%") || strings.Contains(line, "Hash of data") ||
-			strings.Contains(line, "Leaving") || strings.Contains(line, "Connecting") {
+			strings.Contains(line, "Leaving") || strings.Contains(line, "Connecting") ||
+			strings.Contains(line, "Chip is") {
 			u.log("  " + strings.TrimSpace(line))
 		}
 	}

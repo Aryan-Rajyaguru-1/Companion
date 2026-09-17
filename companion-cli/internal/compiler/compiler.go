@@ -402,6 +402,14 @@ func (c *Compiler) buildCustom(opts Options, start time.Time) (res *Result, err 
 		return nil, fmt.Errorf("objcopy: %w", err)
 	}
 
+	artifacts := []string{binaryPath}
+	if rb.Architecture == "esp32" {
+		artifacts, err = c.generateESPFlashArtifacts(rb, bf.sdkPath, opts.SketchDir, buildDir, sketchName, binaryPath)
+		if err != nil {
+			return nil, fmt.Errorf("ESP32 flash artifacts: %w", err)
+		}
+	}
+
 	// ── Stage 9.5: Post-compile plugin hooks ──────────────────
 	c.runPostCompile(opts, buildDir, binaryPath)
 
@@ -409,21 +417,23 @@ func (c *Compiler) buildCustom(opts Options, start time.Time) (res *Result, err 
 	c.reportSize(rb, tc, elfPath)
 
 	if opts.ExportBinary {
-		exportPath := filepath.Join(opts.SketchDir, "build",
-			strings.ReplaceAll(opts.FQBN, ":", "."),
-			filepath.Base(binaryPath))
-		os.MkdirAll(filepath.Dir(exportPath), 0o755)
-		copyFile(binaryPath, exportPath)
+		exportDir := filepath.Join(opts.SketchDir, "build",
+			strings.ReplaceAll(opts.FQBN, ":", "."))
+		exportPath := filepath.Join(exportDir, filepath.Base(binaryPath))
+		if resultCCPath != "" {
+			artifacts = append(artifacts, resultCCPath)
+		}
+		if err := exportArtifacts(artifacts, exportDir); err != nil {
+			return nil, fmt.Errorf("export binaries: %w", err)
+		}
 		c.logf("» Binary exported: %s", exportPath)
 		binaryPath = exportPath
 
 		// Keep the IntelliSense database next to the exported binary so the
 		// path is stable (unlike temp build dirs).
 		if resultCCPath != "" {
-			ccCopy := filepath.Join(filepath.Dir(exportPath), "compile_commands.json")
-			if err := copyFile(resultCCPath, ccCopy); err == nil {
-				c.logf("» Compile commands: %s", ccCopy)
-			}
+			resultCCPath = filepath.Join(exportDir, "compile_commands.json")
+			c.logf("» Compile commands: %s", resultCCPath)
 		}
 	}
 
@@ -1259,52 +1269,21 @@ func (c *Compiler) extractBinary(rb *boards.ResolvedBoard, tc *Toolchain, elfPat
 func (c *Compiler) extractESPImage(rb *boards.ResolvedBoard, elfPath, buildDir, name string) (string, error) {
 	binPath := filepath.Join(buildDir, name+".bin")
 
-	esptoolPy := latestFileUnder(filepath.Join(rb.ToolsDir, "esptool_py"), "esptool.py")
-
-	python := "python3"
-	if _, err := exec.LookPath("python3"); err != nil {
-		python = "python"
-	}
-
-	var base []string
-	if esptoolPy != "" {
-		base = append(base, esptoolPy)
-	} else if _, err := exec.LookPath(python); err == nil {
-		base = append(base, "-m", "esptool")
-	} else {
-		return "", fmt.Errorf("esptool not found (install with: pip install esptool)")
-	}
-
 	mode := rb.GetProp("build.flash_mode")
 	if mode == "" {
 		mode = "dio"
 	}
 	size := rb.GetProp("build.flash_size")
 	if size == "" {
-		size = "detect"
+		size = "4MB"
 	}
-	freq := "80m"
-	if ff := rb.GetProp("build.f_flash"); ff != "" {
-		f := strings.TrimSuffix(ff, "L")
-		if n, err := strconv.Atoi(f); err == nil && n > 0 {
-			freq = fmt.Sprintf("%dm", n/1000000)
-		}
+	args := []string{
+		"--chip", strings.ToLower(rb.GetProp("build.mcu")), "elf2image",
+		"--flash_mode", mode, "--flash_freq", espImageFreq(rb), "--flash_size", size,
+		"-o", binPath, elfPath,
 	}
-
-	args := append([]string{}, base...)
-	args = append(args,
-		"--chip", strings.ToLower(rb.GetProp("build.mcu")),
-		"elf2image",
-		"--flash_mode", mode,
-		"--flash_freq", freq,
-		"--flash_size", size,
-		elfPath,
-	)
-
-	cmd := exec.CommandContext(c.ctx, python, args...)
-	cmd.Dir = buildDir // esptool writes <elf basename>.bin here
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("elf2image failed:\n%s", out)
+	if err := c.runEsptool(rb, args); err != nil {
+		return "", fmt.Errorf("elf2image failed: %w", err)
 	}
 	if _, err := os.Stat(binPath); err != nil {
 		return "", fmt.Errorf("elf2image produced no output at %s", binPath)
