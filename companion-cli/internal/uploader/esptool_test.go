@@ -10,6 +10,12 @@ import (
 )
 
 func TestFindBundledEsptoolPrefersNewest(t *testing.T) {
+	// Discovery also searches the user's Arduino installations. Keep the
+	// fixture independent of tools installed on the developer's machine.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("home", home)
 	root := t.TempDir()
 	t.Setenv("ARDUINO15_DIR", root)
 	mk := func(rel string) string {
@@ -32,6 +38,10 @@ func TestFindBundledEsptoolPrefersNewest(t *testing.T) {
 }
 
 func TestFindBundledEsptoolUsesConfigPackagesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("home", home)
 	t.Setenv("ARDUINO15_DIR", "")
 	data := t.TempDir()
 	cfg := &config.Config{}
