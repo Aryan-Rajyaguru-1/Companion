@@ -29,9 +29,9 @@ func (c *Compiler) buildESPBootloader(rb *boards.ResolvedBoard, sdkPath, buildDi
 	}
 
 	args := []string{"--chip", strings.ToLower(rb.GetProp("build.mcu")), "elf2image",
-		"--flash-mode", rb.GetProp("build.flash_mode"),
-		"--flash-freq", espImageFreq(rb),
-		"--flash-size", rb.GetProp("build.flash_size"),
+		"--flash_mode", rb.GetProp("build.flash_mode"),
+		"--flash_freq", espImageFreq(rb),
+		"--flash_size", rb.GetProp("build.flash_size"),
 		"-o", outPath, elfPath}
 	if err := c.runEsptool(rb, args); err != nil {
 		return fmt.Errorf("bootloader elf2image: %w", err)

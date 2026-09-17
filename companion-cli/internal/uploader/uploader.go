@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -134,6 +135,13 @@ func (u *Uploader) uploadESPSerial(opts Options) error {
 		args = append(args, images...)
 		u.log("» Running esptool over USB — full image set (bootloader + partitions + app)…")
 	} else {
+		manifest := filepath.Join(filepath.Dir(opts.BinaryPath), "flash_args")
+		if _, err := os.Lstat(manifest); !os.IsNotExist(err) {
+			return fmt.Errorf("invalid or unreadable flash_args at %s — rebuild the full image set before uploading", manifest)
+		}
+		if strings.HasSuffix(strings.ToLower(opts.BinaryPath), ".merged.bin") {
+			return fmt.Errorf("merged images cannot be flashed at an application offset; select the application image and its flash_args")
+		}
 		// `keep` uses the flash mode/frequency/size already baked into the
 		// image header by elf2image (read from boards.txt). Forcing values
 		// here — as the old code did with dio/detect — could contradict that

@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/companion-ide/companion-cli/internal/config"
@@ -122,8 +123,8 @@ func findBundledEsptool(cfg *config.Config) string {
 //	0xe000 boot_app0.bin
 //	0x10000 sketch.bin
 //
-// Returns ok=false when the file is absent, empty, or references a missing
-// image, so callers fall back to flashing the application image alone.
+// Returns ok=false when the file is absent or invalid. The caller permits
+// app-only flashing only when the manifest is absent, never when it is broken.
 func readFlashArgs(binPath string) ([]string, bool) {
 	dir := filepath.Dir(binPath)
 	data, err := os.ReadFile(filepath.Join(dir, "flash_args"))
@@ -152,25 +153,53 @@ func readFlashArgs(binPath string) ([]string, bool) {
 		args = append(args, "--"+strings.TrimPrefix(option, "__"), fields[i+1])
 	}
 
-	// Remaining lines: offset + image file, relative to the binary's directory.
+	// Require the complete standard Arduino ESP32 layout. Never silently
+	// skip malformed lines or substitute a different application image.
 	pairs := 0
+	var end uint64
 	for _, line := range lines[1:] {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) != 2 {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		img := fields[1]
+		fields := strings.SplitN(line, " ", 2)
+		if len(fields) != 2 || pairs >= 4 {
+			return nil, false
+		}
+		offset, err := strconv.ParseUint(fields[0], 0, 32)
+		if err != nil {
+			return nil, false
+		}
+		want := []uint64{0, 0x8000, 0xe000, 0x10000}
+		if pairs == 0 {
+			if offset != 0 && offset != 0x1000 && offset != 0x2000 {
+				return nil, false
+			}
+		} else if offset != want[pairs] || offset < end {
+			return nil, false
+		}
+		img := strings.TrimSpace(fields[1])
 		if !filepath.IsAbs(img) {
 			img = filepath.Join(dir, img)
 		}
-		if _, err := os.Stat(img); err != nil {
-			// A partial image set is worse than none: falls back to app-only.
+		info, err := os.Stat(img)
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 			return nil, false
+		}
+		end = offset + uint64(info.Size())
+		if end > 64*1024*1024 {
+			return nil, false
+		}
+		if pairs == 3 {
+			app, err := os.Stat(binPath)
+			if err != nil || !os.SameFile(app, info) {
+				return nil, false
+			}
 		}
 		args = append(args, fields[0], img)
 		pairs++
 	}
-	if pairs == 0 {
+	if pairs != 4 {
 		return nil, false
 	}
 	return args, true

@@ -526,7 +526,8 @@ class CompanionCLI {
   _findExportedBinary(sketchDir, fqbn) {
     const n = path.basename(sketchDir);
     const d = path.join(sketchDir, 'build', fqbn.replace(/:/g, '.'));
-    const names = [`${n}.ino.bin`, `${n}.ino.hex`, `${n}.bin`, `${n}.hex`, `${n}.ino.merged.bin`];
+    // Merged images include bootloader/partitions and must never use an app offset.
+    const names = [`${n}.ino.bin`, `${n}.ino.hex`, `${n}.bin`, `${n}.hex`];
     const MAX_APP_BYTES = 64 * 1024 * 1024;   // largest supported flash size
     let best = null;
     for (const name of names) {
