@@ -50,6 +50,12 @@ const SCHEMA = {
   // P1 FQBN recent boards
   'companion.board.recentFQBNs':      { type: 'json',    default: [] },
 
+  // Board detection. A bare USB-serial bridge (CH340/CH9102/CP210x) exposes
+  // no board identity, so passive matching cannot name the chip; automatic
+  // verification reads the chip's boot-ROM banner instead, which resets the
+  // attached board once. Disable to keep the board running untouched.
+  'companion.detect.autoProbe':       { type: 'boolean', default: true },
+
   // Templates
   'companion.templates.showOnNew':    { type: 'boolean', default: true },
 };

@@ -43,6 +43,7 @@ import {
 } from './utils/error-parser';
 import { hasAutoFix }    from './utils/auto-correct';
 import { addRecentFile } from './utils/recent-files';
+import { probeCandidate, unidentifiedMessage } from './utils/board-detect';
 import './App.css';
 
 const DEFAULT_SKETCH = `/*
@@ -184,6 +185,9 @@ export default function App() {
   const [wordWrap,     setWordWrap]      = useState(prefs.get('arduino.editor.wordWrap'));
   const [showAllFiles, setShowAllFiles]  = useState(prefs.get('arduino.sketchbook.showAllFiles'));
   const [daemonEnabled,setDaemonEnabled] = useState(prefs.get('companion.daemon.enabled'));
+  // Automatic device verification: allowed to reset an unidentified board once
+  // per session to read its chip's boot-ROM banner (see utils/board-detect.js).
+  const [autoProbe]                      = useState(prefs.get('companion.detect.autoProbe'));
 
   const editorRef = useRef(null);
 
@@ -539,6 +543,8 @@ export default function App() {
   const [selectedPort, setSelectedPort] = useState('');
   const serialPortsRef  = useRef([]);
   const selectedPortRef = useRef('');
+  // Ports already reset for a boot-ROM probe this session — never re-reset.
+  const probedPortsRef  = useRef(new Set());
 
   const refreshSerialPorts = useCallback(async (probe = false) => {
     const r = await window.electronAPI?.listSerialPorts?.();
@@ -559,9 +565,34 @@ export default function App() {
     // needed). The saved selection may be stale — e.g. a board swapped
     // since the last session — so hardware evidence outranks it, but a
     // manual pick within the last 10 s is never overridden.
-    const d = await window.electronAPI?.detectBoard?.(probe);
-    const m = d?.found && d?.matches?.[0];
-    if (!m?.fqbn) return [];
+    let d = await window.electronAPI?.detectBoard?.(probe);
+    let m = d?.found && d?.matches?.[0];
+
+    // Automatic verification. A bare USB-serial bridge (CH340/CH9102/CP210x)
+    // publishes no board identity, so passive matching returns nothing and the
+    // IDE would otherwise leave whatever board was selected before. Reading the
+    // chip's boot-ROM banner names it for real — at the cost of one reset — so
+    // do that once per port, and only when nothing was identified.
+    if (!probe && !m?.fqbn && autoProbe) {
+      const cand = probeCandidate({
+        ports: d?.ports || r?.ports || [],
+        matches: d?.matches || [],
+        probed: probedPortsRef.current,
+      });
+      if (cand) {
+        probedPortsRef.current.add(cand);
+        appendConsole(`» Verifying device on ${cand} — boot-ROM probe, board resets once…\n`, 'info');
+        d = await window.electronAPI?.detectBoard?.(true);
+        m = d?.found && d?.matches?.[0];
+      }
+    }
+
+    if (!m?.fqbn) {
+      // Say so plainly instead of leaving a stale board looking detected.
+      const unknown = (d?.ports || r?.ports || []).find(p => !p.fqbn);
+      if (unknown) appendConsole(unidentifiedMessage(unknown) + '\n', 'info');
+      return d?.ports || r?.ports || [];
+    }
     const manual = Date.now() - (window.__boardPickedAt || 0) < 10000;
     if (!manual && selectedBoardRef.current !== m.fqbn) {
       const wasStale = selectedBoardRef.current && selectedBoardRef.current.includes(':');
@@ -570,7 +601,7 @@ export default function App() {
         (wasStale ? ` (was ${selectedBoardRef.current})\n` : '\n'), 'info');
     }
     return d.ports || r?.ports || [];
-  }, [appendConsole]);
+  }, [appendConsole, autoProbe]);
 
   // Scan once at startup
   useEffect(() => { refreshSerialPorts(); }, []);
