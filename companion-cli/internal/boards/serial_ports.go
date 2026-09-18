@@ -67,15 +67,22 @@ func (m *Manager) ListSerialPorts() ([]SerialPortInfo, error) {
 			info.ProductName = sysfsRead(filepath.Join(devPath, "product"))
 		}
 		if info.USBVID != "" && info.USBPID != "" {
-			key := info.USBVID + ":" + info.USBPID
-			for _, b := range vidPids[key] { // first match wins
-				info.BoardName = b.name
-				info.FQBN = b.fqbn
-				info.MatchSource = MatchVIDPID
-				break
+			// Espressif's generic native-USB CDC is shared by every ESP32
+			// variant with USB (S2/S3/C3/C6/P4…) and is claimed by several
+			// modules at once, so a table hit names the vendor, not the chip —
+			// "first match wins" would hand back an arbitrary board. Leave it
+			// unidentified so the boot-ROM probe reads the actual chip.
+			if !ambiguousVIDPID(info.USBVID, info.USBPID) {
+				key := info.USBVID + ":" + info.USBPID
+				for _, b := range vidPids[key] { // first match wins
+					info.BoardName = b.name
+					info.FQBN = b.fqbn
+					info.MatchSource = MatchVIDPID
+					break
+				}
 			}
-			// Espressif USB-JTAG/serial (303a:1001) has no per-board entry;
-			// fall back to guessing from the product string later in UI.
+			// Espressif USB-JTAG/serial has no per-board entry; fall back to
+			// guessing from the product string later in UI.
 			if info.FQBN == "" &&
 				strings.EqualFold(info.USBVID, "303a") &&
 				strings.HasPrefix(strings.ToLower(info.ProductName), "esp32") {
@@ -276,6 +283,14 @@ func sysfsRead(path string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// ambiguousVIDPID reports whether a USB identity is shared by so many boards
+// that matching it identifies nothing. 303a:1001 is Espressif's generic
+// native-USB CDC/serial: the chip behind it may be any ESP32 variant, and
+// multiple module definitions claim the same pair.
+func ambiguousVIDPID(vid, pid string) bool {
+	return strings.EqualFold(vid, "303a") && pid == "1001"
+}
+
 // installedVIDPIDTable builds map["vid:pid"]→boards from every installed
 // platform's boards.txt (keys vid.N/pid.N with optional vidN.pidN suffixes).
 // Boards are grouped by their boards.txt path so each file is parsed exactly
@@ -300,6 +315,12 @@ func (m *Manager) installedVIDPIDTable() map[string][]vidPidBoard {
 		}
 		for _, b := range entries {
 			prefix := boardIdOf(b.FQBN) + "."
+			// Hidden boards are internal/compat placeholders — the esp32 core's
+			// `esp32_family` catch-all, for one — and are never user-selectable.
+			// Letting one match a port dresses a placeholder up as real hardware.
+			if strings.EqualFold(strings.TrimSpace(all[prefix+"hide"]), "true") {
+				continue
+			}
 			type pair struct{ vid, pid string }
 			var pairs []pair
 			for k, v := range all {

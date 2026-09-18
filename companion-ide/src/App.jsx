@@ -43,7 +43,7 @@ import {
 } from './utils/error-parser';
 import { hasAutoFix }    from './utils/auto-correct';
 import { addRecentFile } from './utils/recent-files';
-import { probeCandidate, unidentifiedMessage, unwrapDetection } from './utils/board-detect';
+import { probeCandidate, unidentifiedMessage, unwrapDetection, deviceKey } from './utils/board-detect';
 import './App.css';
 
 const DEFAULT_SKETCH = `/*
@@ -578,15 +578,18 @@ export default function App() {
     // IDE would otherwise leave whatever board was selected before. Reading the
     // chip's boot-ROM banner names it for real — at the cost of one reset — so
     // do that once per port, and only when nothing was identified.
-    if (!probe && !m?.fqbn && autoProbe) {
+    if (!probe && autoProbe) {
       const cand = probeCandidate({
         ports: d?.ports || r?.ports || [],
         matches: d?.matches || [],
+        confidence: d?.confidence,
         probed: probedPortsRef.current,
       });
       if (cand) {
-        probedPortsRef.current.add(cand);
-        appendConsole(`» Verifying device on ${cand} — boot-ROM probe, board resets once…\n`, 'info');
+        // Keyed on the device, not the path: swapping boards keeps the same
+        // /dev/ttyACM0, and the new board still needs verifying.
+        probedPortsRef.current.add(deviceKey(cand));
+        appendConsole(`» Verifying device on ${cand.port} — boot-ROM probe, board resets once…\n`, 'info');
         d = unwrapDetection(await window.electronAPI?.detectBoard?.(true));
         m = d?.found && d?.matches?.[0];
       }
@@ -594,19 +597,25 @@ export default function App() {
 
     if (!m?.fqbn) {
       // Say so plainly instead of leaving a stale board looking detected.
-      // Reported once per port — refresh scans run more than once per session.
+      // Reported once per device — refresh scans run more than once per session.
       const unknown = (d?.ports || r?.ports || []).find(p => !p.fqbn);
-      if (unknown && !unidentifiedReportedRef.current.has(unknown.port)) {
-        unidentifiedReportedRef.current.add(unknown.port);
-        appendConsole(unidentifiedMessage(unknown) + '\n', 'info');
+      if (unknown) {
+        const key = deviceKey(unknown);
+        if (!unidentifiedReportedRef.current.has(key)) {
+          unidentifiedReportedRef.current.add(key);
+          appendConsole(unidentifiedMessage(unknown) + '\n', 'info');
+        }
       }
       return d?.ports || r?.ports || [];
     }
     const manual = Date.now() - (window.__boardPickedAt || 0) < 10000;
     if (!manual && selectedBoardRef.current !== m.fqbn) {
       const wasStale = selectedBoardRef.current && selectedBoardRef.current.includes(':');
+      // A low-confidence match is the CLI's fuzzy containment guess, not
+      // evidence — say so rather than presenting it as verified hardware.
+      const unverified = d?.confidence === 'low' ? ' (unverified guess)' : '';
       setSelectedBoard(m.fqbn);
-      appendConsole(`» Detected ${m.boardName || 'board'} on ${m.port} → ${m.fqbn}` +
+      appendConsole(`» Detected ${m.boardName || 'board'} on ${m.port} → ${m.fqbn}${unverified}` +
         (wasStale ? ` (was ${selectedBoardRef.current})\n` : '\n'), 'info');
     }
     return d.ports || r?.ports || [];

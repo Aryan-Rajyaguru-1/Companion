@@ -1,6 +1,67 @@
 package boards
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/companion-ide/companion-cli/internal/config"
+)
+
+// 303a:1001 is Espressif's generic native-USB CDC — the chip behind it may be
+// any ESP32 variant, so matching it identifies nothing.
+func TestAmbiguousVIDPID(t *testing.T) {
+	if !ambiguousVIDPID("303a", "1001") {
+		t.Error("303a:1001 must be treated as ambiguous (Espressif native USB)")
+	}
+	if !ambiguousVIDPID("303A", "1001") {
+		t.Error("VID comparison must be case-insensitive")
+	}
+	if ambiguousVIDPID("1a86", "55d4") {
+		t.Error("CH9102 carries real board signal and must not be ambiguous")
+	}
+	if ambiguousVIDPID("303a", "1002") {
+		t.Error("other Espressif PIDs are not the generic CDC pair")
+	}
+}
+
+// Hidden boards are internal placeholders — the esp32 core's `esp32_family`
+// catch-all claims 303a:1001 and used to win "first match", dressing a
+// placeholder up as hardware and masking the real chip.
+func TestInstalledVIDPIDTableExcludesHiddenBoards(t *testing.T) {
+	data := t.TempDir()
+	dir := filepath.Join(data, "packages", "testvendor", "hardware", "testarch", "1.0.0")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	boardsTxt := "visible.name=Visible Board\n" +
+		"visible.vid.0=0x1234\n" +
+		"visible.pid.0=0x5678\n" +
+		"esp32_family.name=ESP32 Family Device\n" +
+		"esp32_family.hide=true\n" +
+		"esp32_family.vid.0=0x1234\n" +
+		"esp32_family.pid.0=0x5678\n"
+	if err := os.WriteFile(filepath.Join(dir, "boards.txt"), []byte(boardsTxt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Directories.Data = data
+	table := NewManager(cfg).installedVIDPIDTable()
+
+	got := table["1234:5678"]
+	if len(got) != 1 {
+		t.Fatalf("table[1234:5678] = %+v; want only the visible board", got)
+	}
+	if got[0].fqbn != "testvendor:testarch:visible" {
+		t.Errorf("matched %q; want testvendor:testarch:visible", got[0].fqbn)
+	}
+	for _, b := range got {
+		if b.fqbn == "testvendor:testarch:esp32_family" {
+			t.Error("hidden placeholder board must never appear as a detection result")
+		}
+	}
+}
 
 func TestIdentifyFallback(t *testing.T) {
 	m := &Manager{} // cases below return before the fuzzy path touches m.cfg
