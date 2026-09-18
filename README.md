@@ -53,8 +53,8 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
 Register your boards once, then update many over WiFi in one command:
 
 ```bash
-companion fleet register 192.168.1.11 kitchen-uno --mcu avr --tags kitchen,uno
-companion fleet register 192.168.1.12 office-esp32 --mcu esp32 --tags office
+companion fleet register 192.0.2.11 kitchen-uno --mcu avr --tags kitchen,uno
+companion fleet register 192.0.2.12 office-esp32 --mcu esp32 --tags office
 companion fleet list
 companion fleet push firmware.bin @office            # flash the office boards only
 ```
