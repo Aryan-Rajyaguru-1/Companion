@@ -32,6 +32,24 @@ export function probeCandidate({ ports = [], matches = [], probed } = {}) {
 }
 
 /**
+ * Unwrap the `board:detect` IPC envelope.
+ *
+ * electron/main.js answers with { success, detection }, while the detection
+ * payload itself carries { found, matches, ports }. Reading `found`/`matches`
+ * straight off the envelope yields undefined for every scan, which silently
+ * discarded both passive and probed results and left whatever board was
+ * already selected — the reason a connected ESP32 still showed as an Uno.
+ *
+ * @param {object|null} res — value returned by electronAPI.detectBoard()
+ * @returns {object|null} the detection payload, or null when unavailable
+ */
+export function unwrapDetection(res) {
+  if (!res || res.success === false) return null;
+  const d = res.detection;
+  return d && typeof d === 'object' ? d : null;
+}
+
+/**
  * Describe a port the IDE could not identify, for the console. Kept separate
  * from the probe decision so the wording is unit-testable.
  *

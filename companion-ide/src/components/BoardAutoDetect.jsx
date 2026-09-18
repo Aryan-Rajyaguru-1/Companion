@@ -9,6 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { ALL_BOARDS, friendlyName, mcuFromFQBN } from '../utils/fqbn';
+import { unwrapDetection } from '../utils/board-detect';
 import './BoardAutoDetect.css';
 
 export default function BoardAutoDetect({ currentFQBN, onSelect, onClose }) {
@@ -41,7 +42,8 @@ export default function BoardAutoDetect({ currentFQBN, onSelect, onClose }) {
     setError(null);
     try {
       const r = await window.electronAPI?.detectBoard?.(true);
-      const m = r?.found && r?.matches?.[0];
+      const d = unwrapDetection(r);
+      const m = d?.found && d?.matches?.[0];
       setDetected(m ? {
         board: m.boardName || m.fqbn,
         fqbn:  m.fqbn,

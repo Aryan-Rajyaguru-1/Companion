@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { probeCandidate, unidentifiedMessage } from '../board-detect.js';
+import { probeCandidate, unidentifiedMessage, unwrapDetection } from '../board-detect.js';
 
 // The ESP32 DevKit V1 case, as reported by the CLI: a WCH CH9102 CDC-ACM
 // bridge whose identity is board-agnostic.
@@ -26,6 +26,28 @@ describe('automatic device verification', () => {
     expect(probeCandidate()).toBeNull();
     expect(probeCandidate({ ports: [], matches: [] })).toBeNull();
   });
+
+  it('unwraps the {success, detection} IPC envelope', () => {
+    const payload = { found: true, fqbn: 'esp32:esp32:esp32', matches: [{ fqbn: 'esp32:esp32:esp32' }] };
+    expect(unwrapDetection({ success: true, detection: payload })).toBe(payload);
+  });
+
+  it('does not confuse the envelope itself for the detection payload', () => {
+    // Regression: reading .found/.matches off the envelope silently discarded
+    // every detection and left a stale board selected.
+    const envelope = { success: true, detection: { found: true, matches: [{ fqbn: 'esp32:esp32:esp32' }] } };
+    expect(envelope.found).toBeUndefined();
+    expect(envelope.matches).toBeUndefined();
+    expect(unwrapDetection(envelope).found).toBe(true);
+  });
+
+  it('returns null when detection failed or is missing', () => {
+    expect(unwrapDetection({ success: false, detection: null })).toBeNull();
+    expect(unwrapDetection({ success: true })).toBeNull();
+    expect(unwrapDetection(null)).toBeNull();
+    expect(unwrapDetection(undefined)).toBeNull();
+  });
+
 
   it('describes an unidentified device instead of implying a board', () => {
     const msg = unidentifiedMessage(devkitV1);

@@ -43,7 +43,7 @@ import {
 } from './utils/error-parser';
 import { hasAutoFix }    from './utils/auto-correct';
 import { addRecentFile } from './utils/recent-files';
-import { probeCandidate, unidentifiedMessage } from './utils/board-detect';
+import { probeCandidate, unidentifiedMessage, unwrapDetection } from './utils/board-detect';
 import './App.css';
 
 const DEFAULT_SKETCH = `/*
@@ -545,6 +545,8 @@ export default function App() {
   const selectedPortRef = useRef('');
   // Ports already reset for a boot-ROM probe this session — never re-reset.
   const probedPortsRef  = useRef(new Set());
+  // Ports already reported as unidentified — keeps the console free of repeats.
+  const unidentifiedReportedRef = useRef(new Set());
 
   const refreshSerialPorts = useCallback(async (probe = false) => {
     const r = await window.electronAPI?.listSerialPorts?.();
@@ -565,7 +567,10 @@ export default function App() {
     // needed). The saved selection may be stale — e.g. a board swapped
     // since the last session — so hardware evidence outranks it, but a
     // manual pick within the last 10 s is never overridden.
-    let d = await window.electronAPI?.detectBoard?.(probe);
+    // detectBoard answers with { success, detection } — unwrapDetection pulls
+    // the payload out. Reading `found` off the envelope silently discarded
+    // every result (passive and probed alike).
+    let d = unwrapDetection(await window.electronAPI?.detectBoard?.(probe));
     let m = d?.found && d?.matches?.[0];
 
     // Automatic verification. A bare USB-serial bridge (CH340/CH9102/CP210x)
@@ -582,15 +587,19 @@ export default function App() {
       if (cand) {
         probedPortsRef.current.add(cand);
         appendConsole(`» Verifying device on ${cand} — boot-ROM probe, board resets once…\n`, 'info');
-        d = await window.electronAPI?.detectBoard?.(true);
+        d = unwrapDetection(await window.electronAPI?.detectBoard?.(true));
         m = d?.found && d?.matches?.[0];
       }
     }
 
     if (!m?.fqbn) {
       // Say so plainly instead of leaving a stale board looking detected.
+      // Reported once per port — refresh scans run more than once per session.
       const unknown = (d?.ports || r?.ports || []).find(p => !p.fqbn);
-      if (unknown) appendConsole(unidentifiedMessage(unknown) + '\n', 'info');
+      if (unknown && !unidentifiedReportedRef.current.has(unknown.port)) {
+        unidentifiedReportedRef.current.add(unknown.port);
+        appendConsole(unidentifiedMessage(unknown) + '\n', 'info');
+      }
       return d?.ports || r?.ports || [];
     }
     const manual = Date.now() - (window.__boardPickedAt || 0) < 10000;
