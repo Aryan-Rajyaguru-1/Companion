@@ -289,6 +289,29 @@ void setup() {
     Serial.println("     → IDE can connect to <hostname>.local:3333\n");
   }
 
+  // ── Security posture banner (audit F001/F005) ────────────────────
+  // OTA with no password accepts firmware from anyone on the network, and
+  // the AP-mode default password is public knowledge. Say so loudly on
+  // every boot so an open device is a conscious choice, never a surprise.
+  if (strlen(OTA_PASSWORD) == 0) {
+    Serial.println("  ┌──────────────────────────────────────────────┐");
+    Serial.println("  │ ⚠ SECURITY: OTA has NO password — anyone on  │");
+    Serial.println("  │ this network can reflash this device. Set    │");
+    Serial.println("  │ OTA_PASSWORD in config.local.h to require    │");
+    Serial.println("  │ authentication.                              │");
+    Serial.println("  └──────────────────────────────────────────────┘");
+  }
+#if WIFI_AP_MODE
+  if (strcmp(AP_PASS, "flashme!") == 0) {
+    Serial.println("  ┌──────────────────────────────────────────────┐");
+    Serial.println("  │ ⚠ SECURITY: using the DEFAULT AP password    │");
+    Serial.println("  │ (\"flashme!\"). Anyone in WiFi range can join  │");
+    Serial.println("  │ this hotspot. Change AP_PASS in              │");
+    Serial.println("  │ config.local.h for field deployments.        │");
+    Serial.println("  └──────────────────────────────────────────────┘");
+  }
+#endif
+
 #if defined(ARDUINO_ARCH_ESP32)
   // ── OTA server mode (bridge firmware can be updated over WiFi) ──
   ArduinoOTA.setHostname(otaHostname);

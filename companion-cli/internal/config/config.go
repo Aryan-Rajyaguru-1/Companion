@@ -189,7 +189,9 @@ func Save(cfg *Config, path string) error {
 	}
 
 	header := []byte("# Companion CLI configuration file\n# Edit manually or use: companion config set <key> <value>\n\n")
-	return os.WriteFile(path, append(header, data...), 0o644)
+	// Audit F006: 0600, not 0644. No secrets live here today, but a future
+	// field (API key, credential) must never inherit world-readable perms.
+	return os.WriteFile(path, append(header, data...), 0o600)
 }
 
 // Init writes a default config to disk if it doesn't exist yet.

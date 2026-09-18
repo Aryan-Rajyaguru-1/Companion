@@ -18,18 +18,19 @@ import (
 
 func newUploadCmd() *cobra.Command {
 	var (
-		fqbn       string
-		mcu        string
-		host       string
-		port       int
-		baud       uint32
-		binaryPath string
-		noVerify   bool
-		warnings   string
-		profileNam string
-		serialPort string
-		otaFlag    bool
-		otaPass    string
+		fqbn         string
+		mcu          string
+		host         string
+		port         int
+		baud         uint32
+		binaryPath   string
+		noVerify     bool
+		warnings     string
+		profileNam   string
+		serialPort   string
+		otaFlag      bool
+		otaPass      string
+		otaPassStdin bool
 	)
 	var rpProfileWantsOTA bool
 
@@ -199,6 +200,11 @@ Examples:
 				}
 			}
 
+			otaPass, err = resolveOTAPassword(cmd, otaPass, "", otaPassStdin)
+			if err != nil {
+				return err
+			}
+
 			if useOTA {
 				// Route through the plugin registry (P5): first-party OTA
 				// uploader handles esp32/esp8266; third-party .so plugins can
@@ -305,7 +311,9 @@ Examples:
 	cmd.Flags().BoolVar(&otaFlag, "ota", false,
 		"Upload over the air via ArduinoOTA (device IP via --host or mDNS discovery)")
 	cmd.Flags().StringVar(&otaPass, "ota-password", "",
-		"OTA password (prefix \"sha256:\" for a pre-hashed value)")
+		otaPasswordHelp)
+	cmd.Flags().BoolVar(&otaPassStdin, "ota-password-stdin", false,
+		"read the OTA password from stdin (avoids ps/shell-history exposure)")
 
 	return cmd
 }

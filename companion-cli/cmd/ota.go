@@ -47,6 +47,7 @@ and manage the device-side OTA switch persisted in the sketch profile.
 
 func newOTAUploadCmd() *cobra.Command {
 	var password string
+	var passwordStdin bool
 	var port int
 	cmd := &cobra.Command{
 		Use:   "upload <device-ip> [sketch-dir-or-binary]",
@@ -57,6 +58,11 @@ func newOTAUploadCmd() *cobra.Command {
 			target := "."
 			if len(args) > 1 {
 				target = args[1]
+			}
+
+			password, err := resolveOTAPassword(cmd, password, "", passwordStdin)
+			if err != nil {
+				return err
 			}
 
 			cfg, _, err := config.Load(globalFlags.ConfigFile)
@@ -141,14 +147,25 @@ func newOTAUploadCmd() *cobra.Command {
 			fmt.Println()
 			printSuccess(fmt.Sprintf("OTA complete in %s — device rebooted into new firmware",
 				time.Since(start).Round(time.Millisecond)))
+			if password == "" {
+				printWarn("no OTA password was used — anyone on this network could do the same; " +
+					"set OTA_PASSWORD on the device and pass --auth / COMPANION_OTA_PASSWORD / --ota-password-stdin")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&password, "auth", "a", "",
-		"OTA password (device must call ArduinoOTA.setPassword with the same secret; prefix \"sha256:\" for a pre-hashed value)")
+		otaPasswordHelp)
+	cmd.Flags().BoolVar(&passwordStdin, "ota-password-stdin", false,
+		"read the OTA password from stdin (avoids ps/shell-history exposure)")
 	cmd.Flags().IntVarP(&port, "port", "p", 3232, "Device OTA port")
 	return cmd
 }
+
+const otaPasswordHelp = "OTA password (prefer COMPANION_OTA_PASSWORD env or --ota-password-stdin: " +
+	"a flag value is visible in ps output and shell history; " +
+	"device must call ArduinoOTA.setPassword with the same secret; " +
+	"prefix \"sha256:\" for a pre-hashed value)"
 
 // ── ota enable / disable ─────────────────────────────────────────
 

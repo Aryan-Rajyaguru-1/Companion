@@ -21,11 +21,12 @@ import (
 
 func newFleetPushCmd() *cobra.Command {
 	var (
-		password    string
-		concurrency int
-		retries     int
-		yes         bool
-		noVerify    bool
+		password      string
+		passwordStdin bool
+		concurrency   int
+		retries       int
+		yes           bool
+		noVerify      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push <image.bin|sketch-dir> [selectors...]",
@@ -34,6 +35,11 @@ func newFleetPushCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
 			selectors := args[1:]
+
+			password, err := resolveOTAPassword(cmd, password, "", passwordStdin)
+			if err != nil {
+				return err
+			}
 
 			cfg, _, err := config.Load(globalFlags.ConfigFile)
 			if err != nil {
@@ -123,7 +129,9 @@ func newFleetPushCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&password, "ota-password", "", "OTA password (or sha256:… pre-hash)")
+	cmd.Flags().StringVar(&password, "ota-password", "", otaPasswordHelp)
+	cmd.Flags().BoolVar(&passwordStdin, "ota-password-stdin", false,
+		"read the OTA password from stdin (avoids ps/shell-history exposure)")
 	cmd.Flags().IntVar(&concurrency, "workers", 4, "bounded worker concurrency")
 	cmd.Flags().IntVar(&retries, "retries", 1, "automatic retries per failing device")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
