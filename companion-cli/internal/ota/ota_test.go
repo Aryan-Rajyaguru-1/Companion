@@ -92,8 +92,14 @@ func (d *fakeDevice) serveUDP(udp *net.UDPConn) {
 }
 
 // dialTCP performs the device's dial-back to the host port learned from the
-// invite, consumes exactly size bytes, ACKs each chunk with its length, and
-// sends the final verdict.
+// invite. It mirrors ArduinoOTA.cpp::_runUpdate on the wire:
+//   - each chunk is ACKed with a BARE decimal count — no newline
+//     (client.printf("%u", written));
+//   - if the host sends nothing more within ~1s, the device re-sends the
+//     same ACK up to 3 times before giving up (the starve-and-retry that
+//     the old newline-waiting client tripped over on real hardware);
+//   - the final verdict is a bare "OK" (no terminator), sent after
+//     Update.end(), and may be COALESCED with the last ACK ("512OK").
 func (d *fakeDevice) dialTCP(fail bool) {
 	deadline := time.Now().Add(10 * time.Second)
 	var conn net.Conn
@@ -118,18 +124,31 @@ func (d *fakeDevice) dialTCP(fail bool) {
 			want = remain
 		}
 		n, rerr := io.ReadFull(conn, buf[:want])
-		fmt.Fprintf(conn, "%d\n", n)
 		if rerr != nil {
 			return
 		}
 		got += int64(n)
 		d.gotChunks++
+		fmt.Fprintf(conn, "%d", n) // bare ACK — ArduinoOTA sends no newline
+		if rerr != nil || got >= d.gotSize {
+			break
+		}
+		// Starve-retry: if the next chunk doesn't arrive promptly, the real
+		// device re-ACKs up to 3 times at ~1s intervals. Emulate once so the
+		// client's quiet-period reader must tolerate duplicate ACKs.
+		ackN := n
+		go func() {
+			time.Sleep(1200 * time.Millisecond)
+			fmt.Fprintf(conn, "%d", ackN)
+		}()
 	}
 	if fail {
-		conn.Write([]byte("ERROR flash failed\n"))
+		conn.Write([]byte("ERROR flash failed"))
 		return
 	}
-	conn.Write([]byte("OK\n"))
+	// Final verdict, unframed, often coalesced with the last ACK in real
+	// captures — here it follows the last bare ACK with no separator.
+	conn.Write([]byte("OK"))
 }
 
 func pushTestImage(t *testing.T, size int) string {

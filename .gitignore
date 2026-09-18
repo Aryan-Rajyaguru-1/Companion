@@ -39,4 +39,6 @@ Thumbs.db
 companion-cli/dist/
 dist-cli/
 companion-cli/companion_test
+companion-cli/companion-fixed
 companion-ide/esp32-bridge-firmware/esp32_bridge/build/
+companion-ide/esp32-bridge-firmware/LEDBlink/build/

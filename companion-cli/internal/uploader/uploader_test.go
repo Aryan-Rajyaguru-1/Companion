@@ -1,6 +1,10 @@
 package uploader
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestResolveAVRMCUKnownBoards(t *testing.T) {
 	cases := map[string]string{
@@ -33,5 +37,51 @@ func TestResolveAVRMCUThirdComponentGuesses(t *testing.T) {
 func TestResolveAVRMCUUnknownReturnsError(t *testing.T) {
 	if _, err := resolveAVRMCU("unknown:thing:whatever"); err == nil {
 		t.Error("unknown FQBN should return an error, not default silently")
+	}
+}
+
+// TestRunToolKillsHungTool proves the hard deadline actually kills a tool
+// that never exits — the hang that previously wedged uploads forever
+// (observed live: avrdude over net: with no target).
+func TestRunToolKillsHungTool(t *testing.T) {
+	orig := toolTimeouts["test-hang"]
+	toolTimeouts["test-hang"] = 300 * time.Millisecond
+	defer func() { toolTimeouts["test-hang"] = orig }()
+
+	start := time.Now()
+	u := New(nil, nil)
+	_, err := u.runTool("test-hang", "sleep", "60")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got: %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("tool was not killed promptly: took %s", elapsed)
+	}
+}
+
+// TestRunToolCapturesOutput checks the normal path: output is captured and
+// a zero exit yields a nil error.
+func TestRunToolCapturesOutput(t *testing.T) {
+	u := New(nil, nil)
+	out, err := u.runTool("test-ok", "echo", "companion-upload-ok")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "companion-upload-ok") {
+		t.Fatalf("output not captured: %q", out)
+	}
+}
+
+// TestRunToolPropagatesExitError checks nonzero exits surface as errors.
+func TestRunToolPropagatesExitError(t *testing.T) {
+	u := New(nil, nil)
+	_, err := u.runTool("test-fail", "false")
+	if err == nil {
+		t.Fatal("expected exit error from `false`, got nil")
 	}
 }

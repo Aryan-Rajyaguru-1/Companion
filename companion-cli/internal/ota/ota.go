@@ -17,7 +17,6 @@
 package ota
 
 import (
-	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/md5"
@@ -91,18 +90,42 @@ func Discover(ctx context.Context, timeout time.Duration) []Device {
 	return out
 }
 
-// Probe checks whether a device is listening on the OTA port.
-// A pure TCP connect suffices — ArduinoOTA accepts and times out idle peers.
+// Probe checks whether a device is running the ArduinoOTA service.
+// ArduinoOTA listens on UDP only — the TCP connection in an OTA session is
+// dialed by the device back to the *host* — so a TCP connect to the OTA
+// port is always refused and must not be used as a liveness check. Instead
+// send a real (harmless) UDP invite: any reply at all ("OK", "AUTH <nonce>",
+// or an error string) proves the service is alive. The invite uses port 0
+// and size 0, so a live device fails its own dial-back immediately and
+// touches no flash.
 func Probe(host string, port int) error {
 	if port <= 0 {
 		port = 3232
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 3*time.Second)
-	if err != nil {
-		return fmt.Errorf("no OTA server at %s:%d — is the device running a sketch with ArduinoOTA.begin()?",
-			host, port)
+	raddr := &net.UDPAddr{IP: net.ParseIP(host), Port: port}
+	if raddr.IP == nil {
+		return fmt.Errorf("invalid OTA device address %q", host)
 	}
-	conn.Close()
+	conn, err := net.DialTimeout("udp4", raddr.String(), 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("no route to OTA device at %s:%d", host, port)
+	}
+	defer conn.Close()
+	// "<cmd> 0 0 <md5-of-empty>" — well-formed, flashes nothing.
+	msg := fmt.Sprintf("%d 0 0 %s\n", CmdFlash, strings.Repeat("0", 32))
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		return fmt.Errorf("OTA probe write to %s:%d: %w", host, port, err)
+	}
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 128)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return fmt.Errorf("no OTA server at %s:%d — is the device running a sketch with ArduinoOTA.begin()?", host, port)
+	}
+	if reply := strings.TrimSpace(string(buf[:n])); strings.HasPrefix(reply, "Authentication Failed") {
+		// Alive but locked; still proof the service runs.
+		return nil
+	}
 	return nil
 }
 
@@ -365,11 +388,12 @@ func streamImage(ctx context.Context, conn net.Conn, img io.Reader, size int64,
 		case <-done:
 		}
 	}()
-	reader := bufio.NewReader(conn)
+	reader := &replyReader{conn: conn}
 	buf := make([]byte, chunkSize)
 	var sent int64
+	finalOK := false
 
-	for sent < size {
+	for sent < size && !finalOK {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -381,21 +405,23 @@ func streamImage(ctx context.Context, conn net.Conn, img io.Reader, size int64,
 			if _, werr := conn.Write(buf[:n]); werr != nil {
 				return fmt.Errorf("write to device: %w", werr)
 			}
-			// ArduinoOTA ACKs every chunk with the count of bytes written.
-			// Per-operation read deadline: a wedged device must not stall
-			// the transfer past the overall Push timeout, and ctx
-			// cancellation closes in via the conn deadline expiring.
-			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-				return fmt.Errorf("set ACK read deadline: %w", err)
-			}
-			line, aerr := readACKLine(reader)
+			// ArduinoOTA ACKs every chunk, but the ACK is a BARE decimal
+			// count with no newline (client.printf("%u", written)), and the
+			// final "OK" is also unframed — both may be coalesced into one
+			// segment ("273OK") or split across segments. Read it the way
+			// espota.py does: take whatever arrives, never wait for '\n'.
+			raw, aerr := reader.next(60 * time.Second)
 			if aerr != nil {
 				return fmt.Errorf("device stopped ACKing at %d/%d bytes: %w", sent, size, aerr)
 			}
-			acked, perr := strconv.ParseInt(strings.TrimSpace(line), 10, 64)
-			if perr != nil || acked <= 0 {
-				// A non-numeric reply here is the device's error output.
-				return fmt.Errorf("device rejected data at offset %d: %q", sent, strings.TrimSpace(line))
+			_, okSeen, errText := classifyReply(raw)
+			if errText != "" {
+				return fmt.Errorf("device rejected data at offset %d: %q", sent, errText)
+			}
+			if okSeen {
+				// Device finished the whole update early (size mismatch on
+				// its side). espota.py treats any OK as immediate success.
+				finalOK = true
 			}
 			sent += int64(n)
 			opts.progress(sent, size)
@@ -408,66 +434,124 @@ func streamImage(ctx context.Context, conn net.Conn, img io.Reader, size int64,
 		}
 	}
 
-	// Final verdict: "OK" on success, error text otherwise.
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	final, err := readFinal(reader)
-	if err != nil {
-		return fmt.Errorf("no final device response: %w", err)
+	// Final verdict: "OK" on success, error text otherwise. The device sends
+	// it only after Update.end() (flash write + MD5 verify of the whole
+	// image) completes, which takes seconds on large images — espota.py
+	// allows up to 300s, so wait generously and drain duplicate ACKs.
+	if !finalOK {
+		hard := time.Now().Add(60 * time.Second)
+		for {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			remain := time.Until(hard)
+			if remain <= 0 {
+				return errors.New("no final device response (timeout waiting for OK)")
+			}
+			raw, err := reader.next(remain)
+			if err != nil {
+				return fmt.Errorf("no final device response: %w", err)
+			}
+			_, okSeen, errText := classifyReply(raw)
+			if okSeen {
+				finalOK = true
+				break
+			}
+			if errText != "" {
+				return fmt.Errorf("device reported failure: %s", errText)
+			}
+			// bare numeric → duplicate/late ACK; keep waiting for OK
+		}
 	}
-	final = strings.TrimSpace(final)
-	if !strings.Contains(final, "OK") {
-		return fmt.Errorf("device reported failure: %s", final)
-	}
+
 	opts.progress(size, size)
 	opts.log(fmt.Sprintf("✓ OTA transfer complete — %d bytes written, device rebooting", size))
 	return nil
 }
 
-// readACKLine reads one ASCII acknowledgement from the device. ACKs are
-// decimal byte counts, usually newline-terminated; "OK" can also arrive
-// mid-stream and is returned verbatim so the caller can surface it.
-func readACKLine(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err == nil {
-		return line, nil
-	}
-	// Partial line without newline (device may ACK without terminator).
-	if len(line) > 0 {
-		// Give the peer a short grace period for the rest of the line.
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			b, berr := r.ReadByte()
-			if berr != nil {
-				break
-			}
-			if b == '\n' {
-				return line + "\n", nil
-			}
-			line += string(b)
-		}
-		return line, nil
-	}
-	return "", err
+// replyReader assembles unframed device replies. ArduinoOTA sends bare
+// decimal ACKs and a bare "OK" — no terminators — so replies arrive without
+// framing and may be coalesced ("1024OK") or split across TCP segments. The
+// reader accumulates bytes until the sender goes quiet briefly, which is the
+// practical end-of-reply signal for an unframed protocol (the same
+// tolerance espota.py gets by parsing whatever recv() returns).
+type replyReader struct {
+	conn net.Conn
+	tmp  [512]byte
 }
 
-// readFinal collects the device's final response line(s).
-func readFinal(r *bufio.Reader) (string, error) {
-	var sb strings.Builder
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		b, err := r.ReadByte()
-		if err != nil {
-			if sb.Len() > 0 {
-				return sb.String(), nil
+func (rr *replyReader) next(timeout time.Duration) (string, error) {
+	hard := time.Now().Add(timeout)
+	var acc []byte
+	for {
+		remain := time.Until(hard)
+		if remain <= 0 {
+			if len(acc) > 0 {
+				return string(acc), nil
+			}
+			return "", errors.New("timeout waiting for device reply")
+		}
+		d := remain
+		if len(acc) > 0 {
+			d = 30 * time.Millisecond // quiet period after first byte
+		}
+		if err := rr.conn.SetReadDeadline(time.Now().Add(d)); err != nil {
+			if len(acc) > 0 {
+				return string(acc), nil
 			}
 			return "", err
 		}
-		if b == '\n' && sb.Len() > 0 {
-			break
+		n, err := rr.conn.Read(rr.tmp[:])
+		if n > 0 {
+			acc = append(acc, rr.tmp[:n]...)
 		}
-		sb.WriteByte(b)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if len(acc) > 0 {
+					return string(acc), nil // quiet → reply complete
+				}
+				return "", errors.New("timeout waiting for device reply")
+			}
+			// EOF / reset: return any bytes read before the close so the
+			// caller can classify a coalesced final "OK" that raced the
+			// device's client.stop().
+			if len(acc) > 0 {
+				return string(acc), nil
+			}
+			return "", err
+		}
 	}
-	return sb.String(), nil
+}
+
+// classifyReply interprets one raw device reply: a bare decimal ACK, the
+// bare final "OK", both coalesced ("273OK"), or device error text. The
+// numeric count is advisory — the device may ACK partial writes — so it is
+// reported but never validated (espota.py ignores it too).
+func classifyReply(raw string) (acked int64, okSeen bool, errText string) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false, ""
+	}
+	okSeen = strings.Contains(s, "OK")
+	if d := leadingDigits(s); d != "" {
+		if n, err := strconv.ParseInt(d, 10, 64); err == nil {
+			acked = n
+		}
+	}
+	if okSeen || acked > 0 {
+		return acked, okSeen, ""
+	}
+	return 0, false, s
+}
+
+// leadingDigits returns the maximal digit prefix after leading whitespace.
+func leadingDigits(s string) string {
+	s = strings.TrimLeft(s, " \t\r\n")
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	return s[:end]
 }
 
 // ── Auth helpers ──────────────────────────────────────────────────
