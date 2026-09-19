@@ -42,3 +42,7 @@ companion-cli/companion_test
 companion-cli/companion-fixed
 companion-ide/esp32-bridge-firmware/esp32_bridge/build/
 companion-ide/esp32-bridge-firmware/LEDBlink/build/
+companion-ide/esp32-bridge-firmware/RelayDevice/build/
+# Personal WiFi/token credentials — same template+skip-worktree pattern as
+# esp32_bridge/config.local.h (see note at top of this file).
+companion-ide/esp32-bridge-firmware/RelayDevice/config.local.h

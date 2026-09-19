@@ -25,13 +25,35 @@
 
 using namespace websockets;
 
-// ── Run-local config: edit per test run ──────────────────────────────
-#define WIFI_SSID     "YOUR_WIFI_SSID"
-#define WIFI_PASS     "YOUR_WIFI_PASSWORD"
-#define RELAY_HOST    "YOUR_HUB_LAN_IP"  // laptop LAN IP running the hub
-#define RELAY_PORT    8931
-#define DEVICE_TOKEN  "dev-tok"
-#define DEVICE_ID     "esp32-remotetest-01"
+// ── Run-local config ─────────────────────────────────────────────────
+// Real credentials live in config.local.h (git-ignored via skip-worktree,
+// same pattern as the esp32_bridge sketch). The defaults below are inert
+// placeholders so the sketch still compiles without the local file.
+#if __has_include("config.local.h")
+  #include "config.local.h"
+#endif
+
+#ifndef WIFI_SSID
+  #define WIFI_SSID     "YOUR_WIFI_SSID"
+#endif
+#ifndef WIFI_PASS
+  #define WIFI_PASS     "YOUR_WIFI_PASSWORD"
+#endif
+#ifndef RELAY_HOST
+  #define RELAY_HOST    "YOUR_HUB_LAN_IP"  // host running `companion relay hub`
+#endif
+#ifndef RELAY_PORT
+  #define RELAY_PORT    8931
+#endif
+#ifndef DEVICE_TOKEN
+  #define DEVICE_TOKEN  "YOUR_DEVICE_TOKEN"  // COMPANION_RELAY_DEVICES_TOKEN on the hub
+#endif
+#ifndef DEVICE_ID
+  #define DEVICE_ID     "esp32-relaytest-01"
+#endif
+#ifndef RELAY_TLS
+  #define RELAY_TLS     false  // true → wss:// (Cloudflare tunnel, port 443)
+#endif
 
 static WebsocketsClient ws;
 static bool pushActive = false;
@@ -91,7 +113,8 @@ static void onMsg(WebsocketsMessage msg) {
     headerSeen = true;
   }
   if (n == 0) return;
-  size_t w = Update.write(p, n);
+  // Core 3.3.11's Update API takes a non-const buffer; it only reads it.
+  size_t w = Update.write(const_cast<uint8_t *>(p), n);
   if (w != n) {
     Serial.printf("[relay] Update.write FAILED (%u/%u): %s\n",
                   (unsigned)w, (unsigned)n, Update.errorString());
@@ -144,7 +167,9 @@ void setup() {
                 WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
   ws.onMessage(onMsg);
-  String url = String("ws://") + RELAY_HOST + ":" + RELAY_PORT +
+  // ws:// for a LAN hub, wss:// when reached through a Cloudflare tunnel.
+  String scheme = RELAY_TLS ? "wss://" : "ws://";
+  String url = scheme + RELAY_HOST + ":" + RELAY_PORT +
                "/device?token=" + DEVICE_TOKEN;
   Serial.printf("[relay] dialing %s ...\n", url.c_str());
   if (!ws.connect(url)) {

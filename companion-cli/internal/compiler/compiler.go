@@ -936,29 +936,33 @@ func (c *Compiler) resolveLibraries(sketchCPP, sketchDir string, extraDirs []str
 				libPaths = append(libPaths, libPath)
 				c.logf("  Library: %s → %s", headerName, filepath.Base(libPath))
 
-				// Scan this library's source files for transitive #include deps
+				// Scan this library's source tree for transitive #include deps.
+				// Recursive walk — headers may live in nested dirs (e.g.
+				// ArduinoWebsockets' tiny_websockets/**/esp32_tcp.hpp needs
+				// WiFiClientSecure.h from the core's NetworkClientSecure lib),
+				// which a flat ReadDir misses.
 				var transitiveHeaders []string
 				for _, srcDir := range []string{filepath.Join(libPath, "src"), libPath} {
-					entries, err := os.ReadDir(srcDir)
-					if err != nil {
+					if !dirExists(srcDir) {
 						continue
 					}
-					for _, e := range entries {
-						if e.IsDir() {
-							continue
+					_ = filepath.Walk(srcDir, func(p string, info os.FileInfo, werr error) error {
+						if werr != nil || info.IsDir() {
+							return nil
 						}
-						ext := strings.ToLower(filepath.Ext(e.Name()))
+						ext := strings.ToLower(filepath.Ext(p))
 						if ext != ".h" && ext != ".hpp" && ext != ".cpp" && ext != ".c" {
-							continue
+							return nil
 						}
-						hdata, err := os.ReadFile(filepath.Join(srcDir, e.Name()))
+						hdata, err := os.ReadFile(p)
 						if err != nil {
-							continue
+							return nil
 						}
 						for _, m := range includeRE.FindAllStringSubmatch(string(hdata), -1) {
 							transitiveHeaders = append(transitiveHeaders, m[1])
 						}
-					}
+						return nil
+					})
 					break // only scan first found src dir
 				}
 				scanHeaders(transitiveHeaders)
@@ -983,7 +987,10 @@ func (c *Compiler) findLibraryForHeader(header, searchPath string) string {
 		return ""
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		// DirEntry.IsDir() is false for symlinks-to-directories (it does not
+		// follow the link), so accept symlinks too — the os.Stat candidates
+		// below follow them and decide.
+		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue
 		}
 		libDir := filepath.Join(searchPath, e.Name())
@@ -1016,20 +1023,29 @@ func (c *Compiler) buildLibraries(libPaths []string, tc *Toolchain, bf *BuildFla
 		}
 
 		for _, srcDir := range srcDirs {
-			entries, err := os.ReadDir(srcDir)
-			if err != nil {
+			if !dirExists(srcDir) {
 				continue
 			}
-			for _, e := range entries {
-				if e.IsDir() {
-					continue
+			// Recursive walk: libraries keep sources in nested subdirs
+			// (tiny_websockets/**, utility/, arch/…) and all of them must be
+			// compiled — a flat ReadDir silently dropped most of the library.
+			// Mirrors arduino-cli's recursive source discovery.
+			walkErr := filepath.Walk(srcDir, func(srcPath string, info os.FileInfo, werr error) error {
+				if werr != nil || info.IsDir() {
+					return nil
 				}
-				ext := strings.ToLower(filepath.Ext(e.Name()))
-				if ext != ".c" && ext != ".cpp" && ext != ".S" {
-					continue
+				ext := strings.ToLower(filepath.Ext(srcPath))
+				if ext != ".c" && ext != ".cpp" && ext != ".s" && ext != ".S" {
+					return nil
 				}
-				srcPath := filepath.Join(srcDir, e.Name())
-				objPath := filepath.Join(libOutDir, e.Name()+".o")
+				rel, rerr := filepath.Rel(srcDir, srcPath)
+				if rerr != nil {
+					rel = filepath.Base(srcPath)
+				}
+				objPath := filepath.Join(libOutDir, rel+".o")
+				if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
+					return err
+				}
 
 				args := bf.forFile(srcPath, "", false, tc)
 				// Add all resolved library src/ dirs so libraries can see each other's headers
@@ -1042,12 +1058,18 @@ func (c *Compiler) buildLibraries(libPaths []string, tc *Toolchain, bf *BuildFla
 						}
 					}
 				}
-				args = append(args, "-I", srcDir, "-o", objPath, srcPath)
+				// The library's own root and the TU's directory (for relative
+				// includes like "internals/ws_common.hpp").
+				args = append(args, "-I", srcDir, "-I", filepath.Dir(srcPath), "-o", objPath, srcPath)
 
 				if err := c.runCC(tc, srcPath, args); err != nil {
-					return nil, err
+					return err
 				}
 				allObjs = append(allObjs, objPath)
+				return nil
+			})
+			if walkErr != nil {
+				return nil, walkErr
 			}
 			break // Only process first found src dir
 		}
@@ -2027,6 +2049,34 @@ func (bf *BuildFlags) forFile(path, extraIncDir string, isCore bool, tc *Toolcha
 			}
 		}
 
+		// Arduino-level platform defines: platform.txt's build.extra_flags
+		// carries -DESP32=ESP32, -DCORE_DEBUG_LEVEL=…, USB-mode flags and the
+		// board's own build.defines. Third-party libraries (ArduinoWebsockets,
+		// PubSubClient, …) key their platform typedefs off these macros, so a
+		// compile without them fails with undefined WSDefaultTcpClient etc.
+		// GetProp resolves {…} placeholders (build.defines,
+		// build.extra_flags.<mcu>, …) exactly like the official recipes do.
+		if extra := rb.GetProp("build.extra_flags"); extra != "" {
+			for _, tok := range expandPlatformFlags(extra, rb, bf.sdkPath) {
+				// Skip the empty runtime macros (GetProp cannot resolve
+				// {runtime.os}/{build.fqbn}) — re-added with real values below.
+				if tok == "-DARDUINO_HOST_OS=" || tok == "-DARDUINO_FQBN=" {
+					continue
+				}
+				args = append(args, tok)
+			}
+		}
+		// GetProp's {…} expansion resolves unknown runtime keys (runtime.os,
+		// build.fqbn) to empty strings, so the ARDUINO_HOST_OS / ARDUINO_FQBN
+		// macros above end up empty and chip-debug-report.cpp fails to
+		// compile. Re-add them with real values — GCC keeps the last -D, so
+		// these override the empty ones. The escaped quotes survive
+		// expandPlatformFlags's quote-stripping tokenizer.
+		args = append(args,
+			fmt.Sprintf(`-DARDUINO_HOST_OS="%s"`, arduinoOSName()),
+			fmt.Sprintf(`-DARDUINO_FQBN="%s"`, rb.FQBN),
+		)
+
 		incPrefix := filepath.Join(bf.sdkPath, "include") + string(filepath.Separator)
 		if data, err := os.ReadFile(filepath.Join(bf.sdkPath, "flags", "includes")); err == nil {
 			toks := strings.Fields(string(data))
@@ -2163,6 +2213,29 @@ func (bf *BuildFlags) forFile(path, extraIncDir string, isCore bool, tc *Toolcha
 	return args
 }
 
+// arduinoOSName returns the Arduino-style runtime.os identifier
+// (linux64/linuxarm64/linuxarm/macosx/windows) used to expand the
+// {runtime.os} placeholder from platform.txt recipes.
+func arduinoOSName() string {
+	switch runtime.GOOS {
+	case "linux":
+		switch runtime.GOARCH {
+		case "arm64":
+			return "linuxarm64"
+		case "arm":
+			return "linuxarm"
+		default:
+			return "linux64"
+		}
+	case "darwin":
+		return "macosx"
+	case "windows":
+		return "windows"
+	default:
+		return runtime.GOOS
+	}
+}
+
 // expandPlatformFlags expands a platform.txt flag string into a []string,
 // substituting placeholders and stripping unresolved ones.
 func expandPlatformFlags(flags string, rb *boards.ResolvedBoard, sdkPath string) []string {
@@ -2174,6 +2247,11 @@ func expandPlatformFlags(flags string, rb *boards.ResolvedBoard, sdkPath string)
 	s = strings.ReplaceAll(s, "{build.opt.flags}", rb.GetProp("build.opt.flags"))
 	if rb != nil {
 		s = strings.ReplaceAll(s, "{runtime.platform.path}", rb.PlatformPath)
+		// runtime.os / build.fqbn appear in ESP32 core platform.txt's
+		// build.extra_flags (ARDUINO_HOST_OS / ARDUINO_FQBN macros used by
+		// chip-debug-report.cpp). Without them the core fails to compile.
+		s = strings.ReplaceAll(s, "{runtime.os}", arduinoOSName())
+		s = strings.ReplaceAll(s, "{build.fqbn}", rb.FQBN)
 	}
 
 	for strings.Contains(s, "{") {
