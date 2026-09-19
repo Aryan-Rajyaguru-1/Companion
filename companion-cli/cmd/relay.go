@@ -34,6 +34,25 @@ func newRelayCmd() *cobra.Command {
 		Use:   "hub",
 		Short: "Run the relay hub devices and agents dial into",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Same secret-handling rule as the OTA password (audit F002):
+			// prefer env over argv, since a flag value is visible in `ps`
+			// output and shell history.
+			if devicesToken == "" {
+				devicesToken = os.Getenv("COMPANION_RELAY_DEVICES_TOKEN")
+			}
+			if agentsToken == "" {
+				agentsToken = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
+			}
+			if devicesToken == "" || agentsToken == "" {
+				fmt.Fprintln(os.Stderr,
+					"refusing to start with no tokens: set --devices-token/--agents-token "+
+						"or COMPANION_RELAY_DEVICES_TOKEN/COMPANION_RELAY_AGENTS_TOKEN "+
+						"(use \"*\" only for local lab testing)")
+				return fmt.Errorf("hub tokens required")
+			}
+			if devicesToken == "*" || agentsToken == "*" {
+				fmt.Println("⚠ auth DISABLED for one or both roles (\"*\" token) — lab/testing only, never expose this")
+			}
 			h := relay.NewHub(relay.Config{
 				DevicesToken: devicesToken,
 				AgentsToken:  agentsToken,
@@ -46,8 +65,8 @@ func newRelayCmd() *cobra.Command {
 		},
 	}
 	hubCmd.Flags().StringVar(&listen, "listen", ":8931", "address to listen on")
-	hubCmd.Flags().StringVar(&devicesToken, "devices-token", "*", "shared token devices must present (* = none)")
-	hubCmd.Flags().StringVar(&agentsToken, "agents-token", "*", "shared token agents must present (* = none)")
+	hubCmd.Flags().StringVar(&devicesToken, "devices-token", "", "shared token devices must present (prefer COMPANION_RELAY_DEVICES_TOKEN; \"*\" disables auth — lab only)")
+	hubCmd.Flags().StringVar(&agentsToken, "agents-token", "", "shared token agents must present (prefer COMPANION_RELAY_AGENTS_TOKEN; \"*\" disables auth — lab only)")
 	relayCmd.AddCommand(hubCmd)
 
 	// companion relay push --hub ws://host:8931 --token T --device ID image.bin
