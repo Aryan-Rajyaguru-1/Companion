@@ -53,17 +53,21 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
 Register your boards once, then update many over WiFi in one command:
 
 ```bash
-companion fleet register 192.0.2.11 kitchen-uno --mcu avr --tags kitchen,uno
-companion fleet register 192.0.2.12 office-esp32 --mcu esp32 --tags office
+companion fleet register 192.x.x.x kitchen-uno --mcu avr --tags kitchen,uno
+companion fleet register 192.x.x.y office-esp32 --mcu esp32 --tags office
 companion fleet list
 companion fleet push firmware.bin @office            # flash the office boards only
 ```
+
+Replace `192.x.x.x` / `192.x.x.y` with each board's address on your own network.
 
 Or let mDNS find your boards for you:
 
 ```bash
 companion fleet discover --register                  # scan + auto-add companion-XXXXXX boards
 ```
+
+Names are positional (`register <host> [name]`), tags select groups (`@office`), and any selector also matches id/MAC/host/MCU substrings.
 
 `fleet push` shows the exact target list and **asks for confirmation before
 flashing anything** — then runs with bounded concurrency, one automatic retry
