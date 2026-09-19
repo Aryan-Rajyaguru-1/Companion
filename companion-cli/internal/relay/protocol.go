@@ -37,6 +37,9 @@ const (
 	KindStatus = "status"
 	// hub → agent: push outcome (device rebooted / error).
 	KindPushResult = "push_result"
+	// device → hub: sent after a completed push (post-"OK") so the hub can
+	// clear busy/pairing without waiting for a reconnect.
+	KindPushDone = "push_done"
 	// hub → device: shutdown notice (device should idle its relay link).
 	KindBye = "bye"
 )

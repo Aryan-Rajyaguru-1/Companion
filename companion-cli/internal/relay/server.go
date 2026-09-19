@@ -20,16 +20,26 @@ var upgrader = websocket.Upgrader{
 //
 //	GET /device?token=…  — a device registers (expects device_hello first)
 //	GET /agent?token=…   — an IDE/CLI agent connects (agent_hello first)
-//	GET /health          — liveness + connected device count
+//	GET /health          — liveness; with a valid role token, also the
+//	                       connected-device list (relay devices / fleet preflight)
 func (h *Hub) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/device", h.serveDeviceWS)
 	mux.HandleFunc("/agent", h.serveAgentWS)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// Unauthenticated callers (uptime monitors, tunnel probes) get a
+		// minimal liveness body — no device inventory. Token-holders get
+		// the full status surface.
+		tok := r.URL.Query().Get("token")
+		authed := h.authed(tok, h.cfg.AgentsToken) || h.authed(tok, h.cfg.DevicesToken)
+		if !authed {
+			json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":      true,
-			"devices": h.DeviceIDs(),
+			"devices": h.ListDevices(),
 			"time":    time.Now().UTC(),
 		})
 	})
@@ -86,9 +96,10 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		return
 	}
 	var hello struct {
-		Kind string `json:"kind"`
-		ID   string `json:"id"`
-		Ver  string `json:"version"`
+		Kind   string `json:"kind"`
+		ID     string `json:"id"`
+		Ver    string `json:"version"`
+		Secret string `json:"secret"`
 	}
 	if err := json.Unmarshal(raw, &hello); err != nil || hello.Kind != KindDeviceHello {
 		h.nudge(d, "first frame must be device_hello")
@@ -96,6 +107,7 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 	}
 	d.id = normalizeID(hello.ID)
 	d.version = hello.Ver
+	d.secret = hello.Secret // per-device identity, checked at push time
 	if d.id == "" {
 		h.nudge(d, "device id required")
 		return
@@ -108,15 +120,37 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 	h.devices[d.id] = d
 	h.mu.Unlock()
 	h.send2(d, KindWelcome, map[string]any{"ok": true, "id": d.id})
-	log.Printf("[relay] device registered: %s (v%s)", d.id, hello.Ver)
+	log.Printf("[relay] device registered: %s (v%s, secret %s)", d.id, hello.Ver,
+		map[bool]string{true: "present", false: "none"}[hello.Secret != ""])
 
 	for {
 		mt, payload, err := d.ws.ReadMessage()
 		if err != nil {
 			return
 		}
+		if mt == websocket.TextMessage {
+			// Control text frame on the device socket: push_done is the
+			// board's explicit end-of-push signal — clear pairing so the
+			// device is immediately pushable again.
+			var msg struct {
+				Kind string `json:"kind"`
+			}
+			if err := json.Unmarshal(payload, &msg); err == nil && msg.Kind == KindPushDone {
+				// Board's explicit end-of-push (sent right after its bare
+				// "OK"). Idempotent with the agent-side push_done: either
+				// path clears the pairing; the board stays connected.
+				h.mu.Lock()
+				a := d.agent
+				h.mu.Unlock()
+				if a != nil {
+					h.send2(a, KindPushDone, map[string]any{"device": d.id})
+				}
+				h.finishPush(d)
+			}
+			continue
+		}
 		if mt != websocket.BinaryMessage {
-			continue // control/text stray — ACKs are binary only
+			continue // stray frame type
 		}
 		h.mu.Lock()
 		a := d.agent
@@ -132,10 +166,8 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 // results (forwarded from the device side or local errors) go out.
 func (h *Hub) agentLoop(a *agentConn) {
 	defer func() {
+		h.finishPushAgent(a)
 		h.mu.Lock()
-		if a.device != nil {
-			a.device.agent = nil
-		}
 		delete(h.agents, a)
 		h.mu.Unlock()
 		a.close()
@@ -167,13 +199,20 @@ func (h *Hub) agentLoop(a *agentConn) {
 			Device string `json:"device"`
 			Size   int64  `json:"size"`
 			MD5    string `json:"md5"`
+			Secret string `json:"secret"`
 		}
 		if err := json.Unmarshal(raw, &req); err != nil {
 			continue
 		}
 		switch req.Kind {
 		case KindPushReq:
-			h.startPush(a, req.Device, req.Size, req.MD5)
+			h.startPush(a, req.Device, req.Secret, req.Size, req.MD5)
+		case KindPushDone:
+			// Agent confirms PushDevice saw the device's bare "OK" (the
+			// board also emits its own push_done on the device socket —
+			// belt and suspenders). Either path idempotently clears the
+			// pairing so the board is immediately pushable again.
+			h.finishPushAgent(a)
 		case KindStatus:
 			log.Printf("[relay/agent %s] status frame", a.name)
 		default:
@@ -182,29 +221,25 @@ func (h *Hub) agentLoop(a *agentConn) {
 	}
 }
 
-// startPush validates and pairs a push: device online? not busy? If ok, the
-// device receives push_start (size+md5) and the agent receives push_ack.
-// Firmware flows agent→hub→device as binary frames; the device's bare-ACK
-// replies flow device→hub→agent the same way, so the agent-side reader sees
-// exactly the byte stream a LAN ArduinoOTA device would emit.
-func (h *Hub) startPush(a *agentConn, devID string, size int64, md5 string) {
+// startPush validates and pairs a push via Hub.Pair: device online? not
+// busy? not paired elsewhere? secret matches? If ok, the device receives
+// push_start (size+md5) and the agent receives push_ack. Firmware flows
+// agent→hub→device as binary frames; the device's bare-ACK replies flow
+// device→hub→agent the same way, so the agent-side reader sees exactly the
+// byte stream a LAN ArduinoOTA device would emit.
+func (h *Hub) startPush(a *agentConn, devID, secret string, size int64, md5 string) {
+	err := h.Pair(a, PairRequest{DeviceID: devID, Secret: secret})
+	if err != nil {
+		h.pushResult(a, devID, err.Error())
+		return
+	}
 	devID = normalizeID(devID)
 	h.mu.Lock()
 	d := h.devices[devID]
-	if d == nil {
-		h.mu.Unlock()
-		h.pushResult(a, devID, "device not online: "+devID)
-		return
-	}
-	if d.busy {
-		h.mu.Unlock()
-		h.pushResult(a, devID, "device busy with another push")
-		return
-	}
-	d.busy = true
-	d.agent = a
-	a.device = d
 	h.mu.Unlock()
+	if d == nil { // raced with disconnect; Pair already cleaned up
+		return
+	}
 
 	h.send2(d, KindPushStart, map[string]any{"size": size, "md5": md5})
 	_ = h.send2(a, KindPushAck, map[string]any{"ok": true, "device": devID})
@@ -218,6 +253,7 @@ func (h *Hub) pushResult(a *agentConn, devID, msg string) {
 }
 
 // finishPush tears down pairing after a push ends (success or failure).
+// The board stays connected and is immediately pushable again.
 func (h *Hub) finishPush(d *deviceConn) {
 	h.mu.Lock()
 	a := d.agent
@@ -225,6 +261,21 @@ func (h *Hub) finishPush(d *deviceConn) {
 	d.agent = nil
 	if a != nil {
 		a.device = nil
+	}
+	h.mu.Unlock()
+}
+
+// finishPushAgent tears down pairing from the agent side: the push_done
+// control frame arrives on the agent socket (the board also emits its own
+// push_done on the device socket — belt and suspenders), or the agent
+// disconnects. Either way the device goes idle but stays connected.
+func (h *Hub) finishPushAgent(a *agentConn) {
+	h.mu.Lock()
+	d := a.device
+	a.device = nil
+	if d != nil && d.agent == a {
+		d.agent = nil
+		d.busy = false
 	}
 	h.mu.Unlock()
 }

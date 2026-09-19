@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"time"
@@ -69,17 +71,29 @@ func newRelayCmd() *cobra.Command {
 	hubCmd.Flags().StringVar(&agentsToken, "agents-token", "", "shared token agents must present (prefer COMPANION_RELAY_AGENTS_TOKEN; \"*\" disables auth — lab only)")
 	relayCmd.AddCommand(hubCmd)
 
-	// companion relay push --hub ws://host:8931 --token T --device ID image.bin
+	// companion relay push --hub ws://host:8931 --token T --device ID \
+	//   --device-secret S image.bin
 	var (
-		hubURL   string
-		token    string
-		deviceID string
+		hubURL       string
+		token        string
+		deviceID     string
+		deviceSecret string
 	)
 	pushCmd := &cobra.Command{
 		Use:   "push <image.bin>",
 		Short: "Push a firmware image to a remote device through the hub",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Prefer env for secrets (same rule as hub tokens / OTA password).
+			if deviceSecret == "" {
+				deviceSecret = os.Getenv("COMPANION_RELAY_DEVICE_SECRET")
+			}
+			if token == "" {
+				token = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
+			}
+			if token == "" {
+				return fmt.Errorf("agent token required: --token or COMPANION_RELAY_AGENTS_TOKEN")
+			}
 			img, err := os.ReadFile(args[0])
 			if err != nil {
 				return fmt.Errorf("read image: %w", err)
@@ -104,7 +118,8 @@ func newRelayCmd() *cobra.Command {
 
 			req, _ := json.Marshal(map[string]any{
 				"kind": relay.KindPushReq, "device": deviceID,
-				"size": len(img), "md5": md5hex,
+				"secret": deviceSecret,
+				"size":   len(img), "md5": md5hex,
 			})
 			if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
 				return fmt.Errorf("push_req: %w", err)
@@ -136,16 +151,82 @@ func newRelayCmd() *cobra.Command {
 			if err := relay.PushDevice(ctx, pipe, bytes.NewReader(img), int64(len(img))); err != nil {
 				return fmt.Errorf("push failed: %w", err)
 			}
+			// PushDevice saw the device's bare "OK". Tell the hub the pairing
+			// is over explicitly (the board also sends push_done itself, belt
+			// and suspenders), then close the agent socket (deferred).
+			doneMsg, _ := json.Marshal(map[string]string{"kind": relay.KindPushDone})
+			_ = ws.WriteMessage(websocket.TextMessage, doneMsg)
 			fmt.Printf("✓ remote push complete — %s rebooting into new firmware\n", deviceID)
 			return nil
 		},
 	}
-	pushCmd.Flags().StringVar(&hubURL, "hub", "", "hub base URL (ws://host:port)")
-	pushCmd.Flags().StringVar(&token, "token", "", "agent token")
+	pushCmd.Flags().StringVar(&hubURL, "hub", "", "hub base URL (ws:// or wss:// host)")
+	pushCmd.Flags().StringVar(&token, "token", "", "agent token (prefer COMPANION_RELAY_AGENTS_TOKEN)")
 	pushCmd.Flags().StringVar(&deviceID, "device", "", "target device id")
+	pushCmd.Flags().StringVar(&deviceSecret, "device-secret", "", "that device's provisioning secret (prefer COMPANION_RELAY_DEVICE_SECRET)")
 	pushCmd.MarkFlagRequired("hub")
 	pushCmd.MarkFlagRequired("device")
 	relayCmd.AddCommand(pushCmd)
+
+	// companion relay devices --hub wss://host --token T
+	// Preflight: show which devices are online at the hub before pushing.
+	devicesCmd := &cobra.Command{
+		Use:   "devices",
+		Short: "List devices currently online at the hub",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if token == "" {
+				token = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
+			}
+			if token == "" {
+				return fmt.Errorf("agent token required: --token or COMPANION_RELAY_AGENTS_TOKEN")
+			}
+			u, err := url.Parse(hubURL)
+			if err != nil {
+				return fmt.Errorf("bad --hub: %w", err)
+			}
+			u.Path = "/health"
+			q := u.Query()
+			q.Set("token", token)
+			q.Set("format", "json")
+			u.RawQuery = q.Encode()
+			hc := &http.Client{Timeout: 10 * time.Second}
+			resp, err := hc.Get(u.String())
+			if err != nil {
+				return fmt.Errorf("hub health: %w", err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("hub health: HTTP %d: %s", resp.StatusCode, body)
+			}
+			var health struct {
+				Devices []struct {
+					ID      string `json:"id"`
+					Version string `json:"version"`
+					Busy    bool   `json:"busy"`
+				} `json:"devices"`
+			}
+			if err := json.Unmarshal(body, &health); err != nil {
+				return fmt.Errorf("health parse: %w", err)
+			}
+			if len(health.Devices) == 0 {
+				fmt.Println("no devices online")
+				return nil
+			}
+			for _, d := range health.Devices {
+				state := "idle"
+				if d.Busy {
+					state = "busy"
+				}
+				fmt.Printf("%s  v%s  %s\n", d.ID, d.Version, state)
+			}
+			return nil
+		},
+	}
+	devicesCmd.Flags().StringVar(&hubURL, "hub", "", "hub base URL (ws:// or wss:// host)")
+	devicesCmd.Flags().StringVar(&token, "token", "", "agent token (prefer COMPANION_RELAY_AGENTS_TOKEN)")
+	devicesCmd.MarkFlagRequired("hub")
+	relayCmd.AddCommand(devicesCmd)
 
 	return relayCmd
 }

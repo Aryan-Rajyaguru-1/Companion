@@ -10,6 +10,7 @@ import (
 	"github.com/companion-ide/companion-cli/internal/compiler"
 	"github.com/companion-ide/companion-cli/internal/config"
 	fqbnpkg "github.com/companion-ide/companion-cli/internal/fqbn"
+	"github.com/companion-ide/companion-cli/internal/fleet"
 	"github.com/companion-ide/companion-cli/internal/ota"
 	"github.com/companion-ide/companion-cli/internal/plugins"
 	"github.com/companion-ide/companion-cli/internal/uploader"
@@ -31,6 +32,14 @@ func newUploadCmd() *cobra.Command {
 		otaFlag      bool
 		otaPass      string
 		otaPassStdin bool
+		// OTA transport toggle: "remote" (default — relay hub over the
+		// internet) or "local" (LAN ArduinoOTA). IP-based local OTA stays
+		// available as the explicit opt-in.
+		otaMode      string
+		relayHub     string
+		relayDevice  string
+		relaySecret  string
+		relayToken   string
 	)
 	var rpProfileWantsOTA bool
 
@@ -206,6 +215,45 @@ Examples:
 			}
 
 			if useOTA {
+				// Transport toggle: "remote" (default, relay hub over the
+				// internet) or "local" (opt-in LAN ArduinoOTA). IP-based
+				// local OTA stays available as the explicit opt-in.
+				mode := otaMode
+				if !cmd.Flags().Changed("ota-mode") && cfg.Upload.OTAMode != "" {
+					mode = cfg.Upload.OTAMode
+				}
+				if mode == "" {
+					mode = "remote" // remote-first: relay hub over the internet
+				}
+				if mode != "remote" && mode != "local" {
+					return fmt.Errorf("invalid --ota-mode %q: want \"remote\" or \"local\"", mode)
+				}
+				if mode == "remote" {
+					if relayHub == "" {
+						return fmt.Errorf("remote OTA needs --relay-hub wss://host (or set --ota-mode local for LAN ArduinoOTA)")
+					}
+					if relayDevice == "" {
+						return fmt.Errorf("remote OTA needs --relay-device <id>")
+					}
+					if relaySecret == "" {
+						relaySecret = os.Getenv("COMPANION_RELAY_DEVICE_SECRET")
+					}
+					if relayToken == "" {
+						relayToken = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
+					}
+					if relayToken == "" {
+						return fmt.Errorf("remote OTA needs an agent token: --relay-token or COMPANION_RELAY_AGENTS_TOKEN")
+					}
+					printInfo(fmt.Sprintf("Remote OTA → %s via %s",
+						colorBold(relayDevice), colorTeal(relayHub)))
+					dev := fleet.Device{ID: relayDevice, Name: relayDevice, Secret: relaySecret}
+					if err := RelayPushFunc(relayHub, relayToken, binaryPath)(cmd.Context(), dev); err != nil {
+						printError("Remote OTA upload failed: " + err.Error())
+						return fmt.Errorf("upload failed")
+					}
+					printSuccess("Remote OTA upload complete — device is rebooting")
+					return nil
+				}
 				// Route through the plugin registry (P5): first-party OTA
 				// uploader handles esp32/esp8266; third-party .so plugins can
 				// replace it with JTAG/OpenOCD etc.
@@ -309,7 +357,17 @@ Examples:
 	cmd.Flags().StringVar(&profileNam, "profile", "",
 		"Upload profile from sketch.yaml (board + bridge target + libraries)")
 	cmd.Flags().BoolVar(&otaFlag, "ota", false,
-		"Upload over the air via ArduinoOTA (device IP via --host or mDNS discovery)")
+		"Upload over the air (default: remote via relay hub; use --ota-mode local for LAN ArduinoOTA)")
+	cmd.Flags().StringVar(&otaMode, "ota-mode", "",
+		"OTA transport: remote | local (default remote; config upload.ota_mode also read)")
+	cmd.Flags().StringVar(&relayHub, "relay-hub", "",
+		"Relay hub base URL for remote OTA (ws:// or wss:// host)")
+	cmd.Flags().StringVar(&relayDevice, "relay-device", "",
+		"Target device id for remote OTA")
+	cmd.Flags().StringVar(&relaySecret, "relay-device-secret", "",
+		"That device's provisioning secret (prefer COMPANION_RELAY_DEVICE_SECRET)")
+	cmd.Flags().StringVar(&relayToken, "relay-token", "",
+		"Relay agent token (prefer COMPANION_RELAY_AGENTS_TOKEN)")
 	cmd.Flags().StringVar(&otaPass, "ota-password", "",
 		otaPasswordHelp)
 	cmd.Flags().BoolVar(&otaPassStdin, "ota-password-stdin", false,

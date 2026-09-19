@@ -22,6 +22,8 @@
 #include <Update.h>
 #include <WiFi.h>
 #include <ArduinoWebsockets.h>
+#include <Preferences.h>
+#include <esp_system.h>
 
 using namespace websockets;
 
@@ -58,6 +60,39 @@ using namespace websockets;
 static WebsocketsClient ws;
 static bool pushActive = false;
 static size_t imgSize = 0;
+static char deviceSecret[33] = {0}; // per-board identity, NVS-provisioned once
+
+// loadOrCreateDeviceSecret: first boot generates 16 random bytes via the
+// hardware RNG, stores them in NVS, and prints them to Serial ONCE (copy it
+// into `fleet register --secret` / COMPANION_RELAY_DEVICE_SECRET). Later
+// boots read the same value back silently.
+static void loadOrCreateDeviceSecret() {
+  Preferences prefs;
+  prefs.begin("relay", true); // read-only first
+  String saved = prefs.getString("secret", "");
+  prefs.end();
+  if (saved.length() >= 16) {
+    strlcpy(deviceSecret, saved.c_str(), sizeof(deviceSecret));
+    return;
+  }
+  uint8_t raw[16];
+  for (int i = 0; i < 16; i += 4) {
+    uint32_t r = esp_random();
+    memcpy(raw + i, &r, 4);
+  }
+  const char *hexd = "0123456789abcdef";
+  for (int i = 0; i < 16; i++) {
+    deviceSecret[2 * i] = hexd[(raw[i] >> 4) & 0xF];
+    deviceSecret[2 * i + 1] = hexd[raw[i] & 0xF];
+  }
+  deviceSecret[32] = 0;
+  prefs.begin("relay", false);
+  prefs.putString("secret", deviceSecret);
+  prefs.end();
+  Serial.println("[relay] *** FIRST BOOT: device secret provisioned ***");
+  Serial.printf("[relay] *** SECRET: %s ***\n", deviceSecret);
+  Serial.println("[relay] *** copy it now: fleet register --secret-stdin / COMPANION_RELAY_DEVICE_SECRET ***");
+}
 static char imgMD5[33] = {0};
 static size_t written = 0;
 static bool headerSeen = false;
@@ -133,6 +168,12 @@ static void onMsg(WebsocketsMessage msg) {
       Serial.printf("[relay] Update.end OK — %u bytes, rebooting\n",
                     (unsigned)written);
       ws.sendBinary("OK", 2);
+      // push_done (text control): explicit end-of-push so the hub clears the
+      // pairing — the board stays connected and is immediately pushable again.
+      StaticJsonDocument<64> done;
+      done["kind"] = "push_done";
+      String doneOut; serializeJson(done, doneOut);
+      sendText(doneOut);
     } else {
       Serial.printf("[relay] Update.end FAILED: %s\n",
                     Update.errorString());
@@ -150,6 +191,7 @@ void setup() {
   Serial.println("========================================");
   Serial.println("COMPANION_RELAY_DEVICE_TEST");
   Serial.println("========================================");
+  loadOrCreateDeviceSecret();
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -176,10 +218,11 @@ void setup() {
     Serial.println("[relay] ws connect FAILED — is the hub running?");
     return;
   }
-  StaticJsonDocument<192> hello;
+  StaticJsonDocument<256> hello;
   hello["kind"] = "device_hello";
   hello["id"] = DEVICE_ID;
   hello["version"] = "1.0.0-test";
+  hello["secret"] = deviceSecret;
   String out; serializeJson(hello, out);
   sendText(out);
   Serial.printf("[relay] registered as %s — waiting for pushes\n", DEVICE_ID);

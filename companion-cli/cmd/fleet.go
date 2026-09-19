@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -92,6 +94,8 @@ func newFleetRegisterCmd() *cobra.Command {
 	var tags string
 	var port int
 	var probe bool
+	var secret string
+	var secretStdin bool
 	cmd := &cobra.Command{
 		Use:   "register <host> [name]",
 		Short: "Add or update a device in the registry (optional live TCP probe)",
@@ -100,6 +104,19 @@ func newFleetRegisterCmd() *cobra.Command {
 			host := args[0]
 			if len(args) > 1 && args[1] != "" {
 				name = args[1]
+			}
+			// Per-device remote-OTA secret (printed once on the board's serial
+			// at provisioning). Never via plain --secret on shared machines —
+			// prefer --secret-stdin; env COMPANION_RELAY_DEVICE_SECRET works too.
+			if secret == "" {
+				secret = os.Getenv("COMPANION_RELAY_DEVICE_SECRET")
+			}
+			if secretStdin {
+				b, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("read secret from stdin: %w", err)
+				}
+				secret = strings.TrimSpace(string(b))
 			}
 			cfg, _, err := config.Load(globalFlags.ConfigFile)
 			if err != nil {
@@ -129,11 +146,22 @@ func newFleetRegisterCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dev := fleet.Device{ID: id, Name: name, Host: host, Port: port, MCU: mcu, Tags: tagList}
+			// Preserve an already-stored secret on re-register unless a new
+			// one was explicitly supplied.
+			if secret == "" {
+				if existing, ok := r.Get(id); ok {
+					secret = existing.Secret
+				}
+			}
+			dev := fleet.Device{ID: id, Name: name, Host: host, Port: port, MCU: mcu, Secret: secret, Tags: tagList}
 			if err := r.Upsert(dev); err != nil {
 				return err
 			}
-			printSuccess(fmt.Sprintf("Registered %s → %s:%d", colorBold(id), host, port))
+			if secret != "" {
+				printSuccess(fmt.Sprintf("Registered %s → %s:%d (remote-OTA secret stored)", colorBold(id), host, port))
+			} else {
+				printSuccess(fmt.Sprintf("Registered %s → %s:%d", colorBold(id), host, port))
+			}
 			return nil
 		},
 	}
@@ -141,6 +169,8 @@ func newFleetRegisterCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tags, "tags", "", "comma-separated tags, e.g. sensors,kitchen")
 	cmd.Flags().IntVar(&port, "port", 3232, "OTA port")
 	cmd.Flags().BoolVar(&probe, "probe", false, "TCP-check the OTA port before registering")
+	cmd.Flags().StringVar(&secret, "secret", "", "per-device remote-OTA secret (prefer --secret-stdin or COMPANION_RELAY_DEVICE_SECRET)")
+	cmd.Flags().BoolVar(&secretStdin, "secret-stdin", false, "read the remote-OTA secret from stdin (avoids ps/shell-history exposure)")
 	return cmd
 }
 

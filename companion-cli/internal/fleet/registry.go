@@ -18,6 +18,7 @@ type Device struct {
 	Host   string    `yaml:"host"`          // device IP
 	Port   int       `yaml:"port"`          // OTA port (3232 default)
 	MCU    string    `yaml:"mcu,omitempty"` // esp32 | esp8266 | avr | stm32 | generic
+	Secret string    `yaml:"secret,omitempty"` // per-device OTA secret (relay pushes; also sent to LAN OTA when set)
 	Tags   []string  `yaml:"tags,omitempty"`
 	SeenAt time.Time `yaml:"seen_at"`
 }

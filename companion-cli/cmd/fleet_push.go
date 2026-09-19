@@ -27,6 +27,9 @@ func newFleetPushCmd() *cobra.Command {
 		retries       int
 		yes           bool
 		noVerify      bool
+		// Remote-OTA (relay hub) transport. Empty hubURL = LAN ArduinoOTA.
+		relayHub   string
+		relayToken string
 	)
 	cmd := &cobra.Command{
 		Use:   "push <image.bin|sketch-dir> [selectors...]",
@@ -65,6 +68,26 @@ func newFleetPushCmd() *cobra.Command {
 				return fmt.Errorf("no registered devices match selectors %v — run 'companion fleet list' and 'companion fleet register <host>'", selectors)
 			}
 
+			// Remote push needs a per-device secret for every target; fail
+			// before confirmation (not mid-batch) when one is missing.
+			if relayHub != "" {
+				missing := []string{}
+				for _, d := range devs {
+					if d.Secret == "" {
+						missing = append(missing, d.Key())
+					}
+				}
+				if len(missing) > 0 {
+					return fmt.Errorf("remote push needs a stored device secret for: %s — re-register with 'companion fleet register --secret' after copying it from the board's serial output", strings.Join(missing, ", "))
+				}
+				if relayToken == "" {
+					relayToken = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
+				}
+				if relayToken == "" {
+					return fmt.Errorf("remote push needs an agent token: --relay-token or COMPANION_RELAY_AGENTS_TOKEN")
+				}
+			}
+
 			// ── Identity preflight: verify each target against live mDNS ──
 			if !noVerify {
 				preflights := fleet.VerifyTargets(r, devs, discoverAdvertisements(cmd.Context()))
@@ -100,6 +123,9 @@ func newFleetPushCmd() *cobra.Command {
 			}
 
 			push := func(ctx context.Context, d fleet.Device) error {
+				if relayHub != "" {
+					return RelayPushFunc(relayHub, relayToken, imagePath)(ctx, d)
+				}
 				return ota.Push(ctx, ota.Options{
 					ImagePath:  imagePath,
 					DeviceIP:   d.Host,
@@ -110,6 +136,11 @@ func newFleetPushCmd() *cobra.Command {
 			}
 
 			printInfo("Fleet push started (bounded concurrency)…")
+			mode := "LAN ArduinoOTA"
+			if relayHub != "" {
+				mode = "remote relay (" + relayHub + ")"
+			}
+			printInfo("Transport: " + mode)
 			res := fleet.RunBatch(cmd.Context(), fleet.BatchOptions{
 				Devices:     devs,
 				Push:        push,
@@ -136,6 +167,8 @@ func newFleetPushCmd() *cobra.Command {
 	cmd.Flags().IntVar(&retries, "retries", 1, "automatic retries per failing device")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "skip the mDNS identity preflight")
+	cmd.Flags().StringVar(&relayHub, "relay-hub", "", "remote OTA via this relay hub (ws:// or wss:// host); empty = LAN ArduinoOTA")
+	cmd.Flags().StringVar(&relayToken, "relay-token", "", "relay agent token (prefer COMPANION_RELAY_AGENTS_TOKEN)")
 	return cmd
 }
 

@@ -8,6 +8,8 @@ import (
 )
 
 // PushFunc pushes the image to one device and returns an error on failure.
+// The closure captures the resolved image path, so relay-backed pushes can
+// reuse the same BatchOptions plumbing as LAN OTA pushes.
 type PushFunc func(ctx context.Context, d Device) error
 
 // BatchOptions configures a fleet push.

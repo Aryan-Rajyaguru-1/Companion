@@ -77,6 +77,9 @@ type CompilerConfig struct {
 type UploadConfig struct {
 	AutoVerify bool `yaml:"auto_verify"`
 	Verbose    bool `yaml:"verbose"`
+	// OTA mode: "remote" (default — relay hub over the internet) or "local"
+	// (LAN ArduinoOTA). Users toggle with --ota-mode.
+	OTAMode string `yaml:"ota_mode,omitempty"`
 }
 
 type BridgeConfig struct {
