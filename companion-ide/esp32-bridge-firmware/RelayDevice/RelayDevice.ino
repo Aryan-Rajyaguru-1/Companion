@@ -147,7 +147,7 @@ static bool dialRelay() {
   StaticJsonDocument<256> hello;
   hello["kind"] = "device_hello";
   hello["id"] = DEVICE_ID;
-  hello["version"] = "1.0.1-blink";
+  hello["version"] = "1.0.2-unified";
   hello["secret"] = deviceSecret;
   String out; serializeJson(hello, out);
   sendText(out);
