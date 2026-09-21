@@ -76,6 +76,13 @@ runs an mDNS **identity preflight**: if a registered host now advertises a
 different MAC (wrong/swapped board), the push hard-aborts; missing or drifted
 advertisements are surfaced as warnings (`--no-verify` to skip).
 
+Boards on the internet rather than your LAN? That's an opt-in extra — none of
+the above needs it. Self-host a relay with the scripts in `deploy/`
+(`install-relay-hub.sh`, plus `setup-tunnel.sh` if you want a public TLS
+endpoint), flash the `RelayDevice` firmware with your endpoint, then
+`companion ota upload <device-id> --ota-mode remote --relay-hub wss://<your-host>`.
+Full walkthrough, security notes, and uninstall steps: `deploy/README.md`.
+
 ## Manual setup
 
 ```bash

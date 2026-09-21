@@ -57,7 +57,7 @@ using namespace websockets;
   #define DEVICE_TOKEN  "YOUR_DEVICE_TOKEN"  // COMPANION_RELAY_DEVICES_TOKEN on the hub
 #endif
 #ifndef DEVICE_ID
-  #define DEVICE_ID     "esp32-relaytest-01"
+  #define DEVICE_ID     "esp32-bridge-01"   // example id — override in config.local.h
 #endif
 #ifndef RELAY_TLS
   #define RELAY_TLS     false  // true → wss:// (Cloudflare tunnel, port 443)

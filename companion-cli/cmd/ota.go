@@ -73,7 +73,7 @@ Two transports, chosen with --ota-mode (same flag as 'companion upload'):
             the device's IP address or mDNS hostname.
   remote  — remote OTA: the image is relayed through the Companion relay hub
             to a device that may be anywhere on the internet. The positional
-            argument is the device id (e.g. esp32-relaytest-01) and
+            argument is the device id (e.g. esp32-bridge-01) and
             --relay-hub + --relay-token (+ --relay-device-secret) are needed.
 
 Both transports speak the same data-phase protocol, so the device firmware

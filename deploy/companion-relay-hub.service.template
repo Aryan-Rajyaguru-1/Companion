@@ -1,0 +1,37 @@
+# Companion relay hub — systemd unit TEMPLATE (placeholders are filled by
+# install-relay-hub.sh, which is the recommended path).
+#
+# To do it by hand instead:
+#
+#   sed -e "s|@USER@|$(id -un)|g" \
+#       -e "s|@GROUP@|$(id -gn)|g" \
+#       -e "s|@BIN@|$(command -v companion)|g" \
+#       -e "s|@WORKDIR@|$HOME|g" \
+#       -e "s|@ENVFILE@|$HOME/.companion-relay/relay.env|g" \
+#       -e "s|@PORT@|8931|g" \
+#       deploy/companion-relay-hub.service.template \
+#     | sudo tee /etc/systemd/system/companion-relay-hub.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now companion-relay-hub
+#
+# Note: run the hub as an unprivileged user. It needs no privileges — it only
+# accepts WebSockets and pairs one agent with one device.
+
+[Unit]
+Description=Companion relay hub (remote OTA pairing for devices off-LAN)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@WORKDIR@
+# Supplies COMPANION_RELAY_DEVICES_TOKEN and COMPANION_RELAY_AGENTS_TOKEN.
+EnvironmentFile=@ENVFILE@
+ExecStart=@BIN@ relay hub --listen :@PORT@
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
