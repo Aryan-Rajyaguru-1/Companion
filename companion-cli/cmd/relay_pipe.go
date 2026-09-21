@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/companion-ide/companion-cli/internal/fleet"
+	"github.com/companion-ide/companion-cli/internal/ota"
 	"github.com/companion-ide/companion-cli/internal/relay"
 	"github.com/gorilla/websocket"
 )
@@ -36,15 +37,24 @@ type relayPushOptions struct {
 // pairing. hubBase is the --hub base URL (ws:// or wss://); token is the
 // agent token (COMPANION_RELAY_AGENTS_TOKEN fallback handled by the caller).
 func RelayPushFunc(hubBase, token, imagePath string) fleet.PushFunc {
+	return RelayPushFuncOpts(hubBase, token, imagePath, nil)
+}
+
+// RelayPushFuncOpts is RelayPushFunc with caller-supplied stream tuning, so
+// the interactive `upload` and `ota upload` controllers can pass an
+// OnProgress/OnMessage callback (fleet/unattended pushes pass nil).
+func RelayPushFuncOpts(hubBase, token, imagePath string, so *ota.StreamOptions) fleet.PushFunc {
 	return func(ctx context.Context, d fleet.Device) error {
-		return relayPushOne(ctx, hubBase, token, d, imagePath)
+		return relayPushOne(ctx, hubBase, token, d, imagePath, so)
 	}
 }
 
-// relayPushOne is the per-device remote push used by both RelayPushFunc
-// (fleet) and, in future, the `upload --ota-mode remote` path. It shares the
-// exact wire steps of `relay push` so behaviour stays identical.
-func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, imagePath string) error {
+// relayPushOne is the per-device remote push used by both categories of OTA
+// upload (fleet push, and `upload` / `ota upload` with --ota-mode remote).
+// It shares the exact wire steps of `relay push` so behaviour stays
+// identical; the only variation is the controller-supplied stream options,
+// which carry progress reporting and (optionally) transport tuning.
+func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, imagePath string, so *ota.StreamOptions) error {
 	if token == "" {
 		return fmt.Errorf("agent token required: --token or COMPANION_RELAY_AGENTS_TOKEN")
 	}
@@ -104,7 +114,7 @@ func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, im
 	// MD5/flash window.
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	if err := relay.PushDevice(pctx, pipe, bytes.NewReader(img), int64(len(img))); err != nil {
+	if err := relay.PushDeviceStream(pctx, pipe, bytes.NewReader(img), int64(len(img)), so); err != nil {
 		return fmt.Errorf("push to %s failed: %w", d.Key(), err)
 	}
 	doneMsg, _ := json.Marshal(map[string]string{"kind": relay.KindPushDone})

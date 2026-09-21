@@ -247,10 +247,27 @@ Examples:
 					printInfo(fmt.Sprintf("Remote OTA → %s via %s",
 						colorBold(relayDevice), colorTeal(relayHub)))
 					dev := fleet.Device{ID: relayDevice, Name: relayDevice, Secret: relaySecret}
-					if err := RelayPushFunc(relayHub, relayToken, binaryPath)(cmd.Context(), dev); err != nil {
+					// Progress matters here: a stop-and-wait push over a
+					// tunnel runs ~12 min for a 1.2 MB image, so silence
+					// looks like a hang.
+					last := time.Now()
+					remoteOpts := &ota.StreamOptions{
+						OnProgress: func(sent, total int64) {
+							if time.Since(last) < 150*time.Millisecond && sent < total {
+								return
+							}
+							last = time.Now()
+							fmt.Printf("\r  OTA: %d / %d bytes (%.0f%%)   ",
+								sent, total, float64(sent)/float64(total)*100)
+						},
+						OnMessage: func(s string) { fmt.Printf("  %s\n", s) },
+					}
+					if err := RelayPushFuncOpts(relayHub, relayToken, binaryPath, remoteOpts)(cmd.Context(), dev); err != nil {
+						fmt.Println()
 						printError("Remote OTA upload failed: " + err.Error())
 						return fmt.Errorf("upload failed")
 					}
+					fmt.Println()
 					printSuccess("Remote OTA upload complete — device is rebooting")
 					return nil
 				}

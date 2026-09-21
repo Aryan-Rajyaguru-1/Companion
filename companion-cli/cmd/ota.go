@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/companion-ide/companion-cli/internal/boards"
 	"github.com/companion-ide/companion-cli/internal/compiler"
 	"github.com/companion-ide/companion-cli/internal/config"
+	"github.com/companion-ide/companion-cli/internal/fleet"
 	"github.com/companion-ide/companion-cli/internal/ota"
 	"github.com/companion-ide/companion-cli/internal/sketch"
 	"github.com/spf13/cobra"
@@ -49,10 +51,34 @@ func newOTAUploadCmd() *cobra.Command {
 	var password string
 	var passwordStdin bool
 	var port int
+	// Transport toggle — same contract as `upload --ota-mode`: "local" (LAN
+	// ArduinoOTA) or "remote" (relay hub over the internet). This is the
+	// controller-side switch the user picks; the device firmware and the
+	// data-phase engine are identical either way.
+	var (
+		otaMode     string
+		relayHub    string
+		relayDevice string
+		relaySecret string
+		relayToken  string
+	)
 	cmd := &cobra.Command{
-		Use:   "upload <device-ip> [sketch-dir-or-binary]",
+		Use:   "upload <device-ip|device-id> [sketch-dir-or-binary]",
 		Short: "Flash firmware over WiFi via the ArduinoOTA protocol",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: `Flash firmware over WiFi using the ArduinoOTA protocol.
+
+Two transports, chosen with --ota-mode (same flag as 'companion upload'):
+  local   — LAN ArduinoOTA: this host invites the device over UDP and the
+            device dials back to this machine. The positional argument is
+            the device's IP address or mDNS hostname.
+  remote  — remote OTA: the image is relayed through the Companion relay hub
+            to a device that may be anywhere on the internet. The positional
+            argument is the device id (e.g. esp32-relaytest-01) and
+            --relay-hub + --relay-token (+ --relay-device-secret) are needed.
+
+Both transports speak the same data-phase protocol, so the device firmware
+shares one Update state machine.`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			deviceIP := args[0]
 			target := "."
@@ -123,6 +149,69 @@ func newOTAUploadCmd() *cobra.Command {
 				}
 			}
 
+			// ── Controller-side transport switch ────────────────────
+			// Same contract as `upload --ota-mode`: the user chooses the
+			// transport here; the device firmware and the shared data-phase
+			// engine (ota.PushStream) are identical for both.
+			mode := otaMode
+			if !cmd.Flags().Changed("ota-mode") && cfg.Upload.OTAMode != "" {
+				mode = cfg.Upload.OTAMode
+			}
+			if mode == "" {
+				// A non-IP positional (a device id) plus relay flags means
+				// remote; otherwise this command keeps its LAN default.
+				if relayHub != "" || relayDevice != "" {
+					mode = "remote"
+				} else {
+					mode = "local"
+				}
+			}
+			if mode != "remote" && mode != "local" {
+				return fmt.Errorf("invalid --ota-mode %q: want \"remote\" or \"local\"", mode)
+			}
+
+			if mode == "remote" {
+				if relayDevice == "" {
+					relayDevice = deviceIP // positional arg is the device id
+				}
+				if relaySecret == "" {
+					relaySecret = os.Getenv("COMPANION_RELAY_DEVICE_SECRET")
+				}
+				if relayToken == "" {
+					relayToken = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
+				}
+				if relayHub == "" {
+					return fmt.Errorf("remote OTA needs --relay-hub wss://host (or use --ota-mode local for LAN ArduinoOTA)")
+				}
+				if relayToken == "" {
+					return fmt.Errorf("remote OTA needs an agent token: --relay-token or COMPANION_RELAY_AGENTS_TOKEN")
+				}
+				printInfo(fmt.Sprintf("Remote OTA → %s via %s", colorBold(relayDevice), colorTeal(relayHub)))
+				start := time.Now()
+				last := time.Now()
+				dev := fleet.Device{ID: relayDevice, Name: relayDevice, Secret: relaySecret}
+				err := relayPushOne(cmd.Context(), relayHub, relayToken, dev, imagePath, &ota.StreamOptions{
+					OnProgress: func(sent, total int64) {
+						if time.Since(last) < 150*time.Millisecond && sent < total {
+							return
+						}
+						last = time.Now()
+						fmt.Printf("\r  OTA: %d / %d bytes (%.0f%%)   ",
+							sent, total, float64(sent)/float64(total)*100)
+					},
+					OnMessage: func(s string) { fmt.Printf("  %s\n", s) },
+				})
+				fmt.Println()
+				if err != nil {
+					printError(fmt.Sprintf("Remote OTA failed after %s: %s",
+						time.Since(start).Round(time.Second), err.Error()))
+					return err
+				}
+				printSuccess(fmt.Sprintf("Remote OTA complete in %s — device is rebooting",
+					time.Since(start).Round(time.Second)))
+				return nil
+			}
+
 			printInfo(fmt.Sprintf("OTA push → %s", colorBold(host)))
 			start := time.Now()
 			lastPct := -1
@@ -159,6 +248,16 @@ func newOTAUploadCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&passwordStdin, "ota-password-stdin", false,
 		"read the OTA password from stdin (avoids ps/shell-history exposure)")
 	cmd.Flags().IntVarP(&port, "port", "p", 3232, "Device OTA port")
+	cmd.Flags().StringVar(&otaMode, "ota-mode", "",
+		"OTA transport: local (LAN ArduinoOTA) | remote (relay hub); config upload.ota_mode also read")
+	cmd.Flags().StringVar(&relayHub, "relay-hub", "",
+		"Relay hub base URL for remote OTA (ws:// or wss:// host)")
+	cmd.Flags().StringVar(&relayDevice, "relay-device", "",
+		"Target device id for remote OTA (defaults to the positional device id)")
+	cmd.Flags().StringVar(&relaySecret, "relay-device-secret", "",
+		"That device's provisioning secret (prefer COMPANION_RELAY_DEVICE_SECRET)")
+	cmd.Flags().StringVar(&relayToken, "relay-token", "",
+		"Relay agent token (prefer COMPANION_RELAY_AGENTS_TOKEN)")
 	return cmd
 }
 
