@@ -186,6 +186,15 @@ func newRelayCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("bad --hub: %w", err)
 			}
+			// Accept the same ws:// / wss:// forms the rest of the relay CLI
+			// uses (devices/push dial a websocket) — here we only perform an
+			// HTTP health read, so map to the matching http scheme.
+			switch u.Scheme {
+			case "ws":
+				u.Scheme = "http"
+			case "wss":
+				u.Scheme = "https"
+			}
 			u.Path = "/health"
 			q := u.Query()
 			q.Set("token", token)
