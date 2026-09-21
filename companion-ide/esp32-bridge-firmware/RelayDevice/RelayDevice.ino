@@ -35,6 +35,12 @@ using namespace websockets;
   #include "config.local.h"
 #endif
 
+// Generic esp32 core variants don't define LED_BUILTIN; the DevKit v1's
+// on-board LED sits on GPIO 2 (active-high).
+#ifndef LED_BUILTIN
+  #define LED_BUILTIN 2
+#endif
+
 #ifndef WIFI_SSID
   #define WIFI_SSID     "YOUR_WIFI_SSID"
 #endif
@@ -73,6 +79,10 @@ static void loadOrCreateDeviceSecret() {
   prefs.end();
   if (saved.length() >= 16) {
     strlcpy(deviceSecret, saved.c_str(), sizeof(deviceSecret));
+    // Hardware-test sketch: always report the stored secret so it can be
+    // registered without an NVS-erase/re-provision cycle. (A production
+    // build would print it on first boot only.)
+    Serial.printf("[relay] device secret (stored): %s\n", deviceSecret);
     return;
   }
   uint8_t raw[16];
@@ -101,6 +111,52 @@ static size_t chunkLen = 0;
 
 static void sendText(const String &s) { ws.send(s); }
 
+static bool wsConnected = false;      // link state, tracked via onEvent
+static unsigned long lastDialAttempt = 0;
+
+// onEvt tracks link state so loop() can re-dial after a drop.
+static void onEvt(WebsocketsEvent e, String data) {
+  (void)data;
+  switch (e) {
+    case WebsocketsEvent::ConnectionOpened:
+      wsConnected = true;
+      Serial.println("[relay] link open");
+      break;
+    case WebsocketsEvent::ConnectionClosed:
+      wsConnected = false;
+      Serial.println("[relay] link closed — will re-dial");
+      break;
+    default:
+      break;
+  }
+}
+
+// dialRelay opens the relay link and sends device_hello (carrying the secret).
+// Called from setup() and again from loop() whenever the link drops, so a
+// tunnel hiccup or WiFi blip self-heals instead of leaving the board offline
+// until someone power-cycles it.
+static bool dialRelay() {
+  lastDialAttempt = millis();
+  String url = String(RELAY_TLS ? "wss://" : "ws://") + RELAY_HOST + ":" +
+               String(RELAY_PORT) + "/device?token=" + DEVICE_TOKEN;
+  Serial.printf("[relay] dialing %s ...\n", url.c_str());
+  if (!ws.connect(url)) {
+    Serial.println("[relay] ws connect FAILED — retrying in 5s");
+    return false;
+  }
+  StaticJsonDocument<256> hello;
+  hello["kind"] = "device_hello";
+  hello["id"] = DEVICE_ID;
+  hello["version"] = "1.0.1-blink";
+  hello["secret"] = deviceSecret;
+  String out; serializeJson(hello, out);
+  sendText(out);
+  wsConnected = true;
+  Serial.printf("[relay] registered as %s — waiting for pushes\n", DEVICE_ID);
+  return true;
+}
+
+
 static void sendStatus(const char *msg) {
   StaticJsonDocument<192> d;
   d["kind"] = "status";
@@ -121,6 +177,15 @@ static void onMsg(WebsocketsMessage msg) {
       strlcpy(imgMD5, (const char *)d["md5"], sizeof(imgMD5));
       Serial.printf("[relay] push_start size=%u md5=%s\n",
                     (unsigned)imgSize, imgMD5);
+      // A push killed mid-stream (agent deadline, tunnel drop) leaves the
+      // updater holding a half-open session; Update.begin() then refuses
+      // every future push with "begin failed". Abort any stale session
+      // before starting fresh — self-heals without a power cycle.
+      if (pushActive || (!Update.isFinished() && Update.size() > 0)) {
+        Update.abort();
+        pushActive = false;
+        Serial.println("[relay] cleared stale OTA session");
+      }
       if (!Update.begin(imgSize)) {
         Serial.printf("[relay] Update.begin FAILED: %s\n",
                       Update.errorString());
@@ -174,6 +239,12 @@ static void onMsg(WebsocketsMessage msg) {
       done["kind"] = "push_done";
       String doneOut; serializeJson(done, doneOut);
       sendText(doneOut);
+      // Now boot the freshly written image. Give the frames a moment to
+      // flush through the relay before the reset drops the socket.
+      Serial.println("[relay] rebooting into the new image");
+      ws.poll();
+      delay(400);
+      ESP.restart();
     } else {
       Serial.printf("[relay] Update.end FAILED: %s\n",
                     Update.errorString());
@@ -186,6 +257,8 @@ static void onMsg(WebsocketsMessage msg) {
 
 void setup() {
   Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);   // heartbeat: driven from loop()
+  digitalWrite(LED_BUILTIN, LOW);
   delay(400);
   Serial.println();
   Serial.println("========================================");
@@ -209,32 +282,32 @@ void setup() {
                 WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
   ws.onMessage(onMsg);
-  // ws:// for a LAN hub, wss:// when reached through a Cloudflare tunnel.
-  String scheme = RELAY_TLS ? "wss://" : "ws://";
-  String url = scheme + RELAY_HOST + ":" + RELAY_PORT +
-               "/device?token=" + DEVICE_TOKEN;
-  Serial.printf("[relay] dialing %s ...\n", url.c_str());
-  if (!ws.connect(url)) {
-    Serial.println("[relay] ws connect FAILED — is the hub running?");
-    return;
-  }
-  StaticJsonDocument<256> hello;
-  hello["kind"] = "device_hello";
-  hello["id"] = DEVICE_ID;
-  hello["version"] = "1.0.0-test";
-  hello["secret"] = deviceSecret;
-  String out; serializeJson(hello, out);
-  sendText(out);
-  Serial.printf("[relay] registered as %s — waiting for pushes\n", DEVICE_ID);
+  ws.onEvent(onEvt);
+  dialRelay();
 }
 
 void loop() {
   ws.poll();
+
+  // Self-healing link: re-dial when the connection drops (tunnel restart,
+  // WiFi blip, hub restart) instead of staying offline until a power cycle.
+  if (!wsConnected && millis() - lastDialAttempt > 5000) {
+    if (WiFi.status() == WL_CONNECTED) {
+      dialRelay();
+    }
+  }
+
+  // Built-in LED heartbeat, driven from the alive-logger tick: slow 2 Hz
+  // blink while idle, fast 8 Hz while a push is streaming.
   static unsigned long last = 0;
-  if (millis() - last > 5000) {
+  static bool ledState = false;
+  unsigned long period = pushActive ? 125 : 500;
+  if (millis() - last > period) {
     last = millis();
-    Serial.printf("[relay] alive ip=%s push=%d written=%u/%u\n",
-                  WiFi.localIP().toString().c_str(), (int)pushActive,
-                  (unsigned)written, (unsigned)imgSize);
+    ledState = !ledState;
+    digitalWrite(LED_BUILTIN, ledState ? HIGH : LOW);
+    Serial.printf("[relay] alive ip=%s link=%d push=%d written=%u/%u\n",
+                  WiFi.localIP().toString().c_str(), (int)wsConnected,
+                  (int)pushActive, (unsigned)written, (unsigned)imgSize);
   }
 }
