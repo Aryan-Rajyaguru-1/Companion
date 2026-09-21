@@ -146,7 +146,9 @@ func newRelayCmd() *cobra.Command {
 			fmt.Printf("push accepted — streaming %d bytes to %s…\n", len(img), deviceID)
 			ws.SetReadDeadline(time.Time{})
 			pipe := newAgentPipe(ws)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			// 30 min: stop-and-wait over the tunnel is ~0.6s per 1 KiB chunk
+			// (~12 min for a 1.2 MB image) plus the final MD5/flash window.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
 			if err := relay.PushDevice(ctx, pipe, bytes.NewReader(img), int64(len(img))); err != nil {
 				return fmt.Errorf("push failed: %w", err)

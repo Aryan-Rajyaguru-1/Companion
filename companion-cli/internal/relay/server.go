@@ -75,6 +75,15 @@ func (h *Hub) serveAgentWS(w http.ResponseWriter, r *http.Request) {
 // deviceLoop is the read side of a device connection. The first frame must
 // be device_hello; during an active push, the device's binary frames (its
 // bare-ACK replies) are forwarded to the paired agent's socket.
+//
+// Deadlock discipline: NO blocking read on this socket may carry a deadline
+// shorter than the full push. The data phase is a stop-and-wait loop whose
+// per-hop RTT is unbounded over the internet path (Cloudflare edge hops,
+// tunnel QUIC, agent stalls); a single read deadline expiring mid-push looks
+// exactly like a disconnect, and the old 30s hello deadline fired precisely
+// there. The hello frame (a small JSON text frame the board sends
+// immediately) keeps the only deadline; the steady-state loop and agent
+// loop rely on TCP close/WS close frames to detect real disconnects.
 func (h *Hub) deviceLoop(d *deviceConn) {
 	defer func() {
 		h.mu.Lock()
@@ -89,9 +98,14 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		d.close()
 	}()
 
-	// First frame must be device_hello.
+	// First frame must be device_hello. The deadline applies to this hello
+	// read ONLY: it guards against half-open sockets that never identify,
+	// and is cleared before the steady-state loop (see the discipline note
+	// on deviceLoop) so a long stop-and-wait push is never mistaken for a
+	// dead connection.
 	d.ws.SetReadDeadline(time.Now().Add(h.cfg.ReadTimeout))
 	_, raw, err := d.ws.ReadMessage()
+	d.ws.SetReadDeadline(time.Time{})
 	if err != nil {
 		return
 	}
@@ -158,7 +172,10 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		if a == nil {
 			continue // stray frame with no push in flight
 		}
-		_ = a.sendBinary(payload)
+		if err := a.sendBinary(payload); err != nil {
+			log.Printf("[relay] agent socket write failed for %s: %v", d.id, err)
+			return // agent gone — end this device read loop, pairing stays busy until it reconnects
+		}
 	}
 }
 

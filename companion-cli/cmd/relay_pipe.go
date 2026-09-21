@@ -19,6 +19,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// relayPushOptions carries CLI-level tuning for the agent-side wire behaviour.
+// Defaults are zero values; helpers apply sane fallbacks.
+type relayPushOptions struct {
+	// chunkBytes overrides the 1024-byte data chunk size (smaller = gentler
+	// on long-RTT paths like Cloudflare tunnels).
+	chunkBytes int
+	// ackTimeout overrides the per-chunk ACK wait.
+	ackTimeout time.Duration
+}
+
 // RelayPushFunc builds a fleet.PushFunc that pushes imagePath to one registry
 // device through the relay hub (remote OTA). It mirrors `relay push`: dial
 // the agent port, send push_req carrying the device's stored Secret, stream
@@ -89,7 +99,10 @@ func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, im
 	}
 	ws.SetReadDeadline(time.Time{})
 	pipe := newAgentPipe(ws)
-	pctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	// 30 min: mirror the `relay push` window — stop-and-wait over the tunnel
+	// is ~0.6s per 1 KiB chunk (~12 min for a 1.2 MB image) plus the final
+	// MD5/flash window.
+	pctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	if err := relay.PushDevice(pctx, pipe, bytes.NewReader(img), int64(len(img))); err != nil {
 		return fmt.Errorf("push to %s failed: %w", d.Key(), err)
