@@ -16,6 +16,9 @@ cd companion-cli && go test ./...
 cd ../companion-ide && npm test
 ```
 
+Windows testers: see `docs/WINDOWS.md` for drivers, firewall, and the
+Linux-only-vs-Windows tooling gotchas before reporting an install problem.
+
 ## Ground rules
 - **MIT only** — no GPL/AGPL dependencies anywhere in the tree
 - Go code follows `gofmt` + `go vet` clean; JS follows existing prettier style

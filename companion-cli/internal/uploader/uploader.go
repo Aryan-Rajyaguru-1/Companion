@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -205,7 +206,7 @@ func (u *Uploader) uploadAVRSerial(opts Options) error {
 	out, err := u.runTool("avrdude-usb", "avrdude", args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "executable file not found") {
-			return fmt.Errorf("avrdude not found\nInstall it with: sudo apt install avrdude")
+			return fmt.Errorf("avrdude not found\n" + toolInstallHint("avrdude"))
 		}
 		return fmt.Errorf("avrdude failed:\n%s", out)
 	}
@@ -258,6 +259,32 @@ func (u *Uploader) runTool(tool string, name string, args ...string) (string, er
 			"%s timed out after %s — %s", name, timeout, toolTimeoutHint(tool))
 	}
 	return outBuf.string(), runErr
+}
+
+// toolInstallHint returns a platform-appropriate install command for an
+// external flashing tool. Windows testers were previously told to run
+// `sudo apt install avrdude` and `pip install esptool` — commands that do not
+// exist on their machine, which reads as "this tool is broken".
+func toolInstallHint(name string) string {
+	switch name {
+	case "avrdude":
+		switch runtime.GOOS {
+		case "windows":
+			return "install avrdude — it ships with the Arduino IDE, or use `winget install avrdude`"
+		case "darwin":
+			return "brew install avrdude"
+		default:
+			return "sudo apt install avrdude   (or your distro's package manager)"
+		}
+	case "esptool":
+		switch runtime.GOOS {
+		case "windows":
+			return "py -m pip install esptool   (use `py` if `python3` is not on PATH)"
+		default:
+			return "python3 -m pip install esptool"
+		}
+	}
+	return name
 }
 
 // toolTimeoutHint turns a timeout into actionable advice per tool/stage.
@@ -408,7 +435,7 @@ func (u *Uploader) uploadESP(opts Options) error {
 
 	out, err := u.runTool("esptool-wireless", python, args...)
 	if err != nil {
-		return fmt.Errorf("esptool failed:\n%s\n\nMake sure esptool is installed: pip install esptool", out)
+		return fmt.Errorf("esptool failed:\n%s\n\n"+toolInstallHint("esptool"), out)
 	}
 	// Print key lines
 	for _, line := range strings.Split(string(out), "\n") {
@@ -672,7 +699,7 @@ func (u *Uploader) uploadAVR(opts Options) error {
 	out, err := u.runTool("avrdude-wireless", "avrdude", args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "executable file not found") {
-			return fmt.Errorf("avrdude not found\nInstall it with: sudo apt install avrdude")
+			return fmt.Errorf("avrdude not found\n" + toolInstallHint("avrdude"))
 		}
 		return fmt.Errorf("avrdude failed:\n%s", out)
 	}

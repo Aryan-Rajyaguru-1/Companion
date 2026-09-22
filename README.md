@@ -48,6 +48,11 @@ bash scripts/setup.sh          # macOS / Linux
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
 ```
 
+> **On Windows?** Read **[docs/WINDOWS.md](docs/WINDOWS.md)** first — it covers the
+> walls that trip up testers: SmartScreen on the unsigned binaries, serial
+> drivers (CP210x/CH340), the 2.4 GHz-only bridge radio, Windows Firewall on
+> port 3333, and the `py -m pip install esptool` step.
+
 ## 🚀 Fleet OTA (batch flash)
 
 Register your boards once, then update many over WiFi in one command:

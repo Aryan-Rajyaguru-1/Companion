@@ -23,6 +23,13 @@ warn() { printf '%s\n' "${YELLOW} !!${OFF}  $*"; }
 die()  { printf '%s\n' "${RED} xx${OFF}  $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# sha256_of prints the SHA-256 of a file using whichever tool exists.
+sha256_of() {
+  if have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum;  then shasum -a 256 "$1" | awk '{print $1}'
+  else echo "unavailable"; fi
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ── OS / arch detection ──────────────────────────────────────────────────────
@@ -56,10 +63,45 @@ if [ -n "$CLI_DIR" ] && have go; then
   fi
 fi
 if [ "$BUILT" -eq 0 ]; then
-  REL="https://github.com/Aryan-Rajyaguru-1/Companion/releases/download/v0.1.0-alpha/companion-${GOOS}-${GOARCH}"
   have curl || die "curl is required to download the CLI (or install Go 1.18+ and re-run)"
-  say "Downloading prebuilt CLI: $REL"
-  curl -fsSL --retry 2 -o "$BIN" "$REL" || die "Download failed. Install Go 1.18+ and re-run, or build manually: cd companion-cli && go build -o companion ."
+  REPO="https://github.com/Aryan-Rajyaguru-1/Companion"
+  # Resolve the newest tag instead of pinning one: a hardcoded tag silently
+  # gives testers an old binary (or a 404) as soon as a new release ships.
+  #
+  # Use /releases (a list), NOT /releases/latest — the "latest" endpoint
+  # deliberately skips PRERELEASES, and v0.1.0-alpha is one, so it 404s.
+  # The list is already newest-first.
+  TAG="$(curl -fsSL "https://api.github.com/repos/Aryan-Rajyaguru-1/Companion/releases" 2>/dev/null \
+        | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n1)"
+  [ -n "$TAG" ] || { TAG=v0.1.0-alpha; warn "could not resolve the latest tag — falling back to $TAG"; }
+  ASSET="companion-${GOOS}-${GOARCH}"
+  say "Downloading prebuilt CLI ($TAG): $ASSET"
+  curl -fsSL --retry 2 -o "$BIN" "$REPO/releases/download/$TAG/$ASSET" \
+    || die "Download failed ($ASSET). Install Go 1.18+ and re-run, or build manually: cd companion-cli && go build -o companion ."
+
+  # Verify against the release's SHA256SUMS.txt. An interrupted download
+  # (proxy, flaky wifi) otherwise surfaces later as a mysterious exec failure
+  # or a half-written flash. The CLI verifies board archives the same way, so
+  # its own installer should not be the weak link.
+  SUMS="$(mktemp)"
+  if curl -fsSL --retry 2 -o "$SUMS" "$REPO/releases/download/$TAG/SHA256SUMS.txt" 2>/dev/null; then
+    WANT="$(awk -v a="$ASSET" '$2 == a {print $1}' "$SUMS" | head -n1)"
+    if [ -n "$WANT" ]; then
+      GOT="$(sha256_of "$BIN")"
+      if [ "$GOT" = "$WANT" ]; then
+        ok "SHA-256 verified"
+      else
+        rm -f "$BIN" "$SUMS"
+        die "SHA-256 mismatch for $ASSET (expected ${WANT:0:12}…, got ${GOT:0:12}…) — the download is corrupt, re-run this script"
+      fi
+    else
+      warn "release $TAG publishes no checksum for $ASSET — skipping verification"
+    fi
+  else
+    warn "could not fetch SHA256SUMS.txt — skipping verification"
+  fi
+  rm -f "$SUMS"
+
   chmod +x "$BIN"
   ok "CLI installed -> $BIN"
 fi

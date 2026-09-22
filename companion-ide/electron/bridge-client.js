@@ -289,9 +289,14 @@ class BridgeClient {
 
       proc.on('error', () => {
         if (ctrlSock) { ctrlSock.destroy(); ctrlSock = null; }
+        // Platform-correct hint: Windows has no python3, and testers were
+        // being told to run a command their machine cannot execute.
+        const hint = process.platform === 'win32'
+          ? 'py -m pip install esptool'
+          : 'python3 -m pip install esptool';
         resolve({
           success: false,
-          error: 'esptool not found. Install it with:\n  pip install esptool',
+          error: `esptool not found. Install it with:\n  ${hint}`,
         });
       });
     });

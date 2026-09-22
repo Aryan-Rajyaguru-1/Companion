@@ -44,9 +44,52 @@ if ((Test-Path $CliDir) -and (Get-Command go -ErrorAction SilentlyContinue)) {
     } finally { Pop-Location }
 }
 if (-not $Built) {
-    $Url = "https://github.com/Aryan-Rajyaguru-1/Companion/releases/download/v0.1.0-alpha/companion-windows-$Arch.exe"
-    Say "Downloading prebuilt CLI: $Url"
-    Invoke-WebRequest -Uri $Url -OutFile $Bin -UseBasicParsing
+    $Repo  = 'https://github.com/Aryan-Rajyaguru-1/Companion'
+    $Asset = "companion-windows-$Arch.exe"
+
+    # Resolve the newest tag rather than pinning one: a hardcoded tag gives
+    # testers a stale binary (or a 404) as soon as a new release ships.
+    # Query /releases (a LIST), not /releases/latest: the "latest" endpoint
+    # deliberately skips PRERELEASES and v0.1.0-alpha is one, so it 404s.
+    $Tag = $null
+    try {
+        $rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/Aryan-Rajyaguru-1/Companion/releases' `
+                  -UseBasicParsing -Headers @{ 'User-Agent' = 'companion-setup' }
+        if ($rels) { $Tag = @($rels)[0].tag_name }
+    } catch { }
+    if (-not $Tag) { $Tag = 'v0.1.0-alpha'; Warn "could not resolve the latest tag - falling back to $Tag" }
+
+    $Url = "$Repo/releases/download/$Tag/$Asset"
+    Say "Downloading prebuilt CLI ($Tag): $Asset"
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Bin -UseBasicParsing
+    } catch {
+        throw "Download failed ($Asset): $($_.Exception.Message)`n  Install Go 1.18+ and re-run, or build manually: cd companion-cli; go build -o companion.exe ."
+    }
+
+    # Verify against the release's SHA256SUMS.txt - the same guarantee the CLI
+    # gives for board archives. A truncated download (proxy, flaky wifi) would
+    # otherwise only show up later as a half-written flash.
+    $Want = $null
+    try {
+        $sumsTxt = (Invoke-WebRequest -Uri "$Repo/releases/download/$Tag/SHA256SUMS.txt" -UseBasicParsing).Content
+        foreach ($line in ($sumsTxt -split "`n")) {
+            $f = $line -split '\s+' | Where-Object { $_ -ne '' }
+            if ($f.Count -ge 2 -and $f[1] -eq $Asset) { $Want = $f[0]; break }
+        }
+    } catch { $Want = $null }
+
+    if (-not $Want) {
+        Warn "release $Tag publishes no checksum for $Asset - skipping verification"
+    } else {
+        $Got = (Get-FileHash -Algorithm SHA256 -Path $Bin).Hash.ToLower()
+        if ($Got -eq $Want.ToLower()) {
+            Ok "SHA-256 verified"
+        } else {
+            Remove-Item $Bin -Force
+            throw "SHA-256 mismatch for $Asset (expected $($Want.Substring(0,12))..., got $($Got.Substring(0,12))...) - the download is corrupt, re-run this script"
+        }
+    }
     Ok "CLI installed -> $Bin"
 }
 
@@ -76,12 +119,24 @@ else {
 $HasIde = Test-Path "$IdeDir\package.json"
 if ($HasIde) {
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-        throw "Node.js 18+ is required for the IDE -> https://nodejs.org  (then re-run this script)"
+        throw @"
+Node.js 18+ is required to run the IDE from source.
+  1. Install the LTS build from https://nodejs.org
+  2. OPEN A NEW TERMINAL so PATH is picked up, then re-run this script.
+
+If you only want to flash boards, you do not need the IDE at all:
+  $Bin upload --help
+  $Bin ota --help
+"@
     }
-    Say "Installing IDE dependencies (npm)"
+    $NodeMajor = [int](node -p 'process.versions.node.split(".")[0]')
+    if ($NodeMajor -lt 18) { Warn "Node $(node -v) is older than 18; the IDE may misbehave" }
+    Say "Installing IDE dependencies (npm; ~400 MB with Electron, this can take a while)"
     Push-Location $IdeDir
     try { npm install --no-audit --no-fund --loglevel=error } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed - check your network and re-run" }
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm install failed - check your network/proxy (npm config set proxy ...) and re-run"
+    }
     Ok "IDE dependencies installed"
 } else {
     Ok "No IDE checkout found - CLI-only setup complete"
