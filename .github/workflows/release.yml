@@ -57,10 +57,37 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npm run build
+      - name: Verify the expected installer exists for this OS
+        working-directory: companion-ide
+        shell: bash
+        run: |
+          # electron-builder's output naming differs per OS; fail loudly here
+          # rather than letting an empty release/ propagate to the release page.
+          case "${{ matrix.os }}" in
+            ubuntu-latest)  glob='release/*.AppImage release/*.deb' ;;
+            windows-latest) glob='release/*.exe' ;;
+            macos-latest)   glob='release/*.dmg' ;;
+          esac
+          found=0
+          for g in $glob; do
+            for f in $g; do [ -e "$f" ] && found=1; done
+          done
+          if [ "$found" -ne 1 ]; then
+            echo "::error::no installer matching '$glob' was produced — electron-builder failed for ${{ matrix.os }}"
+            ls -la release 2>/dev/null || echo "(no release/ directory)"
+            exit 1
+          fi
+          ls -la release
       - uses: actions/upload-artifact@v4
         with:
           name: ide-${{ matrix.os }}
           path: companion-ide/release/
+          # An IDE build that produces nothing must FAIL the job. The v0.1.0-alpha
+          # release shipped with only Linux-arm64 IDE artifacts while both the
+          # Windows and macOS jobs reported success — `upload-artifact`'s default
+          # `warn` on empty matches let a broken electron-builder run pass
+          # silently, so testers had no GUI installer to download at all.
+          if-no-files-found: error
 
   publish:
     name: Attach to GitHub Release
