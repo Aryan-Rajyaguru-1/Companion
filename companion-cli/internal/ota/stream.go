@@ -36,6 +36,17 @@ type StreamOptions struct {
 	// the UDP invite already delivered size+md5.
 	SendHeader bool
 
+	// ChunkBytes is the stop-and-wait frame size: the agent sends this many
+	// firmware bytes per ACK round-trip. The protocol still requires one
+	// bare decimal ACK per frame (coalesced ACKs are NOT consumed ahead),
+	// so raising ChunkBytes purely amortizes per-round-trip latency — it is
+	// the chunk ÷ RTT lever on tunnel paths. ≤0 → legacy 1024-byte frames.
+	// Large frames are bounded by the transport MTU and whatever the device
+	// accepts in one frame, so large frames belong to opt-in tuning, not
+	// defaults: pass ChunkBytes (e.g. 8192) on long-RTT paths where fewer
+	// round-trips per image directly shorten the push.
+	ChunkBytes int
+
 	// ChunkWait is the per-chunk ACK timeout. LAN links are sub-second;
 	// stop-and-wait over an internet tunnel is ~0.6s per KiB, so the
 	// remote path widens this.
@@ -116,7 +127,13 @@ func PushStream(ctx context.Context, conn net.Conn, img io.ReadSeeker, size int6
 	}
 
 	reader := &replyReader{conn: conn}
-	buf := make([]byte, chunkSize)
+	// Frame size: ChunkBytes amortizes the per-ACK round trip on long-RTT
+	// paths (relay tunnels); ≤0 keeps the legacy 1024-byte ArduinoOTA frame.
+	chunk := chunkSize
+	if so.ChunkBytes > 0 {
+		chunk = so.ChunkBytes
+	}
+	buf := make([]byte, chunk)
 	var sent int64
 	finalOK := false
 

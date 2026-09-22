@@ -106,9 +106,6 @@ static void loadOrCreateDeviceSecret() {
 static char imgMD5[33] = {0};
 static size_t written = 0;
 static bool headerSeen = false;
-static uint8_t chunkBuf[1024];
-static size_t chunkLen = 0;
-
 static void sendText(const String &s) { ws.send(s); }
 
 static bool wsConnected = false;      // link state, tracked via onEvent
@@ -194,7 +191,7 @@ static void onMsg(WebsocketsMessage msg) {
         return;
       }
       Update.setMD5(imgMD5);
-      pushActive = true; written = 0; headerSeen = false; chunkLen = 0;
+      pushActive = true; written = 0; headerSeen = false;
       sendStatus("update begun");
     }
     return;

@@ -21,10 +21,13 @@ import (
 )
 
 // relayPushOptions carries CLI-level tuning for the agent-side wire behaviour.
-// Defaults are zero values; helpers apply sane fallbacks.
+// Defaults are zero values; helpers apply sane fallbacks. Frame size stays
+// on the shared stream engine (ota.StreamOptions.ChunkBytes) so transports
+// share one data-phase implementation.
 type relayPushOptions struct {
-	// chunkBytes overrides the 1024-byte data chunk size (smaller = gentler
-	// on long-RTT paths like Cloudflare tunnels).
+	// chunkBytes caps the data chunk size on this push (smaller = gentler
+	// on long-RTT paths like Cloudflare tunnels). ≤0 keeps the legacy
+	// 1024-byte frame.
 	chunkBytes int
 	// ackTimeout overrides the per-chunk ACK wait.
 	ackTimeout time.Duration
