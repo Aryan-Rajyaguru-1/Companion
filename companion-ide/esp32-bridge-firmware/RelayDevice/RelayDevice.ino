@@ -106,10 +106,19 @@ static void loadOrCreateDeviceSecret() {
 static char imgMD5[33] = {0};
 static size_t written = 0;
 static bool headerSeen = false;
-static void sendText(const String &s) { ws.send(s); }
+static bool sendText(const String &s) { return ws.send(s); }
 
 static bool wsConnected = false;      // link state, tracked via onEvent
 static unsigned long lastDialAttempt = 0;
+// Heartbeat state. wsConnected is only ever cleared by the ConnectionClosed
+// event — but a connection can die WITHOUT one (tunnel QUIC drop, hub crash,
+// NAT timeout), leaving the board on a zombie socket that reports link=1
+// while the hub has no device. The watchdog below catches that: the board
+// pings the hub and, if no pong comes back, abandons the dead link and
+// re-dials.
+static unsigned long lastPingSent = 0;
+static unsigned long lastPong = 0;
+static bool awaitingPong = false;
 
 // onEvt tracks link state so loop() can re-dial after a drop.
 static void onEvt(WebsocketsEvent e, String data) {
@@ -175,6 +184,12 @@ static void sendStatus(const char *msg) {
 static void onMsg(WebsocketsMessage msg) {
   if (msg.isText()) {
     String t = msg.data();
+    // Heartbeat reply from the hub: the link is proven alive end-to-end.
+    if (t.indexOf("pong") >= 0) {
+      awaitingPong = false;
+      lastPong = millis();
+      return;
+    }
     if (t.indexOf("push_start") >= 0) {
       StaticJsonDocument<256> d;
       if (deserializeJson(d, t)) { sendStatus("bad push_start"); return; }
@@ -300,6 +315,36 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED) {
       dialRelay();
     }
+  }
+
+  // ── Zombie-link watchdog ─────────────────────────────────────────
+  // wsConnected is only cleared by the ConnectionClosed event, but a
+  // connection can die WITHOUT one (tunnel QUIC drop, hub crash, NAT
+  // timeout). The board then sits on a dead socket reporting link=1 while
+  // the hub has no device — offline forever until a power cycle. So ping
+  // the hub periodically and demand a pong: no pong (or a failed send)
+  // proves the link is dead end-to-end; abandon it and re-dial.
+  if (wsConnected && !pushActive) {
+    if (!awaitingPong && millis() - lastPingSent > 15000) {
+      lastPingSent = millis();
+      awaitingPong = true;
+      if (!sendText("{\"kind\":\"ping\"}")) {
+        // The write itself failed — the socket is gone.
+        Serial.println("[relay] ping write FAILED — link is dead, re-dialing");
+        wsConnected = false;
+        awaitingPong = false;
+        ws.close();
+      }
+    } else if (awaitingPong && millis() - lastPingSent > 10000) {
+      Serial.println("[relay] no pong in 10s — zombie link, re-dialing");
+      wsConnected = false;
+      awaitingPong = false;
+      ws.close();
+    }
+  } else if (pushActive) {
+    // A push is streaming: never ping mid-push (the ACK channel is the
+    // liveness signal already) and never let the watchdog kill it.
+    awaitingPong = false;
   }
 
   // Built-in LED heartbeat, driven from the alive-logger tick: slow 2 Hz
