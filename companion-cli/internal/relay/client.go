@@ -41,4 +41,3 @@ func PushDeviceStream(ctx context.Context, data net.Conn, img io.ReadSeeker, siz
 	so.SendHeader = true
 	return ota.PushStream(ctx, data, img, size, so)
 }
-

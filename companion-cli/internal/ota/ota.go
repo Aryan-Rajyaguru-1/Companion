@@ -375,7 +375,6 @@ func udpExchange(ctx context.Context, udp *net.UDPConn, payload []byte, timeout 
 	return string(buf[:n]), nil
 }
 
-
 // ── Auth helpers ──────────────────────────────────────────────────
 
 // otaResponse computes the challenge response for a device that stores

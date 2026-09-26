@@ -12,12 +12,12 @@ import (
 
 // Device is one OTA-capable board known to the registry.
 type Device struct {
-	ID     string    `yaml:"id"`            // stable ID: registry name or MAC-derived hostname
-	Name   string    `yaml:"name"`          // friendly name (may equal ID)
-	MAC    string    `yaml:"mac,omitempty"` // last-seen MAC, "" when unknown
-	Host   string    `yaml:"host"`          // device IP
-	Port   int       `yaml:"port"`          // OTA port (3232 default)
-	MCU    string    `yaml:"mcu,omitempty"` // esp32 | esp8266 | avr | stm32 | generic
+	ID     string    `yaml:"id"`               // stable ID: registry name or MAC-derived hostname
+	Name   string    `yaml:"name"`             // friendly name (may equal ID)
+	MAC    string    `yaml:"mac,omitempty"`    // last-seen MAC, "" when unknown
+	Host   string    `yaml:"host"`             // device IP
+	Port   int       `yaml:"port"`             // OTA port (3232 default)
+	MCU    string    `yaml:"mcu,omitempty"`    // esp32 | esp8266 | avr | stm32 | generic
 	Secret string    `yaml:"secret,omitempty"` // per-device OTA secret (relay pushes; also sent to LAN OTA when set)
 	Tags   []string  `yaml:"tags,omitempty"`
 	SeenAt time.Time `yaml:"seen_at"`

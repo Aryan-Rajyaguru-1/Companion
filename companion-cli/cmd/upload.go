@@ -9,8 +9,8 @@ import (
 	"github.com/companion-ide/companion-cli/internal/boards"
 	"github.com/companion-ide/companion-cli/internal/compiler"
 	"github.com/companion-ide/companion-cli/internal/config"
-	fqbnpkg "github.com/companion-ide/companion-cli/internal/fqbn"
 	"github.com/companion-ide/companion-cli/internal/fleet"
+	fqbnpkg "github.com/companion-ide/companion-cli/internal/fqbn"
 	"github.com/companion-ide/companion-cli/internal/ota"
 	"github.com/companion-ide/companion-cli/internal/plugins"
 	"github.com/companion-ide/companion-cli/internal/uploader"
@@ -35,11 +35,11 @@ func newUploadCmd() *cobra.Command {
 		// OTA transport toggle: "remote" (default — relay hub over the
 		// internet) or "local" (LAN ArduinoOTA). IP-based local OTA stays
 		// available as the explicit opt-in.
-		otaMode      string
-		relayHub     string
-		relayDevice  string
-		relaySecret  string
-		relayToken   string
+		otaMode     string
+		relayHub    string
+		relayDevice string
+		relaySecret string
+		relayToken  string
 	)
 	var rpProfileWantsOTA bool
 

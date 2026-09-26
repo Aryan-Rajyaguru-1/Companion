@@ -210,4 +210,3 @@ func (h *Hub) Unpair(agent *agentConn) {
 }
 
 func normalizeID(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
-

@@ -68,7 +68,11 @@ func (c *Client) Connect() error {
 	conn, err := net.DialTimeout("tcp", addr, 8*time.Second)
 	if err != nil {
 		return fmt.Errorf("cannot connect to bridge at %s — %w\n"+
-			"Is the ESP32 bridge powered and on the same WiFi?", addr, err)
+			"Is the ESP32 bridge powered and on the same WiFi?\n"+
+			"Check: `companion fleet discover` scans the LAN for it. In AP mode its\n"+
+			"address is 192.168.4.1 and your laptop must join the bridge's WiFi\n"+
+			"network. Windows: allow TCP 3333 through Windows Firewall (Private).",
+			addr, err)
 	}
 
 	if tc, ok := conn.(*net.TCPConn); ok {

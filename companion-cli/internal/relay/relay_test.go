@@ -107,7 +107,7 @@ func runDeviceLoop(t *testing.T, ws *websocket.Conn, d *fakeRemoteDevice, fail b
 		if written+n > d.gotSize {
 			n = d.gotSize - written
 		}
-	d.firmware = append(d.firmware, payload[:n]...)
+		d.firmware = append(d.firmware, payload[:n]...)
 		written += n
 		d.chunks++
 		if fail {
@@ -288,7 +288,7 @@ func agentPush(t *testing.T, wsURL, token, devID, devSecret string, img []byte) 
 	ws.SetReadDeadline(time.Time{})
 	defer ws.Close()
 	return PushDevice(context.Background(), func() *wsNetConn {
-		c := newWSNetConn(ws)           // …then spawn the pump with a clean slate
+		c := newWSNetConn(ws) // …then spawn the pump with a clean slate
 		c.rdDeadline = time.Time{}
 		return c
 	}(), bytes.NewReader(img), int64(len(img)))
