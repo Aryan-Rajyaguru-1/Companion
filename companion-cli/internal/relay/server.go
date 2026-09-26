@@ -169,6 +169,7 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 			// board would either sit on a dead socket reporting link=1 (its
 			// old bug) or, with the watchdog, re-dial forever. Answer it.
 			if err == nil && msg.Kind == KindPing {
+				log.Printf("[relay] heartbeat ping from %s → pong sent", d.id)
 				_ = h.send2(d, KindPong, map[string]any{"ok": true})
 			}
 			continue
