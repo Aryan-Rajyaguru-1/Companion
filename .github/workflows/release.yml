@@ -22,21 +22,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: 'stable' }
+        with:
+          go-version: 'stable'
+          # go.mod/go.sum live in companion-cli/, not the repo root — without
+          # this the build-cache restore warns and is skipped every run.
+          cache-dependency-path: companion-cli/go.sum
       - name: Build
         working-directory: companion-cli
         shell: bash
         run: |
           mkdir -p ../dist-cli
           for t in ${{ matrix.targets }}; do
-            os=${t%%-*}; ext=${t#*.}; arch=${ext%%.*}; suffix=${ext##*.}
-            name=companion-$os-$arch${suffix:+.$suffix}
-            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "../dist-cli/$name" .
+            # "linux-amd64" | "windows-amd64.exe" — os is everything before the
+            # FIRST DASH, the rest is "arch" plus an optional ".exe" suffix.
+            # ${t#*.} (first DOT) was the old bug: with no dot in the target it
+            # left arch as the whole string, so Go saw GOARCH=linux-amd64 and
+            # every CLI job failed with "unsupported GOOS/GOARCH pair".
+            os=${t%%-*}
+            rest=${t#*-}
+            case "$rest" in
+              *.*) arch=${rest%.*}; ext=".${rest##*.}" ;;
+              *)   arch=$rest;      ext=""
+            esac
+            name=companion-$os-$arch$ext
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "../dist-cli/$name" . \
+              || { echo "::error::build failed for GOOS=$os GOARCH=$arch"; exit 1; }
           done
+          ls -la ../dist-cli
       - uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.os }}
           path: dist-cli/
+          if-no-files-found: error
 
   ide:
     name: IDE installers (${{ matrix.os }})
@@ -63,25 +80,32 @@ jobs:
         run: |
           # electron-builder's output naming differs per OS; fail loudly here
           # rather than letting an empty release/ propagate to the release page.
+          # nullglob + a quoted array: the produced filenames contain SPACES
+          # ("Companion IDE Setup 1.0.0.exe"), and an unquoted `for f in $glob`
+          # word-splits them, so a SUCCESSFUL build reported failure.
+          shopt -s nullglob
           case "${{ matrix.os }}" in
-            ubuntu-latest)  glob='release/*.AppImage release/*.deb' ;;
-            windows-latest) glob='release/*.exe' ;;
-            macos-latest)   glob='release/*.dmg' ;;
+            ubuntu-latest)  files=(release/*.AppImage release/*.deb) ;;
+            windows-latest) files=(release/*.exe) ;;
+            macos-latest)   files=(release/*.dmg) ;;
           esac
-          found=0
-          for g in $glob; do
-            for f in $g; do [ -e "$f" ] && found=1; done
-          done
-          if [ "$found" -ne 1 ]; then
-            echo "::error::no installer matching '$glob' was produced — electron-builder failed for ${{ matrix.os }}"
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no installer was produced — electron-builder failed for ${{ matrix.os }}"
             ls -la release 2>/dev/null || echo "(no release/ directory)"
             exit 1
           fi
-          ls -la release
+          echo "installers produced:"
+          ls -la "${files[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: ide-${{ matrix.os }}
-          path: companion-ide/release/
+          # Installers only: release/ also holds win-unpacked/ (a full unpacked
+          # app, ~250 MB) which would otherwise ride into the release page.
+          path: |
+            companion-ide/release/*.exe
+            companion-ide/release/*.AppImage
+            companion-ide/release/*.deb
+            companion-ide/release/*.dmg
           # An IDE build that produces nothing must FAIL the job. The v0.1.0-alpha
           # release shipped with only Linux-arm64 IDE artifacts while both the
           # Windows and macOS jobs reported success — `upload-artifact`'s default
