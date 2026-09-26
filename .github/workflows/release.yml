@@ -30,6 +30,12 @@ jobs:
       - name: Build
         working-directory: companion-cli
         shell: bash
+        env:
+          # Tag runs stamp the real version (the Makefile's git describe does
+          # this for local builds). Without it every released binary reported
+          # "1.0.0" forever, breaking the bug template's `companion version`
+          # ask.
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
         run: |
           mkdir -p ../dist-cli
           for t in ${{ matrix.targets }}; do
@@ -45,7 +51,7 @@ jobs:
               *)   arch=$rest;      ext=""
             esac
             name=companion-$os-$arch$ext
-            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "../dist-cli/$name" . \
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/companion-ide/companion-cli/cmd.CLIVersion=$VERSION" -o "../dist-cli/$name" . \
               || { echo "::error::build failed for GOOS=$os GOARCH=$arch"; exit 1; }
           done
           ls -la ../dist-cli

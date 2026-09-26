@@ -141,17 +141,23 @@ $env:COMPANION_RELAY_DEVICES_TOKEN="<hex>"; $env:COMPANION_RELAY_AGENTS_TOKEN="<
 .\companion.exe relay hub --listen :8931
 ```
 
-**But the bundled setup helpers are Linux/systemd-only** —
-`deploy/install-relay-hub.sh` and `deploy/setup-tunnel.sh` rely on `systemd`,
-`journalctl`, and `openssl`. On Windows you have three options:
+**The hub is a single Go binary and runs fine on Windows** — use the PowerShell
+helper, which is the Windows counterpart of the Linux scripts (it generates
+tokens, can start the hub now, and can register a logon task so it survives
+reboot, since Windows has no systemd):
 
-1. Leave the hub running in a PowerShell window (fine for a testing session; it
-   stops when you close the window or reboot).
-2. Run the hub on any always-on Linux box / NAS / VPS via `deploy/README.md`.
-3. Run the scripts under **WSL2** if you have it.
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\install-relay-hub.ps1 -RunNow
+# or, to make it boot-persistent:
+powershell -ExecutionPolicy Bypass -File deploy\install-relay-hub.ps1 -InstallStartupTask
+```
 
-The TLS endpoint in front of the hub (Cloudflare Tunnel, nginx, Caddy) is a
-separate install on whichever machine hosts the hub.
+The Linux scripts (`deploy/install-relay-hub.sh`, `deploy/setup-tunnel.sh`)
+rely on `systemd`, `journalctl`, and `openssl`, so they will not run on
+Windows. Your remaining options for the **TLS endpoint** in front of the hub
+(Cloudflare Tunnel, nginx, Caddy): install it on the same Windows machine, run
+the hub on an always-on Linux box / NAS / VPS via `deploy/README.md`, or use
+WSL2.
 
 ---
 

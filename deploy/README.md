@@ -62,6 +62,14 @@ variables if you'd rather manage them in a container secret store.
 companion relay hub --listen :8931
 ```
 
+On **Windows**, use the PowerShell counterpart instead — the systemd scripts
+below don't run there:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\install-relay-hub.ps1 -RunNow
+# add -InstallStartupTask to start it at logon (the systemd-equivalent)
+```
+
 Sanity check from the same machine:
 
 ```bash

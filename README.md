@@ -105,6 +105,26 @@ cd ../companion-ide && npm install && npm run dev
 # 5. Connect to WiFi SSID=ESP32-OTA Password=flashme!, then Upload
 ```
 
+### Bridge → target wiring (step 3)
+
+```
+        ESP32 bridge                              target MCU
+  ┌───────────────────────┐                ┌──────────────────────┐
+  │  GPIO17 (TX2)  ───────┼────────────────► RX                   │
+  │  GPIO16 (RX2)  ◄──────┼───────────────── TX                   │
+  │  GPIO4         ───────┼────────────────► EN / RST / NRST      │
+  │  GPIO5         ───────┼────────────────► BOOT / GPIO0 / BOOT0 │
+  │  GND           ───────┼───────────────── GND   ← REQUIRED     │
+  └───────────────────────┘                └──────────────────────┘
+```
+
+- Classic 5 V targets (Uno / Nano / Mega) need a **bidirectional level shifter**
+  on all four signal lines — the ESP32 is 3.3 V only. Never feed 5 V in.
+- STM32 targets use the built-in UART bootloader only (BOOT0 + NRST
+  sequencing); SWD is not supported.
+- Full notes: the header comment of
+  `companion-ide/esp32-bridge-firmware/esp32_bridge/esp32_bridge.ino`.
+
 ## New in this version
 - Multi-file tabs (open multiple .ino/.cpp/.h files)
 - Explorer sidebar with recent files (Ctrl+B)
