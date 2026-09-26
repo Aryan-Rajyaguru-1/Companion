@@ -167,8 +167,18 @@ func readTTY(fd int, buf []byte) (int, error) {
 // ttFlushInput discards bytes already received but not yet read. The
 // request is TCFLSH with TCIFLUSH as its argument — TCIFLUSH alone is the
 // arg constant (0), not the ioctl request.
+//
+// TCFLSH/TCIFLUSH come from the kernel's asm-generic termbits.h, but Go's
+// syscall package only exposes them on SOME architectures (linux/arm64 has
+// them; linux/amd64 does not — `undefined: syscall.TCFLSH`). Define them
+// here so the boot-ROM prober compiles on every linux port we target.
+const (
+	ioctlTCFLSH   = 0x540B // TCFLSH ioctl request (same on amd64/arm64/riscv)
+	ioctlTCIFLUSH = 0x0    // TCIFLUSH: flush the receive queue only
+)
+
 func ttFlushInput(fd int) error {
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TCFLSH), uintptr(syscall.TCIFLUSH))
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(ioctlTCFLSH), uintptr(ioctlTCIFLUSH))
 	if errno != 0 {
 		return errno
 	}
