@@ -40,6 +40,10 @@ const (
 	// device → hub: sent after a completed push (post-"OK") so the hub can
 	// clear busy/pairing without waiting for a reconnect.
 	KindPushDone = "push_done"
+	// device → hub: heartbeat ping (the board's zombie-link watchdog).
+	KindPing = "ping"
+	// hub → device: heartbeat pong — proves the link is alive end-to-end.
+	KindPong = "pong"
 	// hub → device: shutdown notice (device should idle its relay link).
 	KindBye = "bye"
 )

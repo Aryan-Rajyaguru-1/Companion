@@ -321,6 +321,49 @@ func TestFrameKBFromAck(t *testing.T) {
 	}
 }
 
+// TestDeviceHeartbeat: the hub must answer the board's zombie-link watchdog
+// ping with a pong — without it, a board that pings would tear down a healthy
+// link and re-dial forever.
+func TestDeviceHeartbeat(t *testing.T) {
+	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device?token=dev-tok", nil)
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{"kind": KindDeviceHello, "id": "hb-dev", "version": "1.0.3"})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, raw, err := ws.ReadMessage(); err != nil {
+		t.Fatalf("welcome: %v", err)
+	} else if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("device not welcomed: %s", raw)
+	}
+
+	ping, _ := json.Marshal(map[string]string{"kind": KindPing})
+	if err := ws.WriteMessage(websocket.TextMessage, ping); err != nil {
+		t.Fatalf("ping write: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("pong read: %v", err)
+	}
+	if !strings.Contains(string(raw), "pong") {
+		t.Fatalf("expected pong for ping, got %s", raw)
+	}
+	// The device stays registered after the heartbeat.
+	if ids := hub.DeviceIDs(); len(ids) != 1 || ids[0] != "hb-dev" {
+		t.Fatalf("device lost after heartbeat: %v", ids)
+	}
+}
+
 func TestRelayEndToEnd(t *testing.T) {
 	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
 	srv := httptest.NewServer(hub.Handler())

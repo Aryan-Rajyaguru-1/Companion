@@ -163,6 +163,14 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 				}
 				h.finishPush(d)
 			}
+			// Heartbeat: the board's zombie-link watchdog pings every 15s and
+			// demands a pong within 10s. A connection can die without a close
+			// frame (tunnel QUIC drop, hub crash) — without this reply the
+			// board would either sit on a dead socket reporting link=1 (its
+			// old bug) or, with the watchdog, re-dial forever. Answer it.
+			if err == nil && msg.Kind == KindPing {
+				_ = h.send2(d, KindPong, map[string]any{"ok": true})
+			}
 			continue
 		}
 		if mt != websocket.BinaryMessage {
