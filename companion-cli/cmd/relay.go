@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/companion-ide/companion-cli/internal/ota"
 	"github.com/companion-ide/companion-cli/internal/relay"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
@@ -146,11 +147,19 @@ func newRelayCmd() *cobra.Command {
 			fmt.Printf("push accepted — streaming %d bytes to %s…\n", len(img), deviceID)
 			ws.SetReadDeadline(time.Time{})
 			pipe := newAgentPipe(ws)
-			// 30 min: stop-and-wait over the tunnel is ~0.6s per 1 KiB chunk
-			// (~12 min for a 1.2 MB image) plus the final MD5/flash window.
+			// Frame size: the device negotiates it at hello (relayed via
+			// push_ack). A board that accepts 8 KiB per frame needs ~8× fewer
+			// stop-and-wait round trips than the legacy 1024-byte one — the
+			// difference between a ~15 min push and a ~2 min one over a tunnel.
+			// 0 (legacy firmware) keeps the 1024-byte ArduinoOTA frame.
+			frameKB := relay.FrameKBFromAck(raw)
+			// 30 min: stop-and-wait over the tunnel plus the final MD5/flash
+			// window; generous for 1 KiB legacy boards, ample at 8 KiB.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
-			if err := relay.PushDevice(ctx, pipe, bytes.NewReader(img), int64(len(img))); err != nil {
+			if err := relay.PushDeviceStream(ctx, pipe, bytes.NewReader(img), int64(len(img)), &ota.StreamOptions{
+				ChunkBytes: frameKB,
+			}); err != nil {
 				return fmt.Errorf("push failed: %w", err)
 			}
 			// PushDevice saw the device's bare "OK". Tell the hub the pairing

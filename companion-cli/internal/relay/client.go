@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"time"
@@ -21,6 +22,27 @@ const (
 	finalOKWindow = 120 * time.Second
 	writeWait     = 60 * time.Second
 )
+
+// FrameKBFromAck extracts the device-negotiated frame size in BYTES from a
+// push_ack body. The hub relays the frame_kb the device advertised at hello;
+// 0 means the device did not advertise one (legacy firmware) and the caller
+// keeps the 1024-byte ArduinoOTA frame. Values are clamped to [1, 8] KiB:
+// a frame larger than the device accepts in ONE onMessage callback would be
+// ACKed per partial callback, and the agent's one-reply-per-frame reader
+// would misassociate those ACKs — so 8 KiB is the proven ceiling.
+func FrameKBFromAck(raw []byte) int {
+	var ack struct {
+		FrameKB int `json:"frame_kb"`
+	}
+	if err := json.Unmarshal(raw, &ack); err != nil || ack.FrameKB <= 0 {
+		return 0
+	}
+	kb := ack.FrameKB
+	if kb > 8 {
+		kb = 8
+	}
+	return kb * 1024
+}
 
 // PushDevice pushes a firmware image to a remote device over the paired
 // data pipe (hub-relayed), using the remote-tuned defaults.

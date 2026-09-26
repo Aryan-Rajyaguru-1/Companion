@@ -112,9 +112,18 @@ func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, im
 	}
 	ws.SetReadDeadline(time.Time{})
 	pipe := newAgentPipe(ws)
+	// Frame size: negotiated at hello and relayed via push_ack (see
+	// FrameKBFromAck). A caller-set ChunkBytes wins; otherwise use the
+	// device's advertised value, or the legacy 1024-byte frame when absent.
+	if frameKB := relay.FrameKBFromAck(raw); frameKB > 0 {
+		cloned := *so
+		if cloned.ChunkBytes <= 0 {
+			cloned.ChunkBytes = frameKB
+		}
+		so = &cloned
+	}
 	// 30 min: mirror the `relay push` window — stop-and-wait over the tunnel
-	// is ~0.6s per 1 KiB chunk (~12 min for a 1.2 MB image) plus the final
-	// MD5/flash window.
+	// plus the final MD5/flash window.
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	if err := relay.PushDeviceStream(pctx, pipe, bytes.NewReader(img), int64(len(img)), so); err != nil {

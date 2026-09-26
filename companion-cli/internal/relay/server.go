@@ -110,10 +110,11 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		return
 	}
 	var hello struct {
-		Kind   string `json:"kind"`
-		ID     string `json:"id"`
-		Ver    string `json:"version"`
-		Secret string `json:"secret"`
+		Kind    string `json:"kind"`
+		ID      string `json:"id"`
+		Ver     string `json:"version"`
+		Secret  string `json:"secret"`
+		FrameKB int    `json:"frame_kb"` // optional: negotiated data-frame size (KiB)
 	}
 	if err := json.Unmarshal(raw, &hello); err != nil || hello.Kind != KindDeviceHello {
 		h.nudge(d, "first frame must be device_hello")
@@ -122,6 +123,7 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 	d.id = normalizeID(hello.ID)
 	d.version = hello.Ver
 	d.secret = hello.Secret // per-device identity, checked at push time
+	d.frameKB = hello.FrameKB
 	if d.id == "" {
 		h.nudge(d, "device id required")
 		return
@@ -259,7 +261,14 @@ func (h *Hub) startPush(a *agentConn, devID, secret string, size int64, md5 stri
 	}
 
 	h.send2(d, KindPushStart, map[string]any{"size": size, "md5": md5})
-	_ = h.send2(a, KindPushAck, map[string]any{"ok": true, "device": devID})
+	ackBody := map[string]any{"ok": true, "device": devID}
+	// Relay the device's negotiated frame size so the agent can amortize the
+	// per-ACK round trip (the stop-and-wait lever). Absent for legacy
+	// firmware, which keeps the 1024-byte ArduinoOTA frame.
+	if d.frameKB > 0 {
+		ackBody["frame_kb"] = d.frameKB
+	}
+	_ = h.send2(a, KindPushAck, ackBody)
 }
 
 // pushResult delivers a terminal push outcome to an agent.

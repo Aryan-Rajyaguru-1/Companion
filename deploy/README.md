@@ -201,7 +201,7 @@ reads it from the registry that `fleet register` populates.
 | Device never appears in `relay devices` | device's `DEVICE_TOKEN` ≠ hub's `COMPANION_RELAY_DEVICES_TOKEN`, or a duplicate `DEVICE_ID` (a re-registration supersedes the older socket) |
 | Push fails with a secret error | re-read the secret from serial and `fleet register` again |
 | Push stalls, then `device stopped ACKing` | device dropped off WiFi; the firmware re-dials automatically — retry |
-| Push takes minutes for a 1 MB image | expected: the protocol is stop-and-wait, so throughput ≈ chunk ÷ RTT. LAN is seconds; a long-distance tunnel is minutes |
+| Push takes minutes for a 1 MB image | the protocol is stop-and-wait, so throughput ≈ frame ÷ RTT. Boards on firmware ≥1.0.3 negotiate **8 KiB frames** at hello (~8× fewer round-trips than the legacy 1 KiB); LAN is seconds, a long-distance tunnel is minutes |
 | Works, then dies after a while | hub or tunnel isn't running as a service — use `install-relay-hub.sh` |
 
 Useful commands:

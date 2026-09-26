@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/companion-ide/companion-cli/internal/ota"
 	"github.com/gorilla/websocket"
 )
 
@@ -41,9 +42,10 @@ func dialDevice(t *testing.T, url, token, id, secret string) (*websocket.Conn, *
 	if err != nil {
 		t.Fatalf("device dial: %v", err)
 	}
-	hello, _ := json.Marshal(map[string]string{
-		"kind": KindDeviceHello, "id": id, "version": "1.0.0",
-		"secret": secret,
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": id, "version": "1.0.3",
+		"secret":   secret,
+		"frame_kb": 8, // negotiated data-frame size, as the real firmware sends
 	})
 	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
 		t.Fatalf("device hello: %v", err)
@@ -284,14 +286,39 @@ func agentPush(t *testing.T, wsURL, token, devID, devSecret string, img []byte) 
 		t.Fatalf("expected push_ack ok, got %s", raw)
 	}
 	// Clear the push_ack deadline on the RAW socket, wrap it, and run the
-	// data phase. The deferred Close ends the agent side of the pairing.
+	// data phase — mirroring the real CLI: parse the negotiated frame size
+	// from push_ack and stream with it (8 KiB advertised, 1024 legacy).
 	ws.SetReadDeadline(time.Time{})
 	defer ws.Close()
-	return PushDevice(context.Background(), func() *wsNetConn {
+	frameKB := FrameKBFromAck(raw)
+	return PushDeviceStream(context.Background(), func() *wsNetConn {
 		c := newWSNetConn(ws) // …then spawn the pump with a clean slate
 		c.rdDeadline = time.Time{}
 		return c
-	}(), bytes.NewReader(img), int64(len(img)))
+	}(), bytes.NewReader(img), int64(len(img)), &ota.StreamOptions{ChunkBytes: frameKB})
+}
+
+// TestFrameKBFromAck covers the negotiation parser: advertised values pass
+// through clamped to [1,8] KiB, and anything absent/garbage/zero keeps the
+// legacy 1024-byte frame (ChunkBytes 0 → PushStream's default).
+func TestFrameKBFromAck(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want int
+	}{
+		{"advertised 8 KiB", `{"ok":true,"device":"d","frame_kb":8}`, 8192},
+		{"advertised 1 KiB", `{"ok":true,"frame_kb":1}`, 1024},
+		{"over-ceiling clamped", `{"ok":true,"frame_kb":64}`, 8192},
+		{"absent keeps legacy", `{"ok":true,"device":"d"}`, 0},
+		{"zero keeps legacy", `{"ok":true,"frame_kb":0}`, 0},
+		{"garbage keeps legacy", `not json`, 0},
+	}
+	for _, tc := range cases {
+		if got := FrameKBFromAck([]byte(tc.json)); got != tc.want {
+			t.Errorf("%s: FrameKBFromAck = %d, want %d", tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestRelayEndToEnd(t *testing.T) {
@@ -362,7 +389,13 @@ func TestRelayEndToEnd(t *testing.T) {
 	if !bytes.Equal(dev.firmware, img) {
 		t.Fatalf("device firmware mismatch: got %d bytes, want %d", len(dev.firmware), len(img))
 	}
-	t.Logf("✓ success path: %d bytes in %d chunks, md5 verified by device", len(img), dev.chunks)
+	// The device advertises frame_kb=8 at hello and the hub relays it in
+	// push_ack, so the agent streamed 8 KiB frames: 64 KiB / 8 KiB = 8
+	// frames, not the 64 the legacy 1 KiB frame size would produce.
+	if dev.chunks != 8 {
+		t.Errorf("negotiated frame size not used: device saw %d frames, want 8 (8 KiB each)", dev.chunks)
+	}
+	t.Logf("✓ success path: %d bytes in %d frames (negotiated 8 KiB), md5 verified by device", len(img), dev.chunks)
 
 	// 1b. Secret gate: wrong secret is rejected without touching the device.
 	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha", "wrong-secret", img); err == nil {

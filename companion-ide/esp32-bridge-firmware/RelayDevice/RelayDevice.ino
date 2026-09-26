@@ -144,8 +144,16 @@ static bool dialRelay() {
   StaticJsonDocument<256> hello;
   hello["kind"] = "device_hello";
   hello["id"] = DEVICE_ID;
-  hello["version"] = "1.0.2-unified";
+  hello["version"] = "1.0.3-batch";
   hello["secret"] = deviceSecret;
+  // Negotiated data-frame size (KiB): the hub relays this to the agent in
+  // push_ack, which then sends 8 KiB frames instead of the legacy 1 KiB ones.
+  // The relay path is strict stop-and-wait (one bare ACK per frame), so this
+  // is purely the chunk÷RTT lever — an 8 KiB frame turns a ~15 min tunnel
+  // push into ~2 min. This board accepts 8 KiB in one onMessage callback
+  // (Update.write handles arbitrary sizes; ArduinoWebsockets has no max
+  // frame size compiled in).
+  hello["frame_kb"] = 8;
   String out; serializeJson(hello, out);
   sendText(out);
   wsConnected = true;

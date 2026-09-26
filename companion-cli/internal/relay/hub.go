@@ -105,6 +105,12 @@ type deviceConn struct {
 	closed  chan struct{}
 	once    sync.Once
 	version string
+	// frameKB is the max data-frame size (in KiB) the device advertised at
+	// hello. The relay path is stop-and-wait, so this is the chunk÷RTT lever:
+	// a board that accepts 8 KiB per frame needs ~8× fewer round-trips than
+	// one at 1 KiB. 0 = not advertised (legacy firmware) → keep the 1024-byte
+	// ArduinoOTA frame.
+	frameKB int
 }
 
 func (d *deviceConn) close() {
