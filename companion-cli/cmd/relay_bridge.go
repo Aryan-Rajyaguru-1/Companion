@@ -23,18 +23,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// dialRelayBridge pairs with a remote bridge device and exposes it as a
-// local TCP socket on an ephemeral 127.0.0.1 port. The returned closer ends
-// the pipe (which also clears the hub pairing via the agent disconnect).
+// pairRelayBridge dials the hub's agent port and asks for a transparent pipe to
+// the device. The returned websocket IS the pairing: the caller owns it and
+// must close it when the session ends, which is what makes the hub unpair the
+// device immediately.
 //
-// Used by `upload --ota-mode remote` for bridge targets: the MCU-specific
-// uploaders shell out to esptool (socket://) and avrdude (net:) with a socket
-// URL, and subprocesses cannot use an in-process net.Conn — so the remote
-// bridge becomes a local socket and those tools work unchanged.
-func dialRelayBridge(ctx context.Context, hubBase, token, deviceID, secret string) (int, func(), error) {
+// One pairing per local client, deliberately. A long-lived socket reused across
+// clients leaves the previous pipe's reader goroutine blocked in
+// ws.ReadMessage when its client hangs up; the next client's reader then
+// competes with it for frames, and the orphan can swallow the first one. The
+// ESP32 bridge firmware also serves ONE client at a time, so a fresh pairing
+// per connection matches what the device can actually do — and it survives the
+// bridge rebooting between sessions, which a reused socket could not.
+func pairRelayBridge(hubBase, token, deviceID, secret string) (*websocket.Conn, error) {
 	u, err := url.Parse(hubBase)
 	if err != nil {
-		return 0, nil, fmt.Errorf("bad hub URL: %w", err)
+		return nil, fmt.Errorf("bad hub URL: %w", err)
 	}
 	u.Path = "/agent"
 	q := u.Query()
@@ -43,20 +47,20 @@ func dialRelayBridge(ctx context.Context, hubBase, token, deviceID, secret strin
 
 	ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		return 0, nil, fmt.Errorf("dial hub agent port: %w", err)
+		return nil, fmt.Errorf("dial hub agent port: %w", err)
 	}
 	req, _ := json.Marshal(map[string]any{
 		"kind": relay.KindPipeReq, "device": deviceID, "secret": secret,
 	})
 	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
 		ws.Close()
-		return 0, nil, fmt.Errorf("pipe_req: %w", err)
+		return nil, fmt.Errorf("pipe_req: %w", err)
 	}
 	ws.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, raw, err := ws.ReadMessage()
 	if err != nil {
 		ws.Close()
-		return 0, nil, fmt.Errorf("pipe_ack: %w", err)
+		return nil, fmt.Errorf("pipe_ack: %w", err)
 	}
 	var ack struct {
 		Kind  string `json:"kind"`
@@ -65,36 +69,84 @@ func dialRelayBridge(ctx context.Context, hubBase, token, deviceID, secret strin
 	}
 	if err := json.Unmarshal(raw, &ack); err != nil {
 		ws.Close()
-		return 0, nil, fmt.Errorf("pipe_ack parse: %w", err)
+		return nil, fmt.Errorf("pipe_ack parse: %w", err)
 	}
 	ws.SetReadDeadline(time.Time{})
 	if ack.Kind == relay.KindPushResult && !ack.OK {
 		ws.Close()
-		return 0, nil, fmt.Errorf("hub rejected the pipe: %s", ack.Error)
+		return nil, fmt.Errorf("hub rejected the pipe: %s", ack.Error)
 	}
 	if ack.Kind != relay.KindPushAck || !ack.OK {
 		ws.Close()
-		return 0, nil, fmt.Errorf("unexpected hub reply: %s", raw)
+		return nil, fmt.Errorf("unexpected hub reply: %s", raw)
 	}
+	return ws, nil
+}
 
+// pairRelayBridgeWithRetry pairs, retrying briefly. The previous session's
+// agent socket is closed asynchronously, so a client that reconnects
+// immediately (esptool does exactly this across a chip reset) can reach the
+// hub before it has finished unpairing and be told "already paired to another
+// agent". That is a race, not a real conflict, so a few short retries turn a
+// spurious failure into a normal one — while a genuine conflict (a real
+// concurrent session) still fails fast after the retries are spent.
+func pairRelayBridgeWithRetry(hubBase, token, deviceID, secret string) (*websocket.Conn, error) {
+	const attempts = 4
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(150 * time.Millisecond)
+		}
+		var ws *websocket.Conn
+		ws, err = pairRelayBridge(hubBase, token, deviceID, secret)
+		if err == nil {
+			return ws, nil
+		}
+	}
+	return nil, err
+}
+
+// serveRelayBridgeClients accepts local connections on ln and gives each one a
+// fresh pairing with the remote bridge. Clients are served SEQUENTIALLY: the
+// bridge firmware holds one UART session at a time, and one websocket cannot
+// carry two concurrent readers.
+func serveRelayBridgeClients(ctx context.Context, ln net.Listener, hubBase, token, deviceID, secret string, onErr func(error)) {
+	for {
+		tcp, err := ln.Accept()
+		if err != nil {
+			return // listener closed: the caller is shutting down
+		}
+		if ctx.Err() != nil {
+			tcp.Close()
+			return
+		}
+		ws, perr := pairRelayBridgeWithRetry(hubBase, token, deviceID, secret)
+		if perr != nil {
+			tcp.Close()
+			if onErr != nil {
+				onErr(perr)
+			}
+			continue
+		}
+		_ = pipeConn(ctx, ws, tcp)
+		ws.Close() // ends the pairing; the hub unpairs the device for the next client
+	}
+}
+
+// dialRelayBridge exposes a remote bridge as a local TCP socket on an ephemeral
+// 127.0.0.1 port, and returns that port plus a closer.
+//
+// Used by `upload --ota-mode remote` for bridge targets: the MCU-specific
+// uploaders shell out to esptool (socket://) and avrdude (net:) with a socket
+// URL, and subprocesses cannot use an in-process net.Conn — so the remote
+// bridge becomes a local socket and those tools work unchanged.
+func dialRelayBridge(ctx context.Context, hubBase, token, deviceID, secret string) (int, func(), error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		ws.Close()
 		return 0, nil, fmt.Errorf("local listen: %w", err)
 	}
-	// Sequential accept+pipe: the bridge firmware serves ONE client at a
-	// time, and concurrent ws.ReadMessage on one socket is not allowed.
-	go func() {
-		for {
-			tcp, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			pipeConn(ctx, ws, tcp)
-		}
-	}()
-	port := ln.Addr().(*net.TCPAddr).Port
-	return port, func() { ln.Close(); ws.Close() }, nil
+	go serveRelayBridgeClients(ctx, ln, hubBase, token, deviceID, secret, nil)
+	return ln.Addr().(*net.TCPAddr).Port, func() { ln.Close() }, nil
 }
 
 // pipeConn pumps bytes bidirectionally between a local TCP client and the
@@ -184,48 +236,9 @@ needed anywhere. Pairing uses the same per-device secret as OTA pushes.`,
 			if token == "" {
 				return fmt.Errorf("agent token required: --token or COMPANION_RELAY_AGENTS_TOKEN")
 			}
-			u, err := url.Parse(hubURL)
-			if err != nil {
+			if _, err := url.Parse(hubURL); err != nil {
 				return fmt.Errorf("bad --hub: %w", err)
 			}
-			u.Path = "/agent"
-			q := u.Query()
-			q.Set("token", token)
-			u.RawQuery = q.Encode()
-
-			ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-			if err != nil {
-				return fmt.Errorf("dial hub agent port: %w", err)
-			}
-			defer ws.Close()
-
-			req, _ := json.Marshal(map[string]any{
-				"kind": relay.KindPipeReq, "device": deviceID, "secret": deviceSecret,
-			})
-			if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
-				return fmt.Errorf("pipe_req: %w", err)
-			}
-			ws.SetReadDeadline(time.Now().Add(10 * time.Second))
-			_, raw, err := ws.ReadMessage()
-			if err != nil {
-				return fmt.Errorf("pipe_ack: %w", err)
-			}
-			var ack struct {
-				Kind  string `json:"kind"`
-				OK    bool   `json:"ok"`
-				Error string `json:"error"`
-			}
-			if err := json.Unmarshal(raw, &ack); err != nil {
-				return fmt.Errorf("pipe_ack parse: %w", err)
-			}
-			if ack.Kind == relay.KindPushResult && !ack.OK {
-				return fmt.Errorf("hub rejected the pipe: %s", ack.Error)
-			}
-			if ack.Kind != relay.KindPushAck || !ack.OK {
-				return fmt.Errorf("unexpected hub reply: %s", raw)
-			}
-			ws.SetReadDeadline(time.Time{})
-
 			ln, err := net.Listen("tcp", listenAddr)
 			if err != nil {
 				return fmt.Errorf("listen on %s: %w", listenAddr, err)
@@ -235,21 +248,15 @@ needed anywhere. Pairing uses the same per-device secret as OTA pushes.`,
 				colorBold(deviceID), colorTeal(ln.Addr().String())))
 			printInfo("Point esptool / avrdude / `companion upload --host` at that address.")
 
+			// Same pairing path as `upload --ota-mode remote` — one call,
+			// shared: the handshake used to be copy-pasted here, which is how
+			// the two drifted (this one also spawned a goroutine per client
+			// while the shared comment said the pipe must be sequential).
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
-			for {
-				tcp, err := ln.Accept()
-				if err != nil {
-					return err
-				}
-				// The bridge firmware serves ONE client at a time; pipe until
-				// this client (or the device link) drops, then accept again.
-				go func() {
-					if err := pipeConn(ctx, ws, tcp); err != nil {
-						printError("bridge pipe: " + err.Error())
-					}
-				}()
-			}
+			serveRelayBridgeClients(ctx, ln, hubURL, token, deviceID, deviceSecret,
+				func(err error) { printError("bridge pipe: " + err.Error()) })
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&hubURL, "hub", "", "hub base URL (ws:// or wss:// host)")

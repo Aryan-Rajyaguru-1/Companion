@@ -77,9 +77,17 @@ type CompilerConfig struct {
 type UploadConfig struct {
 	AutoVerify bool `yaml:"auto_verify"`
 	Verbose    bool `yaml:"verbose"`
-	// OTA mode: "remote" (default — relay hub over the internet) or "local"
-	// (LAN ArduinoOTA). Users toggle with --ota-mode.
+	// OTA mode: "remote" (relay hub over the internet) or "local" (LAN
+	// ArduinoOTA). Defaults to "local" — a wireless board is normally on your
+	// own network, and defaulting to remote made a plain `upload --ota` fail
+	// with "needs --relay-hub". Remote is opt-in.
 	OTAMode string `yaml:"ota_mode,omitempty"`
+	// Bridge mode has its OWN key on purpose: it used to read ota_mode, so
+	// setting remote for OTA silently redirected LAN bridge uploads (Uno/Nano/
+	// STM32 through the ESP32 bridge) at a relay hub that was never involved.
+	// Values: "local" (default — dial the bridge on the LAN) or "remote"
+	// (pair with a bridge through the hub; `upload --ota-mode remote`).
+	BridgeMode string `yaml:"bridge_mode,omitempty"`
 }
 
 type BridgeConfig struct {

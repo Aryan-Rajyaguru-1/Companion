@@ -215,15 +215,17 @@ Examples:
 			}
 
 			if useOTA {
-				// Transport toggle: "remote" (default, relay hub over the
-				// internet) or "local" (opt-in LAN ArduinoOTA). IP-based
-				// local OTA stays available as the explicit opt-in.
+				// Transport toggle: "local" (LAN ArduinoOTA, the default — a
+				// wireless board is normally on your own network) or "remote"
+				// (relay hub over the internet). Remote is opt-in, because
+				// defaulting to it made a plain `upload --ota` fail with
+				// "needs --relay-hub" on exactly the setup it should serve.
 				mode := otaMode
 				if !cmd.Flags().Changed("ota-mode") && cfg.Upload.OTAMode != "" {
 					mode = cfg.Upload.OTAMode
 				}
 				if mode == "" {
-					mode = "remote" // remote-first: relay hub over the internet
+					mode = "local" // LAN ArduinoOTA unless asked otherwise
 				}
 				if mode != "remote" && mode != "local" {
 					return fmt.Errorf("invalid --ota-mode %q: want \"remote\" or \"local\"", mode)
@@ -326,14 +328,13 @@ Examples:
 
 			// ── Category-2 transport switch ─────────────────────────
 			// Bridge uploads get the same local|remote choice the OTA path
-			// has. "remote" pairs with the bridge through the relay hub and
-			// exposes it as a local TCP socket, so esptool/avrdude (which
-			// need a socket URL) work unchanged against a bridge that is
-			// anywhere on the internet. Defaults to "local": bridge targets
-			// are LAN devices.
+			// has, but their OWN config key: reading upload.ota_mode here
+			// meant "set remote for OTA" silently redirected LAN bridge
+			// uploads at a relay hub. Defaults to "local" — bridge targets
+			// are LAN devices unless the user says otherwise.
 			bridgeMode := otaMode
-			if !cmd.Flags().Changed("ota-mode") && cfg.Upload.OTAMode != "" {
-				bridgeMode = cfg.Upload.OTAMode
+			if !cmd.Flags().Changed("ota-mode") && cfg.Upload.BridgeMode != "" {
+				bridgeMode = cfg.Upload.BridgeMode
 			}
 			if bridgeMode == "" {
 				bridgeMode = "local"
@@ -418,9 +419,9 @@ Examples:
 	cmd.Flags().StringVar(&profileNam, "profile", "",
 		"Upload profile from sketch.yaml (board + bridge target + libraries)")
 	cmd.Flags().BoolVar(&otaFlag, "ota", false,
-		"Upload over the air (default: remote via relay hub; use --ota-mode local for LAN ArduinoOTA)")
+		"Upload over the air (default: LAN ArduinoOTA; use --ota-mode remote for a device behind the relay hub)")
 	cmd.Flags().StringVar(&otaMode, "ota-mode", "",
-		"OTA transport: remote | local (default remote; config upload.ota_mode also read)")
+		"OTA transport: local (default) | remote (relay hub); config upload.ota_mode also read. For BRIDGE targets the default config key is upload.bridge_mode")
 	cmd.Flags().StringVar(&relayHub, "relay-hub", "",
 		"Relay hub base URL for remote OTA (ws:// or wss:// host)")
 	cmd.Flags().StringVar(&relayDevice, "relay-device", "",

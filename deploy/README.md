@@ -241,6 +241,15 @@ nothing changes at the target end:
   command-line flag, which is visible in `ps` output and shell history.
 - **The hub is not a firmware store.** Nothing is persisted server-side; a
   restart only drops current pairings.
+- **Every device must present a secret.** A `device_hello` without one is
+  refused, and pairing always compares the secret — an empty secret used to mean
+  "no check", which would have let anyone holding the devices token claim a
+  board's id and receive its firmware.
+- **A device id belongs to one board.** Re-registering an id that is already
+  online is only accepted with the *same* secret, so a stolen devices token
+  cannot evict the incumbent and impersonate it. Keep the default
+  MAC-derived id (it is unique per board); a fixed literal is what makes two
+  boards take turns evicting each other.
 - **No password, no OTA.** The relay authenticates the *transport*; if you also
   want ArduinoOTA password checking on the device, configure it in the sketch.
 
