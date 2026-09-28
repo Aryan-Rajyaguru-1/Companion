@@ -112,6 +112,14 @@ jobs:
           VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
         run: |
           npm install --no-audit --no-fund
+          # Electron's binary is downloaded by a postinstall script, and recent
+          # npm versions gate install scripts behind an approval prompt — which
+          # leaves node_modules/electron WITHOUT its binary and electron-builder
+          # then fails with a confusing packaging error. install.js is a no-op
+          # when the binary is already there, so running it explicitly is safe
+          # either way.
+          node node_modules/electron/install.js
+          node -e "console.log('electron', require('electron/package.json').version)"
           # electron-builder takes the version from package.json. Rewrite it
           # with node rather than `npm version`: npm refuses to run on a dirty
           # git tree, and `npm install` above is enough to dirty package-lock.
