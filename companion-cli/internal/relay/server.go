@@ -125,6 +125,7 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		Ver     string `json:"version"`
 		Secret  string `json:"secret"`
 		FrameKB int    `json:"frame_kb"` // optional: negotiated data-frame size (KiB)
+		IP      string `json:"ip"`       // optional: the board's LAN address (LAN OTA recovery)
 	}
 	if err := json.Unmarshal(raw, &hello); err != nil || hello.Kind != KindDeviceHello {
 		h.nudge(d, "first frame must be device_hello")
@@ -134,6 +135,7 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 	d.version = hello.Ver
 	d.secret = hello.Secret // per-device identity, checked at push time
 	d.frameKB = hello.FrameKB
+	d.ip = hello.IP
 	if d.id == "" {
 		h.nudge(d, "device id required")
 		return

@@ -23,6 +23,7 @@ type Config struct {
 // DeviceInfo is a status/health snapshot of one connected device.
 type DeviceInfo struct {
 	ID      string `json:"id"`
+	IP      string `json:"ip,omitempty"` // board's LAN address, for --ota-mode local
 	Version string `json:"version,omitempty"`
 	Busy    bool   `json:"busy"`
 }
@@ -128,6 +129,10 @@ type deviceConn struct {
 	// one at 1 KiB. 0 = not advertised (legacy firmware) → keep the 1024-byte
 	// ArduinoOTA frame.
 	frameKB int
+	// ip is the board's own LAN address, advertised at hello. The relay is
+	// one-way (the board dials out), so this is how an operator discovers
+	// where a board lives — needed for the LAN recovery path.
+	ip string
 }
 
 func (d *deviceConn) close() {
@@ -166,7 +171,7 @@ func (h *Hub) ListDevices() []DeviceInfo {
 	defer h.mu.Unlock()
 	out := make([]DeviceInfo, 0, len(h.devices))
 	for _, d := range h.devices {
-		out = append(out, DeviceInfo{ID: d.id, Version: d.version, Busy: d.busy})
+		out = append(out, DeviceInfo{ID: d.id, IP: d.ip, Version: d.version, Busy: d.busy})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

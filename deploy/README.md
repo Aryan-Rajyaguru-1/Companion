@@ -215,6 +215,45 @@ nothing changes at the target end:
 
 ---
 
+---
+
+## Recovering a board when the hub is the problem
+
+Firmware normally reaches a board through the relay, so if the hub, the tunnel
+or the DNS is down, the board cannot be updated — the one situation where you
+most want to update it. For boards you can reach over USB, enable the LAN
+recovery service in `RelayDevice/config.local.h`:
+
+```c
+#define RELAY_LAN_OTA 1
+```
+
+The board then serves ArduinoOTA on its own network **as well as** the relay
+(the relay link is untouched — one does not replace the other). Find its
+address and flash it:
+
+```bash
+companion relay devices --hub wss://ota.example.com   # shows each board's LAN ip
+companion ota upload 192.168.1.50 --ota-mode local ./build/firmware.bin
+```
+
+`relay devices` shows the IP because the board advertises it in its hello: the
+relay is one-way (the board dials out), so that is the only way to learn where a
+board lives on its own network. mDNS discovery is not a substitute on a routed
+network, and it will usually not cross from a wired machine to a WiFi one.
+
+**What this does and does not save you from**
+
+| Failure | Recoverable over LAN? |
+|---|---|
+| Hub process down, tunnel broken, DNS failure, bad hub config | ✅ yes — the board is on your network |
+| Board lost its WiFi credentials or joined an isolated subnet | ❌ no — it is not on a network your machine can reach. USB, or a machine on that network, is the only way |
+| Board wedged (as happened once here with a stuck USB stack) | ❌ the relay firmware keeps running, so the relay path still works |
+
+The flag is off by default because ArduinoOTA carries no per-device secret of
+its own: enabling it adds an unauthenticated service to your network. Turn it
+on for boards you trust, and use the relay for everything else.
+
 ## Customising
 
 | Want to change | How |

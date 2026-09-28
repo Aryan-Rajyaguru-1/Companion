@@ -26,6 +26,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <ArduinoJson.h>
 #include <ArduinoWebsockets.h>
 #include <Preferences.h>
@@ -139,6 +140,12 @@ static bool relayDial() {
   hello["version"] = relayCfg.version ? relayCfg.version() : "unknown";
   hello["secret"] = relayDeviceSecret;
   hello["frame_kb"] = RELAY_FRAME_KB;
+  // The board's LAN address. The relay is one-way (the board dials out), so
+  // this is the ONLY way an operator learns where a board is on its own
+  // network — which is exactly what the LAN recovery path
+  // (`companion ota upload <ip> --ota-mode local`) needs, and what mDNS
+  // discovery cannot always supply across a routed network.
+  hello["ip"] = WiFi.localIP().toString();
   String out; serializeJson(hello, out);
   relaySendText(out);
   relayWsConnected = true;

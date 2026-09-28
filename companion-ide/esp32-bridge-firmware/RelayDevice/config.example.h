@@ -44,4 +44,19 @@
 // same-default pair simply refuses rather than flip-flops).
 #define DEVICE_ID       "esp32-bridge-01"
 
+// ── Recovery path (optional) ──────────────────────────────────────
+// Firmware normally arrives over the relay, so a board whose HUB or tunnel is
+// unreachable can only be fixed with a USB cable. Set this to 1 and the board
+// also serves ArduinoOTA on the LAN, so it can be re-flashed over WiFi:
+//
+//   companion ota upload <board-ip> --ota-mode local
+//
+// The board's LAN address is shown by `companion relay devices` (it advertises
+// it in device_hello), so you do not have to guess it.
+//
+// Default 0: ArduinoOTA has no per-device secret of its own, so this is one
+// more unauthenticated service on your network. Turn it on for boards you can
+// reach over USB, and leave it off for boards on untrusted networks.
+// #define RELAY_LAN_OTA 1
+
 #endif /* CONFIG_LOCAL_H */

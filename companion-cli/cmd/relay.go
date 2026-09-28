@@ -222,6 +222,7 @@ func newRelayCmd() *cobra.Command {
 			var health struct {
 				Devices []struct {
 					ID      string `json:"id"`
+					IP      string `json:"ip"`
 					Version string `json:"version"`
 					Busy    bool   `json:"busy"`
 				} `json:"devices"`
@@ -238,7 +239,15 @@ func newRelayCmd() *cobra.Command {
 				if d.Busy {
 					state = "busy"
 				}
-				fmt.Printf("%s  v%s  %s\n", d.ID, d.Version, state)
+				// The IP is the board's own LAN address: the relay is one-way
+				// (the board dials out), so this is how you find it for a
+				// local recovery push — `companion ota upload <ip> --ota-mode
+				// local` — when the hub is the thing that is unreachable.
+				ip := d.IP
+				if ip == "" {
+					ip = "ip unknown (older firmware)"
+				}
+				fmt.Printf("%-22s %-16s v%-12s %s\n", d.ID, ip, d.Version, state)
 			}
 			return nil
 		},

@@ -23,6 +23,7 @@
 #include <ArduinoJson.h>
 #include <Update.h>
 #include <WiFi.h>
+#include <ArduinoOTA.h>
 
 // ── Run-local config ─────────────────────────────────────────────────
 // Real credentials live in config.local.h (git-ignored, same pattern as the
@@ -31,6 +32,18 @@
 // header include: relayDial reads RELAY_HOST/PORT/TLS/DEVICE_TOKEN.
 #if __has_include("config.local.h")
   #include "config.local.h"
+#endif
+
+// RELAY_LAN_OTA adds a LAN ArduinoOTA service alongside the relay link — a
+// RECOVERY PATH, and the fix for this board's single point of failure. The
+// relay is how firmware arrives, so if the hub is down, the tunnel breaks, or
+// the board is mis-provisioned, the only way back was a USB cable. With this
+// on, the same board can be re-flashed over WiFi with
+//   companion ota upload <board-ip> --ota-mode local
+// Default OFF: it is one more unauthenticated network service (ArduinoOTA has
+// no per-device secret of its own), so it stays opt-in.
+#ifndef RELAY_LAN_OTA
+  #define RELAY_LAN_OTA 0
 #endif
 
 // Generic esp32 core variants don't define LED_BUILTIN; the DevKit v1's
@@ -229,11 +242,42 @@ void setup() {
   Serial.printf("[relay] WiFi OK, ip=%s rssi=%d\n",
                 WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
+#if RELAY_LAN_OTA
+  // Recovery path. Runs beside the relay, never instead of it: a board can be
+  // updated over the LAN while the hub is unreachable, and over the relay
+  // while this is off. The relay link still comes up below either way.
+  {
+    char host[40];
+    snprintf(host, sizeof(host), "companion-%s", WiFi.macAddress().c_str() + 9);
+    ArduinoOTA.setHostname(host);
+    // No password by default: ArduinoOTA's own auth is a shared secret in
+    // cleartext on the LAN, so leaving it empty is the honest choice for a
+    // trusted network, and a deployment that needs it sets RELAY_LAN_OTA_PASSWORD.
+    ArduinoOTA.onStart([]() { Serial.println("[lanota] update starting — relay link unaffected"); });
+    ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+      static int lastPct = -1;
+      int pct = (int)(done * 100 / total);
+      if (pct != lastPct && pct % 25 == 0) {
+        lastPct = pct;
+        Serial.printf("[lanota] %d%%\n", pct);
+      }
+    });
+    ArduinoOTA.onEnd([]() { Serial.println("[lanota] update done — rebooting"); });
+    ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[lanota] error %u\n", e); });
+    ArduinoOTA.begin();
+    Serial.printf("[lanota] LAN recovery service UP (hostname %s, port 3232)\n", host);
+    Serial.println("[lanota] recover with: companion ota upload <ip> --ota-mode local");
+  }
+#endif
+
   relayBegin(relayLink);   // secret + callbacks + dial
 }
 
 void loop() {
   relayLinkLoop();   // poll + zombie-watchdog + re-dial (shared)
+#if RELAY_LAN_OTA
+  ArduinoOTA.handle();   // LAN recovery path (RELAY_LAN_OTA)
+#endif
 
   // Built-in LED heartbeat, driven from the alive-logger tick: slow 2 Hz
   // blink while idle, fast 8 Hz while a push is streaming.

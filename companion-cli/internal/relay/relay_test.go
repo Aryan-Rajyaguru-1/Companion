@@ -700,3 +700,48 @@ func TestImpostorCannotStealDeviceID(t *testing.T) {
 	}
 	t.Logf("✓ impostor refused, incumbent kept the id")
 }
+
+// The board's LAN address must survive hello → hub → /health. The relay is
+// one-way (the board dials out), so this is the only way an operator learns
+// where a board is — which is what the LAN recovery push
+// (`ota upload <ip> --ota-mode local`) needs when the hub is what is down.
+func TestDeviceAdvertisesItsLANIP(t *testing.T) {
+	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device?token=dev-tok", nil)
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "ip-dev", "version": "1.2.3",
+		"secret": "s", "ip": "192.168.29.134",
+	})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, _, err := ws.ReadMessage(); err != nil { // welcome
+		t.Fatalf("welcome: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var devs []DeviceInfo
+	for time.Now().Before(deadline) {
+		devs = hub.ListDevices()
+		if len(devs) == 1 && devs[0].IP != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(devs) != 1 {
+		t.Fatalf("device not registered: %+v", devs)
+	}
+	if devs[0].IP != "192.168.29.134" {
+		t.Fatalf("LAN IP not surfaced: got %q, want 192.168.29.134", devs[0].IP)
+	}
+	t.Logf("✓ board IP flows through: %s at %s", devs[0].ID, devs[0].IP)
+}
