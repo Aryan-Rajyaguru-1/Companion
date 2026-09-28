@@ -13,7 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fileSaveAs:      (p)            => ipcRenderer.invoke('file:saveAs', p),
   fileOpen:        ()             => ipcRenderer.invoke('file:open'),
   getTempDir:      ()             => ipcRenderer.invoke('os:tempdir'),
-  mkTempDir:       (dir, prefix)  => ipcRenderer.invoke('os:mkdtemp', { prefix: require('path').join(dir, prefix || 'companion_') }),
+  // The path join happens in MAIN: a sandboxed preload has no 'path' module.
+  mkTempDir:       (dir, prefix)  => ipcRenderer.invoke('os:mkdtemp', { dir, prefix: prefix || 'companion_' }),
   listSketchFiles: (dir, showAll) => ipcRenderer.invoke('file:listSketchFiles', { dir, showAll }),
   readSketchFile:  (fp)           => ipcRenderer.invoke('file:readSketch', { path: fp }),
   openFolder:      (dir)          => ipcRenderer.invoke('file:openFolder', { dir }),

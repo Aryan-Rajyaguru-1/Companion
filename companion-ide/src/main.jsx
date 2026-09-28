@@ -1,8 +1,8 @@
+// FIRST import: it must evaluate before App/Editor, which call loader.init()
+// at module scope. See src/monacoSetup.js for why that matters.
+import './monacoSetup';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { loader } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor';
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import ErrorBoundary from './ErrorBoundary';
 import App from './App';  // Switch back to full App
 import SerialMonitor from './components/SerialMonitor';
@@ -10,17 +10,6 @@ import './index.css';
 
 console.log('=== Companion IDE Starting ===');
 
-// Monaco is BUNDLED, not fetched. It used to be pointed at
-// cdn.jsdelivr.net, which meant the editor's JavaScript arrived at runtime
-// from a third-party CDN — so the CSP had to allow that origin and
-// 'unsafe-eval', and the "100% local" claim was false: whoever controlled
-// that CDN response controlled the editor (and, through it, the renderer).
-// Shipping the files inside the app removes the supply-chain hop, the CSP hole
-// and the offline failure mode in one change.
-self.MonacoEnvironment = {
-  getWorker: () => new editorWorker(),
-};
-loader.config({ monaco });
 console.log('✓ Monaco bundled locally (no CDN)');
 
 // Ensure root element exists

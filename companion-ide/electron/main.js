@@ -35,7 +35,7 @@ function createWindow() {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true, nodeIntegration: false, sandbox: false,
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
     },
   });
 
@@ -211,7 +211,12 @@ function registerIPC() {
   ipcMain.handle('os:tempdir', () => os.tmpdir());
   // Unique temp dir per compile (fs.mkdtemp) — prevents two IDE instances
   // or parallel compiles from overwriting each other's sketch
-  ipcMain.handle('os:mkdtemp', (_, { prefix }) => fs.mkdtempSync(prefix || (os.tmpdir() + '/companion_')));
+  ipcMain.handle('os:mkdtemp', (_, { dir, prefix }) => {
+    // Renderer input reaches fs.mkdtempSync, so the base directory is checked
+    // against the same policy as the file handlers.
+    const base = isDenied(dir) ? os.tmpdir() : dir;
+    return fs.mkdtempSync(path.join(base, prefix || 'companion_'));
+  });;
 
   // BUG E FIX: renderer sends this after save completes; the close handler
   // registers its own ipcMain.once('save:completed') listener on demand.
@@ -467,7 +472,7 @@ function registerIPC() {
       autoHideMenuBar: true,
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
-        contextIsolation: true, nodeIntegration: false, sandbox: false,
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
       },
     });
     const devUrl = process.env.VITE_DEV_SERVER_URL;
