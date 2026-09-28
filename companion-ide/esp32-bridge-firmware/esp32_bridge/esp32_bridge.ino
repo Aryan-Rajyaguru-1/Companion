@@ -87,6 +87,80 @@
 // built from the last 3 bytes of WiFi.macAddress() so multiple
 // bridges on one LAN get unique OTA/mDNS hostnames.
 char otaHostname[32] = OTA_HOSTNAME_DEFAULT;
+
+// Firmware version — reported in device_hello. Defined HERE, before the relay
+// block that returns it: macros are textual, so the reference must already
+// resolve at that point (this is why it is not in the constants section
+// further down). Guarded so a build can still override it.
+#ifndef FW_VERSION
+  #define FW_VERSION      "OTA-BRIDGE v1.1"
+#endif
+
+// ── Remote relay link (category-2 remote: the bridge dials the hub) ──
+// OPTIONAL — the default (RELAY_MODE_REMOTE 0) keeps the LAN TCP server
+// above. With RELAY_MODE_REMOTE 1 the bridge dials the relay hub instead and
+// pipes WS↔UART, so an IDE anywhere on the internet can flash the target
+// through `companion relay bridge` (which exposes the remote bridge as a
+// local TCP socket) — every LAN tool then works unchanged.
+#ifndef RELAY_MODE_REMOTE
+  #define RELAY_MODE_REMOTE 0
+#endif
+#ifndef RELAY_HOST
+  #define RELAY_HOST    "YOUR_HUB_LAN_IP"  // host running `companion relay hub`
+#endif
+#ifndef RELAY_PORT
+  #define RELAY_PORT    8931
+#endif
+#ifndef RELAY_TLS
+  #define RELAY_TLS     false  // true → wss:// (through a TLS-terminating proxy)
+#endif
+#ifndef DEVICE_TOKEN
+  #define DEVICE_TOKEN  "YOUR_DEVICE_TOKEN"  // COMPANION_RELAY_DEVICES_TOKEN on the hub
+#endif
+#ifndef DEVICE_ID
+  #define DEVICE_ID     "companion-bridge-01" // unique per bridge
+#endif
+#ifndef RELAY_FRAME_KB
+  #define RELAY_FRAME_KB 8
+#endif
+
+// The shared dial-out link (ONE copy, shared with RelayDevice): WS object,
+// NVS secret, device_hello, the zombie-link watchdog (ping/pong) and the
+// re-dial loop. RELAY_* above must precede this include.
+//
+// Its library dependencies are declared HERE on purpose: the builder
+// discovers libraries by scanning the sketch's OWN sources, and headers
+// under ../shared/ are outside that scan (the shared header includes them
+// too; the include guards make the double include harmless). Same pattern as
+// RelayDevice.ino.
+#include <ArduinoJson.h>
+#include <ArduinoWebsockets.h>
+#include <Preferences.h>
+#include "../shared/relay_link.h"
+
+// The relay pipe: bytes from the hub are control commands and UART data in
+// the SAME stream the LAN TCP client delivers — the parser is byte-wise and
+// passes non-magic bytes straight to the target, so nothing changes.
+static void bridgeOnRelayText(const String &t) {
+  // push_start/status frames don't apply to a transparent bridge; ignore.
+  (void)t;
+}
+static void bridgeOnRelayBinary(WebsocketsMessage &msg) {
+  const uint8_t *p = (const uint8_t *)msg.c_str();
+  size_t n = msg.length();
+  for (size_t i = 0; i < n; i++) {
+    pumpTcpByte(p[i]); // same parser: control frames parsed, UART passes through
+  }
+}
+static const char *bridgeFwVersion() { return FW_VERSION; }
+static bool bridgeNeverPushing() { return false; } // the bridge is never an OTA target here
+
+static const RelayLinkConfig bridgeRelayLink = {
+  bridgeFwVersion,
+  bridgeNeverPushing,   // the watchdog never stands down — always on
+  bridgeOnRelayText,
+  bridgeOnRelayBinary,
+};
 void resolveOtaHostname() {
   if (strcmp(OTA_HOSTNAME, OTA_HOSTNAME_DEFAULT) != 0) {
     strncpy(otaHostname, OTA_HOSTNAME, sizeof(otaHostname) - 1);
@@ -125,7 +199,9 @@ void resolveOtaHostname() {
 #define BUF_SIZE        2048
 
 // ── Firmware version ─────────────────────────────────────────
-#define FW_VERSION      "OTA-BRIDGE v1.1"
+// FW_VERSION is defined near the top of this sketch (the relay block reports
+// it in device_hello, and macros are textual — the reference must resolve
+// before that point).
 
 // ── Control protocol (matches bridge-client.js) ───────────────
 #define CTRL_A              0xEF
@@ -235,7 +311,22 @@ void setup() {
   Serial2.begin(currentBaud, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
 
   // WiFi
-#if WIFI_AP_MODE
+#if RELAY_MODE_REMOTE
+  // Relay mode: the bridge DIALS the hub, so it must join the router (STA).
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(STA_SSID, STA_PASS);
+  Serial.printf("\n  [relay] joining %s", STA_SSID);
+  uint8_t tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 40) {
+    delay(500); Serial.print("."); tries++;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n\n  ✗ WiFi failed! Check STA_SSID/STA_PASS in config.local.h");
+    delay(2000);
+    ESP.restart();
+  }
+  Serial.printf("\n  ✓ Connected! ip=%s\n", WiFi.localIP().toString().c_str());
+#elif WIFI_AP_MODE
   WiFi.softAP(AP_SSID, AP_PASS);
   Serial.println("\n╔════════════════════════════════════════════════════╗");
   Serial.println("║         ESP32 ACCESS POINT MODE (AP)              ║");
@@ -273,6 +364,12 @@ void setup() {
   Serial.println("  → Copy the IP address above into Bridge Settings → Connection tab\n");
 #endif
 
+#if RELAY_MODE_REMOTE
+  // Relay mode: dial the hub and pipe WS↔UART. No LAN TCP server, no mDNS —
+  // the IDE reaches this bridge through `companion relay bridge`.
+  relayBegin(bridgeRelayLink);   // secret + callbacks + dial the hub
+  Serial.println("  → relay link up: flashing through the hub (no LAN server)\n");
+#else
   tcpServer.begin();
   Serial.printf("  TCP server listening on port %d...\n\n", TCP_PORT);
 
@@ -288,6 +385,7 @@ void setup() {
     MDNS.addService("http", "tcp", 3333);
     Serial.println("     → IDE can connect to <hostname>.local:3333\n");
   }
+#endif // RELAY_MODE_REMOTE / LAN server
 
   // ── Security posture banner (audit F001/F005) ────────────────────
   // OTA with no password accepts firmware from anyone on the network, and

@@ -29,6 +29,10 @@ const (
 	KindWelcome = "welcome"
 	// agent → hub: request a push to a device id.
 	KindPushReq = "push_req"
+	// agent → hub: request a TRANSPARENT byte pipe to a device (bridge
+	// mode — UART passthrough for esptool/avrdude/monitor, no OTA data
+	// phase, no stop-and-wait ACKs).
+	KindPipeReq = "pipe_req"
 	// hub → agent: push accepted/rejected (device online, token valid).
 	KindPushAck = "push_ack"
 	// hub → device: incoming push (image size + md5 follow on data side).

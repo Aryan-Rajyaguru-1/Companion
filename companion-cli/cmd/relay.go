@@ -248,5 +248,7 @@ func newRelayCmd() *cobra.Command {
 	devicesCmd.MarkFlagRequired("hub")
 	relayCmd.AddCommand(devicesCmd)
 
+	relayCmd.AddCommand(newRelayBridgeCmd()) // category-2 remote: bridge over the hub
+
 	return relayCmd
 }

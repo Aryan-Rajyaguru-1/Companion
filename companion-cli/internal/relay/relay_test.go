@@ -364,6 +364,102 @@ func TestDeviceHeartbeat(t *testing.T) {
 	}
 }
 
+// TestPipeMode: the bridge transport. pipe_req pairs WITHOUT push_start (the
+// device is a transparent byte relay — esptool/avrdude speak their own
+// protocol straight over the pipe), and binary flows BOTH directions.
+func TestPipeMode(t *testing.T) {
+	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// The "bridge" device: registers, then echoes binary frames back — what
+	// esp32_bridge.ino does with UART data (and the control parser passes
+	// non-magic bytes straight to the target).
+	devWS, _ := dialDevice(t, wsURL, "dev-tok", "bridge-01", "bridge-secret")
+	defer devWS.Close()
+	echoDone := make(chan struct{})
+	go func() {
+		defer close(echoDone)
+		for i := 0; i < 3; i++ {
+			devWS.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, payload, err := devWS.ReadMessage()
+			if err != nil {
+				return
+			}
+			devWS.WriteMessage(websocket.BinaryMessage, payload) // echo
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(hub.DeviceIDs()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Wrong secret must be rejected without touching the device (checked
+	// BEFORE the valid pipe: the hub fails closed in order — busy first,
+	// then secret — so this needs a not-busy device).
+	agent2, _, _ := websocket.DefaultDialer.Dial(wsURL+"/agent?token=agent-tok", nil)
+	defer agent2.Close()
+	req2, _ := json.Marshal(map[string]any{
+		"kind": KindPipeReq, "device": "bridge-01", "secret": "wrong",
+	})
+	agent2.WriteMessage(websocket.TextMessage, req2)
+	agent2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw2, err := agent2.ReadMessage()
+	if err != nil {
+		t.Fatalf("reject read: %v", err)
+	}
+	if !strings.Contains(string(raw2), "secret") {
+		t.Fatalf("expected secret rejection, got %s", raw2)
+	}
+
+	// Agent: pipe_req (NOT push_req) → push_ack → paired.
+	agent, _, err := websocket.DefaultDialer.Dial(wsURL+"/agent?token=agent-tok", nil)
+	if err != nil {
+		t.Fatalf("agent dial: %v", err)
+	}
+	defer agent.Close()
+	req, _ := json.Marshal(map[string]any{
+		"kind": KindPipeReq, "device": "bridge-01", "secret": "bridge-secret",
+	})
+	if err := agent.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatalf("pipe_req: %v", err)
+	}
+	agent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := agent.ReadMessage()
+	if err != nil {
+		t.Fatalf("pipe_ack: %v", err)
+	}
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("pipe rejected: %s", raw)
+	}
+
+	// Bidirectional: agent → device → agent.
+	payload := []byte{0xEF, 0xBE, 0x20} // a bridge control frame (query)
+	if err := agent.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatalf("agent write: %v", err)
+	}
+	agent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, echoed, err := agent.ReadMessage()
+	if err != nil {
+		t.Fatalf("echo read: %v", err)
+	}
+	if !bytes.Equal(echoed, payload) {
+		t.Fatalf("echo mismatch: got %v, want %v", echoed, payload)
+	}
+	// The device is busy while piped; the agent's disconnect unpairs it.
+	if devs := hub.ListDevices(); len(devs) != 1 || !devs[0].Busy {
+		t.Fatalf("device should be busy during the pipe: %+v", devs)
+	}
+	agent.Close()
+	time.Sleep(200 * time.Millisecond)
+	if devs := hub.ListDevices(); len(devs) != 1 || devs[0].Busy {
+		t.Fatalf("agent disconnect should unpair: %+v", devs)
+	}
+	<-echoDone
+}
+
 func TestRelayEndToEnd(t *testing.T) {
 	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
 	srv := httptest.NewServer(hub.Handler())

@@ -235,6 +235,8 @@ func (h *Hub) agentLoop(a *agentConn) {
 		switch req.Kind {
 		case KindPushReq:
 			h.startPush(a, req.Device, req.Secret, req.Size, req.MD5)
+		case KindPipeReq:
+			h.startPipe(a, req.Device, req.Secret)
 		case KindPushDone:
 			// Agent confirms PushDevice saw the device's bare "OK" (the
 			// board also emits its own push_done on the device socket —
@@ -278,6 +280,20 @@ func (h *Hub) startPush(a *agentConn, devID, secret string, size int64, md5 stri
 		ackBody["frame_kb"] = d.frameKB
 	}
 	_ = h.send2(a, KindPushAck, ackBody)
+}
+
+// startPipe pairs an agent with a device for a TRANSPARENT byte pipe — the
+// bridge mode. The agent's uploader/monitor speaks its own protocol straight
+// over the pipe (esptool socket://, avrdude net:, raw UART streams), so there
+// is no push_start and no stop-and-wait ACK contract; the device is a dumb
+// byte relay. Pairing checks are identical to startPush: online? not busy?
+// not paired elsewhere? per-device secret matches?
+func (h *Hub) startPipe(a *agentConn, devID, secret string) {
+	if err := h.Pair(a, PairRequest{DeviceID: devID, Secret: secret}); err != nil {
+		h.pushResult(a, devID, err.Error())
+		return
+	}
+	_ = h.send2(a, KindPushAck, map[string]any{"ok": true, "device": normalizeID(devID)})
 }
 
 // pushResult delivers a terminal push outcome to an agent.

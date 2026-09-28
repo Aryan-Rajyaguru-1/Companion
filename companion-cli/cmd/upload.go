@@ -324,6 +324,50 @@ Examples:
 				return nil
 			}
 
+			// ── Category-2 transport switch ─────────────────────────
+			// Bridge uploads get the same local|remote choice the OTA path
+			// has. "remote" pairs with the bridge through the relay hub and
+			// exposes it as a local TCP socket, so esptool/avrdude (which
+			// need a socket URL) work unchanged against a bridge that is
+			// anywhere on the internet. Defaults to "local": bridge targets
+			// are LAN devices.
+			bridgeMode := otaMode
+			if !cmd.Flags().Changed("ota-mode") && cfg.Upload.OTAMode != "" {
+				bridgeMode = cfg.Upload.OTAMode
+			}
+			if bridgeMode == "" {
+				bridgeMode = "local"
+			}
+			if bridgeMode != "remote" && bridgeMode != "local" {
+				return fmt.Errorf("invalid --ota-mode %q: want \"remote\" or \"local\"", bridgeMode)
+			}
+			if bridgeMode == "remote" && serialPort == "" {
+				if relayToken == "" {
+					relayToken = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
+				}
+				if relayToken == "" {
+					return fmt.Errorf("remote bridge mode needs an agent token: --relay-token or COMPANION_RELAY_AGENTS_TOKEN")
+				}
+				if relayHub == "" {
+					return fmt.Errorf("remote bridge mode needs --relay-hub wss://host (or drop --ota-mode remote for the LAN bridge)")
+				}
+				if relayDevice == "" {
+					relayDevice = host // the bridge's id, or pass --relay-device
+				}
+				if relaySecret == "" {
+					relaySecret = os.Getenv("COMPANION_RELAY_DEVICE_SECRET")
+				}
+				localPort, closer, err := dialRelayBridge(cmd.Context(), relayHub, relayToken, relayDevice, relaySecret)
+				if err != nil {
+					return err
+				}
+				defer closer()
+				printInfo(fmt.Sprintf("Remote bridge %s → 127.0.0.1:%d",
+					colorBold(relayDevice), localPort))
+				host = "127.0.0.1"
+				port = localPort
+			}
+
 			if serialPort != "" {
 				printInfo(fmt.Sprintf("Uploading via USB → %s  [%s]",
 					colorBold(serialPort), colorTeal(mcu)))

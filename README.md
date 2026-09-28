@@ -86,6 +86,12 @@ the above needs it. Self-host a relay with the scripts in `deploy/`
 (`install-relay-hub.sh`, plus `setup-tunnel.sh` if you want a public TLS
 endpoint), flash the `RelayDevice` firmware with your endpoint, then
 `companion ota upload <device-id> --ota-mode remote --relay-hub wss://<your-host>`.
+
+The same relay also gives a no-radio target (Uno, Nano, STM32) the same choice:
+flash `esp32_bridge` with `RELAY_MODE_REMOTE 1`, then either
+`companion relay bridge --hub wss://<your-host> --device <bridge-id>` to expose
+it as a local socket for any `socket://`/`net:` tool, or
+`companion upload --ota-mode remote --relay-hub wss://<your-host> --relay-device <bridge-id>`.
 Full walkthrough, security notes, and uninstall steps: `deploy/README.md`.
 
 ## Manual setup

@@ -15,22 +15,20 @@
  *   5. Board ACKs bare counts + bare OK, verifies MD5, prints verdict.
  *
  * Edit RELAY_HOST / WIFI_* / tokens before flashing for a given run.
+ * The WiFi/dial/heartbeat/reconnect block lives ONCE, in
+ * ../shared/relay_link.h — this sketch only supplies the OTA behaviour.
  */
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Update.h>
 #include <WiFi.h>
-#include <ArduinoWebsockets.h>
-#include <Preferences.h>
-#include <esp_system.h>
-
-using namespace websockets;
 
 // ── Run-local config ─────────────────────────────────────────────────
-// Real credentials live in config.local.h (git-ignored via skip-worktree,
-// same pattern as the esp32_bridge sketch). The defaults below are inert
-// placeholders so the sketch still compiles without the local file.
+// Real credentials live in config.local.h (git-ignored, same pattern as the
+// esp32_bridge sketch). The defaults below are inert placeholders so the
+// sketch still compiles without the local file. They MUST precede the shared
+// header include: relayDial reads RELAY_HOST/PORT/TLS/DEVICE_TOKEN.
 #if __has_include("config.local.h")
   #include "config.local.h"
 #endif
@@ -63,163 +61,71 @@ using namespace websockets;
   #define RELAY_TLS     false  // true → wss:// (Cloudflare tunnel, port 443)
 #endif
 
-static WebsocketsClient ws;
+// The library includes stay in the sketch: the builder discovers libraries by
+// scanning the sketch's OWN sources, and headers under ../shared/ are outside
+// that scan (the shared header includes them too; guards make it harmless).
+#include <ArduinoWebsockets.h>
+#include <Preferences.h>
+
+// Explicit prototypes: Arduino's auto-generator emits prototypes BEFORE any
+// include, where WebsocketsMessage isn't declared yet — declaring them here
+// (post-include) makes the generator skip them.
+// (The handlers are static: Arduino's prototype generator skips static
+//  functions, so no prototype is emitted before the includes where
+//  WebsocketsMessage would be undeclared — the old onMsg relied on this.)
+
+// The shared dial-out link: WS object, NVS secret, device_hello, the
+// zombie-link watchdog (ping/pong) and the re-dial loop — ONE copy, shared
+// with esp32_bridge.
+#include "../shared/relay_link.h"
+
+// ── OTA state ────────────────────────────────────────────────────────
 static bool pushActive = false;
 static size_t imgSize = 0;
-static char deviceSecret[33] = {0}; // per-board identity, NVS-provisioned once
-
-// loadOrCreateDeviceSecret: first boot generates 16 random bytes via the
-// hardware RNG, stores them in NVS, and prints them to Serial ONCE (copy it
-// into `fleet register --secret` / COMPANION_RELAY_DEVICE_SECRET). Later
-// boots read the same value back silently.
-static void loadOrCreateDeviceSecret() {
-  Preferences prefs;
-  prefs.begin("relay", true); // read-only first
-  String saved = prefs.getString("secret", "");
-  prefs.end();
-  if (saved.length() >= 16) {
-    strlcpy(deviceSecret, saved.c_str(), sizeof(deviceSecret));
-    // Hardware-test sketch: always report the stored secret so it can be
-    // registered without an NVS-erase/re-provision cycle. (A production
-    // build would print it on first boot only.)
-    Serial.printf("[relay] device secret (stored): %s\n", deviceSecret);
-    return;
-  }
-  uint8_t raw[16];
-  for (int i = 0; i < 16; i += 4) {
-    uint32_t r = esp_random();
-    memcpy(raw + i, &r, 4);
-  }
-  const char *hexd = "0123456789abcdef";
-  for (int i = 0; i < 16; i++) {
-    deviceSecret[2 * i] = hexd[(raw[i] >> 4) & 0xF];
-    deviceSecret[2 * i + 1] = hexd[raw[i] & 0xF];
-  }
-  deviceSecret[32] = 0;
-  prefs.begin("relay", false);
-  prefs.putString("secret", deviceSecret);
-  prefs.end();
-  Serial.println("[relay] *** FIRST BOOT: device secret provisioned ***");
-  Serial.printf("[relay] *** SECRET: %s ***\n", deviceSecret);
-  Serial.println("[relay] *** copy it now: fleet register --secret-stdin / COMPANION_RELAY_DEVICE_SECRET ***");
-}
 static char imgMD5[33] = {0};
 static size_t written = 0;
 static bool headerSeen = false;
-static bool sendText(const String &s) { return ws.send(s); }
 
-static bool wsConnected = false;      // link state, tracked via onEvent
-static unsigned long lastDialAttempt = 0;
-// Heartbeat state. wsConnected is only ever cleared by the ConnectionClosed
-// event — but a connection can die WITHOUT one (tunnel QUIC drop, hub crash,
-// NAT timeout), leaving the board on a zombie socket that reports link=1
-// while the hub has no device. The watchdog below catches that: the board
-// pings the hub and, if no pong comes back, abandons the dead link and
-// re-dials.
-static unsigned long lastPingSent = 0;
-static unsigned long lastPong = 0;
-static bool awaitingPong = false;
+// ── Relay link callbacks (non-static: Arduino generates matching
+//    prototypes; the config below needs them declared first) ──────────
+static const char *fwVersion() { return "1.0.3-batch"; }
+static bool relayPushActiveFn() { return pushActive; }
 
-// onEvt tracks link state so loop() can re-dial after a drop.
-static void onEvt(WebsocketsEvent e, String data) {
-  (void)data;
-  switch (e) {
-    case WebsocketsEvent::ConnectionOpened:
-      wsConnected = true;
-      Serial.println("[relay] link open");
-      break;
-    case WebsocketsEvent::ConnectionClosed:
-      wsConnected = false;
-      Serial.println("[relay] link closed — will re-dial");
-      break;
-    default:
-      break;
-  }
-}
-
-// dialRelay opens the relay link and sends device_hello (carrying the secret).
-// Called from setup() and again from loop() whenever the link drops, so a
-// tunnel hiccup or WiFi blip self-heals instead of leaving the board offline
-// until someone power-cycles it.
-static bool dialRelay() {
-  lastDialAttempt = millis();
-  String url = String(RELAY_TLS ? "wss://" : "ws://") + RELAY_HOST + ":" +
-               String(RELAY_PORT) + "/device?token=" + DEVICE_TOKEN;
-  Serial.printf("[relay] dialing %s ...\n", url.c_str());
-  if (!ws.connect(url)) {
-    Serial.println("[relay] ws connect FAILED — retrying in 5s");
-    return false;
-  }
-  StaticJsonDocument<256> hello;
-  hello["kind"] = "device_hello";
-  hello["id"] = DEVICE_ID;
-  hello["version"] = "1.0.3-batch";
-  hello["secret"] = deviceSecret;
-  // Negotiated data-frame size (KiB): the hub relays this to the agent in
-  // push_ack, which then sends 8 KiB frames instead of the legacy 1 KiB ones.
-  // The relay path is strict stop-and-wait (one bare ACK per frame), so this
-  // is purely the chunk÷RTT lever — an 8 KiB frame turns a ~15 min tunnel
-  // push into ~2 min. This board accepts 8 KiB in one onMessage callback
-  // (Update.write handles arbitrary sizes; ArduinoWebsockets has no max
-  // frame size compiled in).
-  hello["frame_kb"] = 8;
-  String out; serializeJson(hello, out);
-  sendText(out);
-  wsConnected = true;
-  Serial.printf("[relay] registered as %s — waiting for pushes\n", DEVICE_ID);
-  return true;
-}
-
-
-static void sendStatus(const char *msg) {
-  StaticJsonDocument<192> d;
-  d["kind"] = "status";
-  d["msg"] = msg;
-  String out; serializeJson(d, out);
-  sendText(out);
-}
-
-// onMessage: control frames (push_start JSON) AND firmware frames both land
-// here — the ArduinoWebsockets lib hands us text vs binary distinctly.
-static void onMsg(WebsocketsMessage msg) {
-  if (msg.isText()) {
-    String t = msg.data();
-    // Heartbeat reply from the hub: the link is proven alive end-to-end.
-    if (t.indexOf("pong") >= 0) {
-      awaitingPong = false;
-      lastPong = millis();
+// onRelayText: control frames (push_start JSON). The heartbeat pong is
+// consumed inside relay_link.h before this runs.
+static void onRelayText(const String &t) {
+  if (t.indexOf("push_start") >= 0) {
+    StaticJsonDocument<256> d;
+    if (deserializeJson(d, t)) { relaySendStatus("bad push_start"); return; }
+    imgSize = (size_t)(long)d["size"];
+    strlcpy(imgMD5, (const char *)d["md5"], sizeof(imgMD5));
+    Serial.printf("[relay] push_start size=%u md5=%s\n",
+                  (unsigned)imgSize, imgMD5);
+    // A push killed mid-stream (agent deadline, tunnel drop) leaves the
+    // updater holding a half-open session; Update.begin() then refuses
+    // every future push with "begin failed". Abort any stale session
+    // before starting fresh — self-heals without a power cycle.
+    if (pushActive || (!Update.isFinished() && Update.size() > 0)) {
+      Update.abort();
+      pushActive = false;
+      Serial.println("[relay] cleared stale OTA session");
+    }
+    if (!Update.begin(imgSize)) {
+      Serial.printf("[relay] Update.begin FAILED: %s\n",
+                    Update.errorString());
+      relaySendBinary("ERROR begin failed", strlen("ERROR begin failed"));
       return;
     }
-    if (t.indexOf("push_start") >= 0) {
-      StaticJsonDocument<256> d;
-      if (deserializeJson(d, t)) { sendStatus("bad push_start"); return; }
-      imgSize = (size_t)(long)d["size"];
-      strlcpy(imgMD5, (const char *)d["md5"], sizeof(imgMD5));
-      Serial.printf("[relay] push_start size=%u md5=%s\n",
-                    (unsigned)imgSize, imgMD5);
-      // A push killed mid-stream (agent deadline, tunnel drop) leaves the
-      // updater holding a half-open session; Update.begin() then refuses
-      // every future push with "begin failed". Abort any stale session
-      // before starting fresh — self-heals without a power cycle.
-      if (pushActive || (!Update.isFinished() && Update.size() > 0)) {
-        Update.abort();
-        pushActive = false;
-        Serial.println("[relay] cleared stale OTA session");
-      }
-      if (!Update.begin(imgSize)) {
-        Serial.printf("[relay] Update.begin FAILED: %s\n",
-                      Update.errorString());
-        ws.sendBinary("ERROR begin failed",
-                      strlen("ERROR begin failed"));
-        return;
-      }
-      Update.setMD5(imgMD5);
-      pushActive = true; written = 0; headerSeen = false;
-      sendStatus("update begun");
-    }
-    return;
+    Update.setMD5(imgMD5);
+    pushActive = true; written = 0; headerSeen = false;
+    relaySendStatus("update begun");
   }
-  // ── Binary frame: raw firmware bytes (maybe header-prefixed first) ──
+}
+
+// onRelayBinary: raw firmware bytes (maybe header-prefixed first). Strict
+// stop-and-wait: one bare decimal ACK per frame, then the final bare "OK"
+// only after Update.end() verifies the full-image MD5.
+static void onRelayBinary(WebsocketsMessage &msg) {
   if (!pushActive) return;
   const uint8_t *p = (const uint8_t *)msg.c_str();
   size_t n = msg.length();
@@ -238,7 +144,7 @@ static void onMsg(WebsocketsMessage msg) {
   if (w != n) {
     Serial.printf("[relay] Update.write FAILED (%u/%u): %s\n",
                   (unsigned)w, (unsigned)n, Update.errorString());
-    ws.sendBinary("ERROR flash failed", strlen("ERROR flash failed"));
+    relaySendBinary("ERROR flash failed", strlen("ERROR flash failed"));
     pushActive = false;
     return;
   }
@@ -246,34 +152,42 @@ static void onMsg(WebsocketsMessage msg) {
   // BARE decimal ACK — no newline, exactly like ArduinoOTA on LAN.
   char ack[16];
   snprintf(ack, sizeof(ack), "%u", (unsigned)w);
-  ws.sendBinary(ack, strlen(ack));
+  relaySendBinary(ack, strlen(ack));
 
   if (written >= imgSize) {
     if (Update.end(true)) {
       Serial.printf("[relay] Update.end OK — %u bytes, rebooting\n",
                     (unsigned)written);
-      ws.sendBinary("OK", 2);
+      relaySendBinary("OK", 2);
       // push_done (text control): explicit end-of-push so the hub clears the
       // pairing — the board stays connected and is immediately pushable again.
       StaticJsonDocument<64> done;
       done["kind"] = "push_done";
       String doneOut; serializeJson(done, doneOut);
-      sendText(doneOut);
+      relaySendText(doneOut);
       // Now boot the freshly written image. Give the frames a moment to
       // flush through the relay before the reset drops the socket.
       Serial.println("[relay] rebooting into the new image");
-      ws.poll();
+      relayWs.poll();
       delay(400);
       ESP.restart();
     } else {
       Serial.printf("[relay] Update.end FAILED: %s\n",
                     Update.errorString());
       String e = String("ERROR ") + Update.errorString();
-      ws.sendBinary(e.c_str(), e.length());
+      relaySendBinary(e.c_str(), e.length());
     }
     pushActive = false;
   }
 }
+
+// ── Link configuration ───────────────────────────────────────────────
+static const RelayLinkConfig relayLink = {
+  fwVersion,         // version reported in device_hello
+  relayPushActiveFn, // pushActive — the watchdog stands down mid-push
+  onRelayText,       // text/control frames
+  onRelayBinary,     // binary frames
+};
 
 void setup() {
   Serial.begin(115200);
@@ -284,7 +198,6 @@ void setup() {
   Serial.println("========================================");
   Serial.println("COMPANION_RELAY_DEVICE_TEST");
   Serial.println("========================================");
-  loadOrCreateDeviceSecret();
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -301,51 +214,11 @@ void setup() {
   Serial.printf("[relay] WiFi OK, ip=%s rssi=%d\n",
                 WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
-  ws.onMessage(onMsg);
-  ws.onEvent(onEvt);
-  dialRelay();
+  relayBegin(relayLink);   // secret + callbacks + dial
 }
 
 void loop() {
-  ws.poll();
-
-  // Self-healing link: re-dial when the connection drops (tunnel restart,
-  // WiFi blip, hub restart) instead of staying offline until a power cycle.
-  if (!wsConnected && millis() - lastDialAttempt > 5000) {
-    if (WiFi.status() == WL_CONNECTED) {
-      dialRelay();
-    }
-  }
-
-  // ── Zombie-link watchdog ─────────────────────────────────────────
-  // wsConnected is only cleared by the ConnectionClosed event, but a
-  // connection can die WITHOUT one (tunnel QUIC drop, hub crash, NAT
-  // timeout). The board then sits on a dead socket reporting link=1 while
-  // the hub has no device — offline forever until a power cycle. So ping
-  // the hub periodically and demand a pong: no pong (or a failed send)
-  // proves the link is dead end-to-end; abandon it and re-dial.
-  if (wsConnected && !pushActive) {
-    if (!awaitingPong && millis() - lastPingSent > 15000) {
-      lastPingSent = millis();
-      awaitingPong = true;
-      if (!sendText("{\"kind\":\"ping\"}")) {
-        // The write itself failed — the socket is gone.
-        Serial.println("[relay] ping write FAILED — link is dead, re-dialing");
-        wsConnected = false;
-        awaitingPong = false;
-        ws.close();
-      }
-    } else if (awaitingPong && millis() - lastPingSent > 10000) {
-      Serial.println("[relay] no pong in 10s — zombie link, re-dialing");
-      wsConnected = false;
-      awaitingPong = false;
-      ws.close();
-    }
-  } else if (pushActive) {
-    // A push is streaming: never ping mid-push (the ACK channel is the
-    // liveness signal already) and never let the watchdog kill it.
-    awaitingPong = false;
-  }
+  relayLinkLoop();   // poll + zombie-watchdog + re-dial (shared)
 
   // Built-in LED heartbeat, driven from the alive-logger tick: slow 2 Hz
   // blink while idle, fast 8 Hz while a push is streaming.
@@ -357,7 +230,7 @@ void loop() {
     ledState = !ledState;
     digitalWrite(LED_BUILTIN, ledState ? HIGH : LOW);
     Serial.printf("[relay] alive ip=%s link=%d push=%d written=%u/%u\n",
-                  WiFi.localIP().toString().c_str(), (int)wsConnected,
+                  WiFi.localIP().toString().c_str(), (int)relayWsConnected,
                   (int)pushActive, (unsigned)written, (unsigned)imgSize);
   }
 }

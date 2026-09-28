@@ -28,4 +28,20 @@
 #define STA_SSID        "YOUR_WIFI_SSID"
 #define STA_PASS        "YOUR_WIFI_PASSWORD"
 
+// ── Remote relay (optional) ──────────────────────────────────────
+// Default (0): the bridge hosts its usual TCP server on TCP_PORT and the IDE
+// connects to it directly — the normal local workflow, unchanged.
+//
+// Set to 1 to make the bridge DIAL a self-hosted relay hub instead, so a
+// target with no radio can be flashed from anywhere on the internet:
+//   companion relay bridge --hub wss://<your-host> --device <DEVICE_ID>
+// Hub setup + full walkthrough: deploy/README.md (section 6).
+//
+// #define RELAY_MODE_REMOTE 1
+// #define RELAY_HOST        "ota.example.com"      // the hub's TLS endpoint
+// #define RELAY_PORT        443
+// #define RELAY_TLS         true                   // wss:// — required behind a proxy
+// #define DEVICE_ID         "companion-bridge-01"  // unique per bridge
+// #define DEVICE_TOKEN      "..."                  // COMPANION_RELAY_DEVICES_TOKEN from relay.env
+
 #endif /* CONFIG_LOCAL_H */

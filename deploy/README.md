@@ -160,6 +160,59 @@ reads it from the registry that `fleet register` populates.
 
 `verify-remote-ota.sh` runs these checks for you end to end.
 
+### 6. Flash a target through a bridge (optional)
+
+Category-3 OTA flashes a board that has its own WiFi. Category-2 flashing — the
+ESP32 bridge relaying UART plus the reset/boot pins to a **target with no
+radio** (Uno, Nano, STM32, another ESP32) — also works through the relay, and
+nothing changes at the target end:
+
+1. Flash `companion-ide/esp32-bridge-firmware/esp32_bridge` with the relay
+   block in its `config.local.h` (see `config.example.h`):
+
+   ```c
+   #define RELAY_MODE_REMOTE 1                  // dial the hub instead of hosting a LAN server
+   #define RELAY_HOST        "ota.example.com"  // the TLS endpoint from step 3
+   #define RELAY_PORT        443
+   #define RELAY_TLS         true               // wss:// — required through a proxy
+   #define DEVICE_ID         "companion-bridge-01"
+   #define DEVICE_TOKEN      "<COMPANION_RELAY_DEVICES_TOKEN>"
+   ```
+
+   `RELAY_MODE_REMOTE` is off by default: without it the bridge keeps its usual
+   LAN server on port 3333 and nothing about the local workflow changes.
+
+2. Drive it either way. **One-shot** — the CLI pairs, uploads and exits:
+
+   ```bash
+   export COMPANION_RELAY_AGENTS_TOKEN=...     # from relay.env
+   export COMPANION_RELAY_DEVICE_SECRET=...    # the SECRET the bridge printed on first boot
+
+   companion upload --ota-mode remote \
+     --relay-hub wss://ota.example.com \
+     --relay-device companion-bridge-01 \
+     --mcu avr --fqbn arduino:avr:uno ./sketch
+   ```
+
+   **Persistent socket** — keep it open and use *any* tool unchanged, including
+   the IDE and a serial monitor:
+
+   ```bash
+   companion relay bridge --hub wss://ota.example.com \
+     --device companion-bridge-01 --listen 127.0.0.1:3333
+
+   # another shell — identical to the LAN flow:
+   companion upload --host 127.0.0.1 --port 3333 --mcu avr --fqbn arduino:avr:uno ./sketch
+   python3 -m esptool --chip esp32 --port socket://127.0.0.1:3333 ...  # any socket:// tool
+   avrdude -P net:127.0.0.1:3333 ...                                    # any net: tool
+   ```
+
+   The bridge dials the hub outbound, so no inbound port is needed on the
+   bridge's network either. Timing-wise the target-facing side is unaffected:
+   reset/boot pin pulses happen on the bridge's own GPIOs locally, so tunnel
+   latency never touches them — only the data round-trips cross the tunnel,
+   the same ones the LAN flow already runs over WiFi.
+
 ---
 
 ## Customising
