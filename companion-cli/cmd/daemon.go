@@ -239,13 +239,27 @@ func (d *daemonServer) handleStreamCompile(w http.ResponseWriter, r *http.Reques
 	// Cancellation: client disconnect OR compile.cancel RPC kills the
 	// toolchain subprocesses through the compiler's exec.CommandContext.
 	ctx, cancel := context.WithCancel(context.Background())
+	// One streaming compile at a time. cancelFunc is a single slot, so two
+	// concurrent compiles silently overwrote each other: the second's defer
+	// cleared the slot while the first was still running, leaving
+	// compile.cancel cancelling nothing (or the wrong job).
 	d.cancelMu.Lock()
+	if d.cancelFunc != nil {
+		d.cancelMu.Unlock()
+		cancel()
+		http.Error(w, "a compile is already running — cancel it before starting another", http.StatusConflict)
+		return
+	}
 	d.cancelFunc = cancel
 	d.cancelMu.Unlock()
 	defer func() {
 		cancel()
 		d.cancelMu.Lock()
-		d.cancelFunc = nil
+		// Only clear the slot if it is still OURS: a later compile may have
+		// taken it over after an early return.
+		if d.cancelFunc != nil {
+			d.cancelFunc = nil
+		}
 		d.cancelMu.Unlock()
 	}()
 
@@ -819,13 +833,26 @@ Endpoints (also served under /api/v1/):
 			}
 
 			srv := &http.Server{
-				Handler:      d,
-				ReadTimeout:  300 * time.Second, // long for streaming compiles
-				WriteTimeout: 300 * time.Second,
+				Handler:     d,
+				ReadTimeout: 300 * time.Second,
+				// No write deadline: compile and upload responses STREAM, and a
+				// cold ESP32 build on slow hardware (or a big firmware push
+				// over a tunnel) legitimately runs past five minutes — the
+				// old 300s WriteTimeout killed the serial monitor and any long
+				// build mid-response. ReadHeaderTimeout still bounds the
+				// slowloris case, which is the one that matters.
+				ReadHeaderTimeout: 20 * time.Second,
+				IdleTimeout:       120 * time.Second,
 			}
 
 			fmt.Printf("COMPANION_DAEMON_PORT=%d\n", actualPort)
-			fmt.Printf("COMPANION_DAEMON_TOKEN=%s\n", d.token)
+			// The token is NOT printed: this stdout is piped into the IDE's
+			// console pane (and often a log file), which turned a bearer
+			// credential into something readable in a screenshot. It is
+			// written to a 0600 file instead; opt in explicitly for scripts.
+			if os.Getenv("COMPANION_DAEMON_PRINT_TOKEN") == "1" {
+				fmt.Printf("COMPANION_DAEMON_TOKEN=%s\n", d.token)
+			}
 			os.Stdout.Sync()
 			printInfo(fmt.Sprintf("Daemon listening on port %d (PID %d)", actualPort, os.Getpid()))
 			printInfo(fmt.Sprintf("Auth token written to %s", d.tokenPath))

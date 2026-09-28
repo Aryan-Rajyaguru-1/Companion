@@ -1062,7 +1062,7 @@ export default function App() {
               <p>Wireless Arduino Programmer</p>
               <p className="about-desc">Upload sketches over WiFi — no USB cable required.</p>
               <div className="about-links">
-                <a href="https://github.com/companion-ide/companion-ide" target="_blank" rel="noreferrer">GitHub</a>
+                <a href="https://github.com/Aryan-Rajyaguru-1/Companion" target="_blank" rel="noreferrer">GitHub</a>
                 <a href="https://docs.arduino.cc/language-reference/" target="_blank" rel="noreferrer">Arduino Reference</a>
               </div>
               <button className="btn btn-primary" style={{marginTop:8}} onClick={() => setShowAbout(false)}>Close</button>

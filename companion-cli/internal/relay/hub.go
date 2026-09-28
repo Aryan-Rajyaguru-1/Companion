@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +43,20 @@ func NewHub(cfg Config) *Hub {
 	if cfg.ReadTimeout <= 0 {
 		cfg.ReadTimeout = 30 * time.Second
 	}
+	// "*" disables auth for that role. It is a development convenience, and a
+	// deployed config that still has it makes the hub an open proxy for
+	// firmware — say so loudly at startup rather than discovering it later.
+	if cfg.DevicesToken == "*" || cfg.AgentsToken == "*" {
+		roles := []string{}
+		if cfg.DevicesToken == "*" {
+			roles = append(roles, "devices")
+		}
+		if cfg.AgentsToken == "*" {
+			roles = append(roles, "agents")
+		}
+		log.Printf("*** WARNING: auth DISABLED for %s — a wildcard token accepts every client. "+
+			"Never run a deployed hub this way. ***", strings.Join(roles, " and "))
+	}
 	return &Hub{
 		cfg:     cfg,
 		devices: make(map[string]*deviceConn),
@@ -76,7 +91,9 @@ func (c *conn) sendBinary(p []byte) error {
 }
 
 // authed checks a presented token against the configured role token.
-// A token of "*" in config disables auth for that role (dev only).
+// A token of "*" in config disables auth for that role (dev only) — NewHub
+// shouts about it at startup, because a wildcard left in a deployed config
+// turns the hub into an open proxy for firmware.
 func (h *Hub) authed(presented, configured string) bool {
 	if configured == "*" {
 		return true

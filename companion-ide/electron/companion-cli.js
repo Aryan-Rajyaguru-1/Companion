@@ -92,7 +92,7 @@ class CompanionCLI {
   _run(args, onOutput = null, onDiag = null, kind = 'other') {
     const callId = ++this._procSeq;
     return new Promise((resolve, reject) => {
-      const proc = spawn(this.binaryPath, args, { env: { ...process.env } });
+      const proc = spawn(this.binaryPath, args, { env: childEnv || { ...process.env } });
       this._procs.set(callId, { proc, kind });
       let stdout = '', stderr = '';
       let diagBuf = ''; // Bug-14 fix: JSON lines split across chunks
@@ -172,7 +172,12 @@ class CompanionCLI {
   // OTA upload: compiles the sketch (if needed) and pushes via ArduinoOTA.
   async otaUpload({ ip, sketchDir, port = 3232, password = '' }, onOutput) {
     const args = ['ota', 'upload', ip, sketchDir || '.', '--port', String(port)];
-    if (password) args.push('--auth', password);
+    // The OTA password used to be passed as `--auth <password>`, which puts it
+    // in `ps` output for every user on the machine and in shell history. The
+    // CLI reads COMPANION_OTA_PASSWORD, so hand it over through the child's
+    // environment instead — invisible to `ps`, and nothing to leak later.
+    const childEnv = { ...process.env };
+    if (password) childEnv.COMPANION_OTA_PASSWORD = password;
     try {
       await this._run(args, onOutput, null, 'upload');
       return { success: true };

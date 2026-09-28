@@ -17,6 +17,13 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// maxWSMessage caps a single inbound websocket message. Data frames are
+// negotiated at most 8 KiB, so 1 MiB is ~100x headroom for a real client while
+// stopping a peer (or anyone who got past the token) from making the hub
+// allocate an arbitrary amount of memory for one frame. Applied per connection
+// right after the upgrade — gorilla has no Upgrader-level limit.
+const maxWSMessage = 1 << 20
+
 // Handler returns the hub's HTTP routes:
 //
 //	GET /device?token=…  — a device registers (expects device_hello first)
@@ -56,6 +63,7 @@ func (h *Hub) serveDeviceWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ws.SetReadLimit(maxWSMessage)
 	d := &deviceConn{conn: conn{ws: ws}, closed: make(chan struct{})}
 	h.deviceLoop(d)
 }
@@ -69,6 +77,7 @@ func (h *Hub) serveAgentWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ws.SetReadLimit(maxWSMessage)
 	a := &agentConn{conn: conn{ws: ws}, closed: make(chan struct{})}
 	h.agentLoop(a)
 }

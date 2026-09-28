@@ -360,7 +360,9 @@ void setup() {
   Serial.println("║         ESP32 ACCESS POINT MODE (AP)              ║");
   Serial.println("╚════════════════════════════════════════════════════╝");
   Serial.printf("  SSID:     %s\n", AP_SSID);
-  Serial.printf("  Password: %s\n", AP_PASS);
+  // The AP password is a credential too; report that it is configured
+  // without disclosing it.
+  Serial.println("  Password: <set in config.local.h>");
   Serial.printf("  IP:       %s ← use this in Bridge Settings\n", WiFi.softAPIP().toString().c_str());
   Serial.println("  Port:     3333\n");
   Serial.println("  → Connect your IDE laptop to the \"" AP_SSID "\" WiFi network");
@@ -380,7 +382,9 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\n\n  ✗ Connection failed! Check WiFi credentials:");
     Serial.printf("    SSID: %s\n", STA_SSID);
-    Serial.printf("    Pass: %s\n", STA_PASS);
+    // Never print the WiFi password: serial output ends up in photos, logs
+    // and pasted bug reports.
+    Serial.println("    Pass: <set in config.local.h>");
     Serial.println("\n  Restarting...\n");
     delay(2000);
     ESP.restart();

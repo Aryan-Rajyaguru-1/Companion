@@ -71,6 +71,15 @@ jobs:
             echo "$out" | grep -q "$VERSION" \
               || { echo "::error::version stamp missing — expected $VERSION inside the built binary"; exit 1; }
           fi
+      - name: Generate SHA256SUMS
+        working-directory: companion-cli
+        shell: bash
+        run: |
+          # setup.sh/ps1 verify downloads against SHA256SUMS.txt, but nothing
+          # ever produced that file, so verification silently skipped itself.
+          cd ../dist-cli
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.os }}

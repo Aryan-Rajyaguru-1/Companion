@@ -98,7 +98,22 @@ static void onRelayText(const String &t) {
     StaticJsonDocument<256> d;
     if (deserializeJson(d, t)) { relaySendStatus("bad push_start"); return; }
     imgSize = (size_t)(long)d["size"];
-    strlcpy(imgMD5, (const char *)d["md5"], sizeof(imgMD5));
+    // A push_start with no md5 (or a non-string value) used to go straight
+    // into strlcpy as NULL, which crashes the board — so one malformed frame
+    // from any paired agent killed the link until a manual reflash. Treat it
+    // as the protocol error it is.
+    const char *md5 = d["md5"] | "";
+    if (md5[0] == '\0') {
+      Serial.println("[relay] push_start missing md5 — rejecting");
+      relaySendStatus("push_start missing md5");
+      return;
+    }
+    if (imgSize == 0) {
+      Serial.println("[relay] push_start with size 0 — rejecting");
+      relaySendStatus("push_start with size 0");
+      return;
+    }
+    strlcpy(imgMD5, md5, sizeof(imgMD5));
     Serial.printf("[relay] push_start size=%u md5=%s\n",
                   (unsigned)imgSize, imgMD5);
     // A push killed mid-stream (agent deadline, tunnel drop) leaves the

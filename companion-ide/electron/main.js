@@ -79,12 +79,23 @@ function createWindow() {
 
     mainWindow.webContents.send('menu:save');
 
-    // Safety fallback: destroy after 10s if neither IPC ever fires
-    const fallback = setTimeout(() => {
+    // Safety fallback. The old version destroyed the window unconditionally
+    // after 10s — which fires while a native Save As dialog is still open, so
+    // closing the app mid-save threw the work away. Re-check for unsaved
+    // changes first and only quit when there are none; otherwise leave the
+    // window up and let the user finish or cancel.
+    const fallback = setTimeout(async () => {
       ipcMain.removeListener('save:completed', onSaveCompleted);
       ipcMain.removeListener('save:aborted', onSaveAborted);
+      const stillDirty = await mainWindow.webContents
+        .executeJavaScript('window.__companionHasUnsaved ? window.__companionHasUnsaved() : false')
+        .catch(() => true);
+      if (stillDirty) {
+        console.warn('Close timed out waiting for save; window kept open (unsaved changes remain)');
+        return;
+      }
       mainWindow?.destroy();
-    }, 10_000);
+    }, 30_000);
   });
 
   if (isDev) {
@@ -168,7 +179,7 @@ function buildMenu() {
     {
       label: 'Help', submenu: [
         { label: 'Arduino Language Reference', click: () => shell.openExternal('https://docs.arduino.cc/language-reference/') },
-        { label: 'Companion IDE on GitHub',    click: () => shell.openExternal('https://github.com/companion-ide/companion-ide') },
+        { label: 'Companion IDE on GitHub',    click: () => shell.openExternal('https://github.com/Aryan-Rajyaguru-1/Companion') },
         { type: 'separator' },
         { label: 'About Companion IDE',        click: () => send('about') },
       ],
@@ -206,8 +217,49 @@ function registerIPC() {
   // registers its own ipcMain.once('save:completed') listener on demand.
   ipcMain.on('save:completed', () => {});
 
+  // ── Renderer path sandbox ─────────────────────────────────────
+  // The renderer hands main-process handlers paths directly: file:save /
+  // file:readSketch read and wrote whatever it asked for, and file:openFolder
+  // fed any path to shell.openPath. With an XSS (or a compromised dependency)
+  // in the renderer that is account-wide access.
+  //
+  // This is a DENYLIST, not an allowlist, on purpose: the IDE's sketch flow can
+  // legitimately reach a directory the user never picked in a dialog (a path
+  // from the CLI setup wizard, a recent-folder entry, an argv), and an
+  // allowlist would break those flows silently. What the denylist does block is
+  // the realistic damage — system directories and the places credentials live.
+  const DENY_DIRS = [
+    '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/var', '/boot',
+    '/proc', '/sys', '/dev', '/root', '/opt/homebrew', '/System', '/Library',
+  ];
+  const DENY_HOME_SUFFIXES = [
+    '.ssh', '.aws', '.gnupg', '.kube', '.docker', '.config', '.gnome2',
+    'keyrings', '.companion-cli', '.companion-relay', '.arduino15',
+  ];
+  const DENY_NAME_RE = /(^|[\\/])(auth-token|\.env(\..*)?|.*\.(pem|key|p12|pfx))$/i;
+
+  const isDenied = (p) => {
+    if (!p) return true;
+    const norm = path.resolve(p).replace(/\\/g, '/').toLowerCase();
+    for (const d of DENY_DIRS) {
+      if (norm === d || norm.startsWith(d + '/')) return true;
+    }
+    const home = (os.homedir() || '').replace(/\\/g, '/').toLowerCase();
+    if (home) {
+      for (const s of DENY_HOME_SUFFIXES) {
+        if (norm === `${home}/${s}` || norm.startsWith(`${home}/${s}/`)) return true;
+      }
+    }
+    return DENY_NAME_RE.test(norm);
+  };
+  const denyPath = (p) => ({
+    success: false,
+    error: `path blocked by the IDE's file policy: ${p}`,
+  });
+
   // File ops
   ipcMain.handle('file:save', async (_, { path: p, content }) => {
+    if (isDenied(p)) return denyPath(p);
     try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, content, 'utf-8'); return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
   });
@@ -235,6 +287,7 @@ function registerIPC() {
     return { path: p, content: fs.readFileSync(p, 'utf-8') };
   });
   ipcMain.handle('file:listSketchFiles', async (_, { dir, showAll = false }) => {
+    if (isDenied(dir)) return [];
     try {
       if (!dir || !fs.existsSync(dir)) return [];
       const CORE = new Set(['ino','cpp','c','h','hpp','s']);
@@ -247,6 +300,7 @@ function registerIPC() {
     } catch { return []; }
   });
   ipcMain.handle('file:readSketch', async (_, { path: p }) => {
+    if (isDenied(p)) return denyPath(p);
     try { return { success: true, content: fs.readFileSync(p, 'utf-8') }; }
     catch (e) { return { success: false, error: e.message }; }
   });
@@ -257,6 +311,7 @@ function registerIPC() {
   // "redefinition of 'void setup()'". The renderer uses this to compile just
   // the active sketch via --main-ino instead.
   ipcMain.handle('sketch:analyze', async (_, { dir } = {}) => {
+    if (isDenied(dir)) return denyPath(dir);
     try {
       if (!dir || !fs.existsSync(dir)) return { success: false, error: 'No such folder' };
       const complete = /^[ \t]*(?:void|int|auto)[ \t]+(?:setup|loop)[ \t]*\(/m;
@@ -272,6 +327,7 @@ function registerIPC() {
     } catch (e) { return { success: false, error: e.message }; }
   });
   ipcMain.handle('file:openFolder', async (_, { dir }) => {
+    if (isDenied(dir)) return denyPath(dir);
     try { shell.openPath(dir); return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
   });

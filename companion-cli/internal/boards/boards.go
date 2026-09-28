@@ -659,20 +659,34 @@ func (m *Manager) Install(platformID string, onProgress func(string)) error {
 	dlDir := m.cfg.Directories.Downloads
 	os.MkdirAll(dlDir, 0o755)
 
-	archivePath := filepath.Join(dlDir, found.ArchiveFileName)
-	if err := downloadFile(found.URL, archivePath, onProgress); err != nil {
+	// archiveFileName, architecture and version all come from the index, which
+	// may be a configured third-party URL — validate before they touch a path.
+	archiveName, err := safePathSegment(found.ArchiveFileName, "archiveFileName")
+	if err != nil {
+		return err
+	}
+	archName, err := safePathSegment(found.Architecture, "architecture")
+	if err != nil {
+		return err
+	}
+	verName, err := safePathSegment(found.Version, "version")
+	if err != nil {
+		return err
+	}
+	archivePath := filepath.Join(dlDir, archiveName)
+	if err := downloadFile(found.URL, archivePath, indexSizeBytes(found.Size), onProgress); err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
 	// Verify the archive against the index SHA-256 checksum (matches what
 	// was published, and matches the library-install trust level).
 	if err := verifyArchiveChecksum(archivePath, found.Checksum, onProgress); err != nil {
-		os.Remove(archivePath)
+		_ = removeIfInside(dlDir, archivePath)
 		return err
 	}
 
 	// Extract to packages directory
 	destDir := filepath.Join(m.cfg.PackagesDir(), strings.ToLower(foundPkg.Name),
-		"hardware", found.Architecture, found.Version)
+		"hardware", archName, verName)
 	os.MkdirAll(destDir, 0o755)
 
 	onProgress("Extracting…")
@@ -751,12 +765,24 @@ func (m *Manager) installTool(dep ToolDep, indexes []*PackageIndex, onProgress f
 				}
 
 				os.MkdirAll(filepath.Dir(destDir), 0o755)
-				archivePath := filepath.Join(m.cfg.Directories.Downloads, matched.ArchiveFileName)
-				if err := downloadFile(matched.URL, archivePath, func(s string) {}); err != nil {
+				// Same untrusted-index rules as the platform archive above:
+				// the tool name is a filename, never a path.
+				toolName, err := safePathSegment(matched.ArchiveFileName, "archiveFileName")
+				if err != nil {
+					return err
+				}
+				toolVer, err := safePathSegment(dep.Version, "tool version")
+				if err != nil {
+					return err
+				}
+				destDir = filepath.Join(m.cfg.PackagesDir(), strings.ToLower(pkg.Name),
+					"tools", dep.Name, toolVer)
+				archivePath := filepath.Join(m.cfg.Directories.Downloads, toolName)
+				if err := downloadFile(matched.URL, archivePath, indexSizeBytes(matched.Size), func(s string) {}); err != nil {
 					return fmt.Errorf("download tool %s: %w", dep.Name, err)
 				}
 				if err := verifyArchiveChecksum(archivePath, matched.Checksum, func(s string) {}); err != nil {
-					os.Remove(archivePath)
+					_ = removeIfInside(m.cfg.Directories.Downloads, archivePath)
 					return fmt.Errorf("tool %s checksum: %w", dep.Name, err)
 				}
 
@@ -959,11 +985,92 @@ func parsePropertiesFile(path string) (map[string]string, error) {
 }
 
 // downloadFile downloads a URL to a destination path with progress reporting.
-func downloadFile(url, dest string, onProgress func(string)) error {
+// indexSizeBytes turns the index's published size into a download cap. The
+// index is untrusted input like everything else here, so a bogus or negative
+// size falls back to the hard ceiling rather than disabling the limit.
+func indexSizeBytes(size json.Number) int64 {
+	if size == "" {
+		return maxDownloadBytes
+	}
+	n, err := size.Int64()
+	if err != nil || n <= 0 {
+		return maxDownloadBytes
+	}
+	// Allow 1% slack over the published size (mirrors pad differently) but
+	// never more than the hard ceiling.
+	limit := n + n/100
+	if limit > maxDownloadBytes {
+		limit = maxDownloadBytes
+	}
+	return limit
+}
+
+// safePathSegment validates a string that came from a board index before it is
+// used in a filepath.Join.
+//
+// Every one of these fields — archiveFileName, architecture, version — is
+// attacker-controllable through a configured additional-URL index, and a
+// filepath.Join happily walks out of its base with "..". That let a malicious
+// index write (and, on a checksum failure, DELETE) files anywhere the user
+// account can reach. A path segment from untrusted input is a filename, not a
+// path: no separators, no traversal, no absolute roots, no control characters.
+func safePathSegment(s, field string) (string, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return "", fmt.Errorf("board index: %s is empty", field)
+	}
+	if trimmed == "." || trimmed == ".." {
+		return "", fmt.Errorf("board index: %s is a path reference (%q)", field, trimmed)
+	}
+	if strings.ContainsAny(trimmed, `/\`) || strings.ContainsRune(trimmed, 0) {
+		return "", fmt.Errorf("board index: %s must be a plain name, got %q", field, trimmed)
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return "", fmt.Errorf("board index: %s must not start with '-' (option injection), got %q", field, trimmed)
+	}
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-' || r == '+' || r == '~':
+		default:
+			return "", fmt.Errorf("board index: %s contains an unsupported character %q in %q", field, r, trimmed)
+		}
+	}
+	return trimmed, nil
+}
+
+// removeIfInside deletes path, but only when it really is inside dir. Used on
+// the "checksum failed, throw the download away" path: with the download name
+// coming from an index, an unguarded os.Remove could delete a file the install
+// never downloaded.
+func removeIfInside(dir, path string) error {
+	base, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
+		return fmt.Errorf("refusing to remove %s: outside %s", target, base)
+	}
+	return os.Remove(target)
+}
+
+// maxDownloadBytes caps a single archive download. The index publishes a size
+// (used when present); this is the hard ceiling for an index that does not, so
+// a hostile or broken mirror cannot stream until the disk is full.
+const maxDownloadBytes = 512 << 20 // 512 MiB
+
+func downloadFile(url, dest string, maxBytes int64, onProgress func(string)) error {
 	// Check if file exists and has reasonable size (> 1KB)
 	// If file is too small, it's likely incomplete and should be re-downloaded
 	if info, err := os.Stat(dest); err == nil && info.Size() > 1024 {
 		return nil // Already downloaded (and not suspiciously small)
+	}
+	if maxBytes <= 0 {
+		maxBytes = maxDownloadBytes
 	}
 
 	client := &http.Client{Timeout: 120 * time.Second}
@@ -987,13 +1094,26 @@ func downloadFile(url, dest string, onProgress func(string)) error {
 	var downloaded int64
 	buf := make([]byte, 32*1024)
 
+	// Refuse an oversized download BEFORE writing, and stop the stream the
+	// moment it crosses the cap: Content-Length is attacker-controlled too, so
+	// trusting it (or not capping at all) lets a hostile mirror fill the disk.
+	if resp.ContentLength > maxBytes {
+		f.Close()
+		removeIfInside(filepath.Dir(dest), dest)
+		return fmt.Errorf("archive is %d bytes, over the %d byte limit", resp.ContentLength, maxBytes)
+	}
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
+			downloaded += int64(n)
+			if downloaded > maxBytes {
+				f.Close()
+				removeIfInside(filepath.Dir(dest), dest)
+				return fmt.Errorf("download exceeded the %d byte limit — aborted", maxBytes)
+			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				return werr
 			}
-			downloaded += int64(n)
 			if total > 0 {
 				pct := downloaded * 100 / total
 				onProgress(fmt.Sprintf("\r  %d%% (%d/%d KB)", pct, downloaded/1024, total/1024))
@@ -1009,7 +1129,7 @@ func downloadFile(url, dest string, onProgress func(string)) error {
 
 	// Verify we got all the bytes
 	if total > 0 && downloaded < total {
-		os.Remove(dest) // Clean up incomplete file
+		removeIfInside(filepath.Dir(dest), dest) // Clean up incomplete file
 		return fmt.Errorf("incomplete download: got %d/%d bytes", downloaded, total)
 	}
 
@@ -1023,16 +1143,22 @@ func downloadFile(url, dest string, onProgress func(string)) error {
 // one. A mismatch is a hard error: the archive may be corrupted or tampered.
 func verifyArchiveChecksum(path, expected string, onProgress func(string)) error {
 	if strings.TrimSpace(expected) == "" {
-		onProgress("  ⚠ no checksum published in index — skipping verification")
-		return nil
+		// An unverified archive is just an untrusted download. This used to
+		// continue silently, which made a checksum-less index a licence to
+		// install whatever the mirror served. Opt out loudly if you mirror.
+		if os.Getenv("COMPANION_ALLOW_UNVERIFIED_INDEX") == "1" {
+			onProgress("  ⚠ no checksum in index — verification SKIPPED by COMPANION_ALLOW_UNVERIFIED_INDEX=1")
+			return nil
+		}
+		return fmt.Errorf("index publishes no checksum for this archive — refusing to install it " +
+			"(set COMPANION_ALLOW_UNVERIFIED_INDEX=1 only for a mirror you control)")
 	}
 	algo, sum, ok := strings.Cut(expected, ":")
 	if !ok {
 		return fmt.Errorf("malformed index checksum %q (want ALGO:hex)", expected)
 	}
 	if !strings.EqualFold(strings.TrimSpace(algo), "sha-256") {
-		onProgress(fmt.Sprintf("  ⚠ unsupported checksum algorithm %q — skipping", algo))
-		return nil
+		return fmt.Errorf("unsupported checksum algorithm %q — refusing to install an unverified archive", algo)
 	}
 	want, err := hex.DecodeString(strings.TrimSpace(sum))
 	if err != nil || len(want) != sha256.Size {

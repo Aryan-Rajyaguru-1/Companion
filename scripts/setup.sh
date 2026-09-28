@@ -113,7 +113,11 @@ say "Downloading board package index (one-time, may take a moment)"
 "$BIN" board update-index >/dev/null 2>&1 && ok "board index cached" || warn "board index download failed (run '$BIN board update-index' later)"
 # Pre-install the default AVR platform so a fresh clone compiles the Uno
 # example immediately (first-run wall reported by testers).
-if "$BIN" board list 2>/dev/null | grep -q "arduino:avr"; then
+# Capture first, then grep: `... | grep -q` exits on the first match, which
+# SIGPIPEs `board list`; under `set -o pipefail` that non-zero status made the
+# test fail every time and reinstall the platform on every run.
+board_list=$("$BIN" board list 2>/dev/null || true)
+if printf '%s' "$board_list" | grep -q "arduino:avr"; then
   ok "arduino:avr platform already installed"
 else
   say "Installing default platform arduino:avr (one-time download)"
