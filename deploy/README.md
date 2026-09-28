@@ -217,6 +217,63 @@ nothing changes at the target end:
 
 ---
 
+## Three ways in — pick the one you already use
+
+You do not need the Companion IDE. The relay is a protocol, and three standard
+front doors speak it:
+
+**1. The CLI** (what the rest of this guide uses)
+
+```bash
+export COMPANION_RELAY_AGENTS_TOKEN=...
+export COMPANION_RELAY_DEVICE_SECRET=...
+companion relay push --hub wss://ota.example.com --device esp32-node-01 firmware.bin
+```
+
+**2. Any AI agent** — `companion mcp` exposes the same push as an MCP tool
+(`companion_relay_push`, `companion_relay_devices`). See [docs/MCP.md](MCP.md).
+
+**3. The Arduino toolchain.** Build with `arduino-cli` exactly as you always
+have, then hand the image to `companion relay push`:
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir ./out ./MySketch
+companion relay push --hub wss://ota.example.com --device esp32-node-01 ./out/MySketch.ino.bin
+```
+
+That two-step is the honest integration. `arduino-cli upload` itself cannot be
+used for a remote board: it requires a **local serial port** and configures it
+with an ioctl before running any upload command, so `upload_command=` fails
+without a real port attached — and a board on another continent has none. (This
+was tested three ways on arduino-cli 1.4.1: a `companion:` port scheme, no port,
+and `/dev/null`.) The Arduino **IDE** has the same constraint, since it uses
+arduino-cli underneath.
+
+**4. A plugin, if you are writing a tool.** The relay is also an ordinary
+uploader plugin, so anything that consumes Companion's plugin API can select it:
+
+```bash
+companion plugins list
+companion upload --uploader companion.uploader.relay --host esp32-node-01 \
+  --ota --ota-mode remote --binary firmware.bin
+```
+
+It reads `COMPANION_RELAY_HUB`, `COMPANION_RELAY_AGENTS_TOKEN` and
+`COMPANION_RELAY_DEVICE_SECRET` from the environment — never a flag, so the
+secret stays out of `ps` output. It is opt-in by design: the transport is
+board-agnostic, so auto-selecting it would shadow the LAN uploader most people
+want.
+
+**Your own sketch can join the fleet.** `libraries/CompanionRelay` is an
+ordinary Arduino library — one `CompanionRelay.begin(cfg)` and a
+`CompanionRelay.loop()` make any ESP32 sketch remotely flashable, and the
+example under `libraries/CompanionRelay/examples/RelayBlink` is a complete
+starting point. It is the SAME code the two first-party sketches use
+(`shared/relay_link.h` forwards to it), so there is one implementation of the
+protocol, not three.
+
+---
+
 ## Rolling out to a fleet (10–50 boards)
 
 `companion fleet push <image> [selectors...]` is the batch tool, and a rollout

@@ -1,22 +1,15 @@
 package cmd
 
 import (
-	"bytes"
-	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/companion-ide/companion-cli/internal/relay"
+	"github.com/spf13/cobra"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"time"
-
-	"github.com/companion-ide/companion-cli/internal/ota"
-	"github.com/companion-ide/companion-cli/internal/relay"
-	"github.com/gorilla/websocket"
-	"github.com/spf13/cobra"
 )
 
 // ── relay hub + relay push (remote OTA over the internet) ────────────
@@ -95,78 +88,22 @@ func newRelayCmd() *cobra.Command {
 			if token == "" {
 				return fmt.Errorf("agent token required: --token or COMPANION_RELAY_AGENTS_TOKEN")
 			}
-			img, err := os.ReadFile(args[0])
-			if err != nil {
-				return fmt.Errorf("read image: %w", err)
+			// Announce the size, then delegate the whole exchange. This used
+			// to be a third copy of the pairing + streaming sequence (the
+			// fleet path and the uploader plugin each had one); now there is
+			// exactly one implementation, in internal/relay.PushToDevice.
+			if fi, serr := os.Stat(args[0]); serr == nil {
+				fmt.Printf("push accepted — streaming %d bytes to %s…\n", fi.Size(), deviceID)
 			}
-			sum := md5.Sum(img)
-			md5hex := hex.EncodeToString(sum[:])
-
-			u, err := url.Parse(hubURL)
-			if err != nil {
-				return fmt.Errorf("bad --hub: %w", err)
-			}
-			u.Path = "/agent"
-			q := u.Query()
-			q.Set("token", token)
-			u.RawQuery = q.Encode()
-
-			ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-			if err != nil {
-				return fmt.Errorf("dial hub agent port: %w", err)
-			}
-			defer ws.Close()
-
-			req, _ := json.Marshal(map[string]any{
-				"kind": relay.KindPushReq, "device": deviceID,
-				"secret": deviceSecret,
-				"size":   len(img), "md5": md5hex,
-			})
-			if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
-				return fmt.Errorf("push_req: %w", err)
-			}
-			ws.SetReadDeadline(time.Now().Add(10 * time.Second))
-			_, raw, err := ws.ReadMessage()
-			if err != nil {
-				return fmt.Errorf("push_ack: %w", err)
-			}
-			var ack struct {
-				Kind  string `json:"kind"`
-				OK    bool   `json:"ok"`
-				Error string `json:"error"`
-			}
-			if err := json.Unmarshal(raw, &ack); err != nil {
-				return fmt.Errorf("push_ack parse: %w", err)
-			}
-			if ack.Kind == relay.KindPushResult && !ack.OK {
-				return fmt.Errorf("hub rejected push: %s", ack.Error)
-			}
-			if ack.Kind != relay.KindPushAck || !ack.OK {
-				return fmt.Errorf("unexpected hub reply: %s", raw)
-			}
-			fmt.Printf("push accepted — streaming %d bytes to %s…\n", len(img), deviceID)
-			ws.SetReadDeadline(time.Time{})
-			pipe := newAgentPipe(ws)
-			// Frame size: the device negotiates it at hello (relayed via
-			// push_ack). A board that accepts 8 KiB per frame needs ~8× fewer
-			// stop-and-wait round trips than the legacy 1024-byte one — the
-			// difference between a ~15 min push and a ~2 min one over a tunnel.
-			// 0 (legacy firmware) keeps the 1024-byte ArduinoOTA frame.
-			frameKB := relay.FrameKBFromAck(raw)
-			// 30 min: stop-and-wait over the tunnel plus the final MD5/flash
-			// window; generous for 1 KiB legacy boards, ample at 8 KiB.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-			defer cancel()
-			if err := relay.PushDeviceStream(ctx, pipe, bytes.NewReader(img), int64(len(img)), &ota.StreamOptions{
-				ChunkBytes: frameKB,
+			if _, err := relay.PushToDevice(cmd.Context(), relay.PushRequest{
+				Hub:       hubURL,
+				Token:     token,
+				Device:    deviceID,
+				Secret:    deviceSecret,
+				ImagePath: args[0],
 			}); err != nil {
-				return fmt.Errorf("push failed: %w", err)
+				return err
 			}
-			// PushDevice saw the device's bare "OK". Tell the hub the pairing
-			// is over explicitly (the board also sends push_done itself, belt
-			// and suspenders), then close the agent socket (deferred).
-			doneMsg, _ := json.Marshal(map[string]string{"kind": relay.KindPushDone})
-			_ = ws.WriteMessage(websocket.TextMessage, doneMsg)
 			fmt.Printf("✓ remote push complete — %s rebooting into new firmware\n", deviceID)
 			return nil
 		},

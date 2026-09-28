@@ -36,6 +36,7 @@ func newUploadCmd() *cobra.Command {
 		// internet) or "local" (LAN ArduinoOTA). IP-based local OTA stays
 		// available as the explicit opt-in.
 		otaMode     string
+		uploaderID  string
 		relayHub    string
 		relayDevice string
 		relaySecret string
@@ -231,10 +232,18 @@ Examples:
 					return fmt.Errorf("invalid --ota-mode %q: want \"remote\" or \"local\"", mode)
 				}
 				if mode == "remote" {
-					if relayHub == "" {
+					// With an explicit uploader plugin, the PLUGIN resolves its own
+					// hub/token/device (and gives a better message when one is
+					// missing), so the built-in requirements below must not block
+					// the path the user actually asked for.
+					usingPlugin := uploaderID != "" && pluginRegistry(cfg).UploaderByID(uploaderID) != nil
+					if usingPlugin && relayDevice == "" {
+						relayDevice = host // the positional device argument is the id
+					}
+					if relayHub == "" && !usingPlugin {
 						return fmt.Errorf("remote OTA needs --relay-hub wss://host (or set --ota-mode local for LAN ArduinoOTA)")
 					}
-					if relayDevice == "" {
+					if relayDevice == "" && !usingPlugin {
 						return fmt.Errorf("remote OTA needs --relay-device <id>")
 					}
 					if relaySecret == "" {
@@ -243,7 +252,7 @@ Examples:
 					if relayToken == "" {
 						relayToken = os.Getenv("COMPANION_RELAY_AGENTS_TOKEN")
 					}
-					if relayToken == "" {
+					if relayToken == "" && !usingPlugin {
 						return fmt.Errorf("remote OTA needs an agent token: --relay-token or COMPANION_RELAY_AGENTS_TOKEN")
 					}
 					printInfo(fmt.Sprintf("Remote OTA → %s via %s",
@@ -264,6 +273,28 @@ Examples:
 						},
 						OnMessage: func(s string) { fmt.Printf("  %s\n", s) },
 					}
+					// An explicit --uploader takes over the remote push, so the
+					// relay transport is reachable as a PLUGIN and not only as
+					// a hard-coded branch. Both call the same
+					// relay.PushToDevice, so behaviour is identical.
+					if usingPlugin {
+						chosen := pluginRegistry(cfg).UploaderByID(uploaderID)
+
+						printInfo(fmt.Sprintf("Uploader plugin: %s (%s)", colorTeal(chosen.Name()), chosen.ID()))
+						if err := chosen.Upload(cmd.Context(), plugins.UploadOptions{
+							BinaryPath: binaryPath,
+							FQBN:       fqbn,
+							MCU:        mcu,
+							Host:       dev.Key(),
+						}, os.Stdout); err != nil {
+							fmt.Println()
+							printError("Remote upload failed: " + err.Error())
+							return fmt.Errorf("upload failed")
+						}
+						fmt.Println()
+						printSuccess("Remote upload complete — device is rebooting")
+						return nil
+					}
 					if err := RelayPushFuncOpts(relayHub, relayToken, binaryPath, remoteOpts)(cmd.Context(), dev); err != nil {
 						fmt.Println()
 						printError("Remote OTA upload failed: " + err.Error())
@@ -276,7 +307,19 @@ Examples:
 				// Route through the plugin registry (P5): first-party OTA
 				// uploader handles esp32/esp8266; third-party .so plugins can
 				// replace it with JTAG/OpenOCD etc.
+				//
+				// --uploader picks one BY ID, which is how the relay transport
+				// is opted into (it claims every core, so auto-selection would
+				// shadow the LAN uploader that most users want).
 				upl := pluginRegistry(cfg).UploaderFor(fqbn)
+				if uploaderID != "" {
+					chosen := pluginRegistry(cfg).UploaderByID(uploaderID)
+					if chosen == nil {
+						return fmt.Errorf("no uploader plugin with id %q — run 'companion plugins list'", uploaderID)
+					}
+					upl = chosen
+					printInfo(fmt.Sprintf("Uploader plugin: %s (%s)", colorTeal(chosen.Name()), chosen.ID()))
+				}
 				if upl == nil {
 					printInfo(fmt.Sprintf("No OTA-capable plugin for %q — using built-in OTA push", fqbn))
 					if err := ota.Probe(host, 3232); err != nil {
@@ -420,6 +463,9 @@ Examples:
 		"Upload profile from sketch.yaml (board + bridge target + libraries)")
 	cmd.Flags().BoolVar(&otaFlag, "ota", false,
 		"Upload over the air (default: LAN ArduinoOTA; use --ota-mode remote for a device behind the relay hub)")
+	cmd.Flags().StringVar(&uploaderID, "uploader", "",
+		"use this uploader plugin by id for a wireless/OTA upload (see 'companion plugins list'), "+
+			"e.g. companion.uploader.relay to push through a relay hub instead of a local bridge")
 	cmd.Flags().StringVar(&otaMode, "ota-mode", "",
 		"OTA transport: local (default) | remote (relay hub); config upload.ota_mode also read. For BRIDGE targets the default config key is upload.bridge_mode")
 	cmd.Flags().StringVar(&relayHub, "relay-hub", "",
