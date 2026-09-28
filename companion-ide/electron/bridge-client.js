@@ -475,10 +475,31 @@ class BridgeClient {
 // ══════════════════════════════════════════════════════════════
 // STM32 low-level helpers
 // ══════════════════════════════════════════════════════════════
+// stm32RX buffers bytes that arrived but were not consumed yet. A single TCP
+// read can carry several protocol bytes; dropping the tail desynchronises the
+// AN3155 handshake (and a leaked listener from a timed-out read would later
+// resolve the WRONG promise with a stray byte).
+let stm32RX = Buffer.alloc(0);
+
 function readByte(sock, timeout = 3000) {
+  if (stm32RX.length > 0) {
+    const b = stm32RX[0];
+    stm32RX = stm32RX.subarray(1);
+    return Promise.resolve(b);
+  }
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { resolve(null); }, timeout);
-    sock.once('data', (d) => { clearTimeout(timer); resolve(d[0]); });
+    const onData = (d) => {
+      if (!d || d.length === 0) return;
+      detach();
+      stm32RX = Buffer.from(d.subarray(1)); // keep the rest for the next read
+      resolve(d[0]);
+    };
+    const timer = setTimeout(() => { detach(); resolve(null); }, timeout);
+    function detach() {
+      clearTimeout(timer);
+      sock.off('data', onData); // never leave a listener behind
+    }
+    sock.on('data', onData);
   });
 }
 

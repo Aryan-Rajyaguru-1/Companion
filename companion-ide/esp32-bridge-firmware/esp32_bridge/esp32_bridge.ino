@@ -261,6 +261,7 @@ uint32_t currentBaud    = 115200;
 
 WiFiServer tcpServer(TCP_PORT);
 WiFiClient tcpClient;
+bool clientWasConnected = false; // edge-detect: release target pins on disconnect
 uint8_t    buf[BUF_SIZE];
 
 // ── Control-frame parser state (persistent across loop() reads) ──
@@ -519,7 +520,20 @@ void loop() {
     }
   }
 
-  if (!tcpClient || !tcpClient.connected()) return;
+  if (!tcpClient || !tcpClient.connected()) {
+    // A client that vanished mid-session — esptool died, the IDE crashed, the
+    // WiFi dropped — used to leave EN/BOOT exactly as the last command set
+    // them, so an ESP32 target stayed in download mode until someone pressed
+    // RESET by hand. Release the pins on the EDGE of the disconnect (not every
+    // loop iteration, which would hammer the target with resets).
+    if (clientWasConnected) {
+      Serial.println("[bridge] client disconnected — releasing target pins");
+      pinsRelease();
+      clientWasConnected = false;
+    }
+    return;
+  }
+  clientWasConnected = true;
 
   // ── TCP → UART (control frames parsed at frame boundary only) ──
   // Byte-wise state machine backed by ctrlBuf/ctrlLen: the magic pair

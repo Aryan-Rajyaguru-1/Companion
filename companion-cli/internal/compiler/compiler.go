@@ -2374,18 +2374,88 @@ func (c *Compiler) unitKey(srcPath string, args []string, compilerBin string) (s
 	volatile = append(volatile, buildDirFromArgs(args)...)
 
 	norm := NormalizeFlags(args, volatile...)
-	sorted := make([]string, len(norm))
-	copy(sorted, norm)
+
+	// -I order is SEMANTIC: the first match wins when the same header name
+	// exists in two directories, so include paths are hashed in order and only
+	// the remaining flags are sorted. Sorting everything (as this did) made
+	// "reorder the include paths" a free cache hit.
+	var orderedIncludes []string
+	var sorted []string
+	for i := 0; i < len(norm); i++ {
+		if norm[i] == "-I" && i+1 < len(norm) {
+			orderedIncludes = append(orderedIncludes, norm[i+1])
+			i++
+			continue
+		}
+		sorted = append(sorted, norm[i])
+	}
 	sort.Strings(sorted)
 
 	h := sha256.New()
 	fmt.Fprintf(h, "unit|v%d", BuildCacheSchemaVersion)
 	fmt.Fprintf(h, "|%s", fingerprint)
+	for _, inc := range orderedIncludes {
+		h.Write([]byte("|-I"))
+		h.Write([]byte(inc))
+	}
 	for _, a := range sorted {
 		h.Write([]byte("|"))
 		h.Write([]byte(a))
 	}
+	// Headers participate in the key. Without this, editing a .h (or a library
+	// header) left the cached .o in place and the build silently flashed the
+	// OLD code — the worst kind of bug, because everything reports success.
+	//
+	// The NORMALIZED include dirs are used, not the raw argv: the raw ones
+	// carry the per-build temp path, and hashing that would make every warm
+	// rebuild a cache miss (the exact regression the build-dir test guards).
+	appendIncludeFingerprint(h, srcPath, append([]string{filepath.Dir(srcPath)}, orderedIncludes...))
 	return hex.EncodeToString(h.Sum(nil))[:40], nil
+}
+
+// appendIncludeFingerprint hashes every project header the translation unit can
+// reach: the includes in the source, resolved against the -I paths in order
+// (plus the source's own directory), followed recursively through those
+// headers. SDK/core headers are already covered by the toolchain fingerprint,
+// so unresolved (system) includes are skipped rather than searched for.
+//
+// Depth is capped and each file visited once: a header cycle must not loop.
+func appendIncludeFingerprint(h io.Writer, srcPath string, includeDirs []string) {
+	seen := make(map[string]bool)
+	var walk func(path string, depth int)
+	walk = func(path string, depth int) {
+		if depth > 16 || seen[path] {
+			return
+		}
+		seen[path] = true
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		sum := sha256.Sum256(data)
+		fmt.Fprintf(h, "hdr|%s|%x|", path, sum)
+		for _, inc := range parseIncludes(data) {
+			for _, dir := range includeDirs {
+				cand := filepath.Join(dir, inc)
+				if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+					walk(cand, depth+1)
+					break
+				}
+			}
+		}
+	}
+	walk(srcPath, 0)
+}
+
+var includeLineRE = regexp.MustCompile(`(?m)^\s*#\s*include\s*[<"]([^>"]+)[>"]`)
+
+// parseIncludes returns the include targets in a source or header file.
+func parseIncludes(data []byte) []string {
+	var out []string
+	for _, m := range includeLineRE.FindAllStringSubmatch(string(data), -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 // buildDirFromArgs extracts the "-o <obj>" argument's parent directory from

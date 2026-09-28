@@ -13,6 +13,33 @@ import (
 	"strings"
 )
 
+// Extraction limits. An archive from an untrusted index is a zip bomb risk: a
+// few hundred KB of archive can expand to terabytes and fill the disk, which
+// path sanitization does nothing about. Both bounds are generous for real
+// Arduino toolchains (the ESP32 package unpacks to multiple GiB).
+// Vars, not consts, so tests can lower them and exercise the real enforcement
+// path (a zip writer recomputes sizes, so a hand-built archive cannot simply
+// declare a huge one).
+var (
+	maxArchiveFileBytes  int64 = 2 << 30 // 2 GiB for a single entry
+	maxArchiveTotalBytes int64 = 8 << 30 // 8 GiB for the whole archive
+)
+
+// copyBounded copies src into dst, failing once the limit would be exceeded.
+// The declared entry size is NOT trusted: zip/tar headers can lie, so the cap
+// is enforced while the bytes actually move.
+func copyBounded(dst io.Writer, src io.Reader, remaining *int64) error {
+	n, err := io.Copy(dst, io.LimitReader(src, *remaining+1))
+	if err != nil {
+		return err
+	}
+	*remaining -= n
+	if n > *remaining {
+		return fmt.Errorf("archive expands past the %d byte limit — refusing (possible decompression bomb)", maxArchiveTotalBytes)
+	}
+	return nil
+}
+
 // sanitizeRelPath validates an archive entry name and returns the safe
 // destination path under destDir.
 //
@@ -57,6 +84,7 @@ func extractZipOpts(archivePath, destDir string, stripTop bool) error {
 		}
 	}
 
+	budget := int64(maxArchiveTotalBytes)
 	for _, f := range r.File {
 		relPath := strings.TrimPrefix(f.Name, topDir)
 		if relPath == "" {
@@ -77,6 +105,10 @@ func extractZipOpts(archivePath, destDir string, stripTop bool) error {
 			return err
 		}
 
+		if f.UncompressedSize64 > uint64(maxArchiveFileBytes) {
+			return fmt.Errorf("archive entry %q declares %d bytes, over the %d byte per-file limit",
+				relPath, f.UncompressedSize64, int64(maxArchiveFileBytes))
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return err
@@ -88,7 +120,7 @@ func extractZipOpts(archivePath, destDir string, stripTop bool) error {
 			return err
 		}
 
-		_, err = io.Copy(out, rc)
+		err = copyBounded(out, rc, &budget)
 		out.Close()
 		rc.Close()
 		if err != nil {
@@ -153,6 +185,7 @@ func extractTarOpts(archivePath, destDir string, stripTop bool) error {
 	}
 
 	tr := tar.NewReader(reader)
+	budget := int64(maxArchiveTotalBytes)
 	topDir := ""
 	first := stripTop // only detect/stripping the top-level dir when asked
 
@@ -178,6 +211,11 @@ func extractTarOpts(archivePath, destDir string, stripTop bool) error {
 			continue
 		}
 
+		if hdr.Size > maxArchiveFileBytes {
+			return fmt.Errorf("archive entry %q declares %d bytes, over the %d byte per-file limit",
+				relPath, hdr.Size, int64(maxArchiveFileBytes))
+		}
+
 		destPath, err := sanitizeRelPath(destDir, relPath)
 		if err != nil {
 			return err
@@ -193,7 +231,7 @@ func extractTarOpts(archivePath, destDir string, stripTop bool) error {
 			if err != nil {
 				return err
 			}
-			_, err = io.Copy(out, tr)
+			err = copyBounded(out, tr, &budget)
 			out.Close()
 			if err != nil {
 				return err

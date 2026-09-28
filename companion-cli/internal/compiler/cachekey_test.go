@@ -148,3 +148,120 @@ func TestUnitKeySeesSourceChanges(t *testing.T) {
 		t.Fatal("cache key did not change after adding a flag")
 	}
 }
+
+// unitTestArgs mirrors the real compiler argv shape (compile, optimize, two -I
+// paths, -o, source) for cache-key tests that do not care about build dirs.
+func unitTestArgs(srcDir, src string) []string {
+	return []string{"-c", "-Os", "-I", srcDir, "-I", filepath.Join(srcDir, "sketch"),
+		"-o", filepath.Join(srcDir, "sketch", filepath.Base(src)+".o"), src}
+}
+
+// Editing a header must change the cache key. It used not to: the key hashed
+// only the .ino's own bytes, so a cached .o survived a header edit and the
+// build silently produced the OLD code while reporting success.
+func TestUnitKeyIncludesHeaderContents(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "sketch.ino")
+	hdr := filepath.Join(dir, "config.h")
+	if err := os.WriteFile(hdr, []byte("#define PIN 13\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("#include \"config.h\"\nvoid setup(){}\nvoid loop(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Compiler{}
+	args := append(unitTestArgs(dir, src), "-I", dir)
+	k1, err := c.unitKey(src, args, "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Edit the header only.
+	if err := os.WriteFile(hdr, []byte("#define PIN 27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	k2, err := c.unitKey(src, args, "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k1 == k2 {
+		t.Fatal("cache key did NOT change after editing an included header — stale objects would be reused")
+	}
+	// A transitively included header counts too.
+	deep := filepath.Join(dir, "deep.h")
+	if err := os.WriteFile(deep, []byte("#define DEEP 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hdr, []byte("#include \"deep.h\"\n#define PIN 13\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	k3, err := c.unitKey(src, args, "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deep, []byte("#define DEEP 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	k4, err := c.unitKey(src, args, "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k3 == k4 {
+		t.Fatal("cache key did NOT change after editing a transitively included header")
+	}
+}
+
+// -I order is semantic (first match wins), so it must not be sorted away.
+func TestUnitKeyRespectsIncludeOrder(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	src := filepath.Join(dirA, "sketch.ino")
+	if err := os.WriteFile(src, []byte("void setup(){}\nvoid loop(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Compiler{}
+	base := unitTestArgs(dirA, src)
+	k1, err := c.unitKey(src, append(append([]string{}, base...), "-I", dirA, "-I", dirB), "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, err := c.unitKey(src, append(append([]string{}, base...), "-I", dirB, "-I", dirA), "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k1 == k2 {
+		t.Fatal("swapping -I order did not change the cache key — the wrong header could win from cache")
+	}
+}
+
+// A source WITH includes must still be invariant across build dirs: the header
+// walk has to use the normalized -I paths, or hashing the per-build temp dir
+// would turn every warm rebuild into a cache miss.
+func TestUnitKeyHeaderFingerprintKeepsWarmRebuilds(t *testing.T) {
+	srcDir := t.TempDir()
+	hdrDir := filepath.Join(srcDir, "lib")
+	if err := os.MkdirAll(hdrDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hdrDir, "cfg.h"), []byte("#define X 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(srcDir, "sketch.ino")
+	if err := os.WriteFile(src, []byte("#include \"cfg.h\"\nvoid setup(){}\nvoid loop(){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(build string) []string {
+		return []string{"-c", "-Os", "-I", build, "-I", filepath.Join(build, "sketch"),
+			"-I", hdrDir, "-o", filepath.Join(build, "sketch", "sketch.ino.o"), src}
+	}
+	c := &Compiler{}
+	kA, err := c.unitKey(src, mk(filepath.Join(os.TempDir(), "companion_build_warmA_1_aaaa")), "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kB, err := c.unitKey(src, mk(filepath.Join(os.TempDir(), "companion_build_warmB_2_bbbb")), "/fake/g++")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kA != kB {
+		t.Fatal("header fingerprint made the key depend on the build dir — warm rebuilds would always miss")
+	}
+}
