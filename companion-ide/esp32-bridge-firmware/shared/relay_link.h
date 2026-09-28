@@ -57,6 +57,12 @@ static unsigned long relayLastPong = 0;
 static bool relayAwaitingPong = false;
 static char relayDeviceSecret[33] = {0}; // per-board identity, NVS-provisioned once
 
+// relayDeviceId is what device_hello reports. It is a RUNTIME value, not the
+// DEVICE_ID macro, because a sketch may derive it (e.g. from the MAC) so two
+// boards flashed from the same example config cannot supersede each other on
+// the hub. The sketch MUST set it before relayBegin().
+static char relayDeviceId[48] = {0};
+
 static bool relaySendText(const String &s) { return relayWs.send(s); }
 
 static bool relaySendBinary(const void *p, size_t len) {
@@ -72,9 +78,13 @@ static void relaySendStatus(const char *msg) {
 }
 
 // relayLoadOrCreateSecret: first boot generates 16 random bytes via the
-// hardware RNG, stores them in NVS, and prints them to Serial ONCE (copy it
-// into `fleet register --secret` / COMPANION_RELAY_DEVICE_SECRET). Later
-// boots read the same value back silently.
+// hardware RNG, stores them in NVS, and prints them so they can be registered.
+// Later boots read the same value back and ALSO print it, tagged "(stored)" —
+// deliberate: re-flashing or re-provisioning a board should never require an
+// NVS erase to recover the secret, and serial is a local, physical channel.
+// The printed value is the board's identity: the hub refuses a push or a pipe
+// to a device whose secret does not match, which is what stops one compromised
+// agent from talking to every board on the relay.
 static void relayLoadOrCreateSecret() {
   Preferences prefs;
   prefs.begin("relay", true); // read-only first
@@ -108,6 +118,11 @@ static void relayLoadOrCreateSecret() {
 // and the negotiated frame size).
 static bool relayDial() {
   relayLastDialAttempt = millis();
+  // A fresh link starts with no outstanding ping: without this reset a pong
+  // timer left over from the DEAD link can fire against the new one and kill a
+  // perfectly healthy connection seconds after it came up.
+  relayAwaitingPong = false;
+  relayLastPingSent = 0;
   String url = String(RELAY_TLS ? "wss://" : "ws://") + RELAY_HOST + ":" +
                String(RELAY_PORT) + "/device?token=" + DEVICE_TOKEN;
   Serial.printf("[relay] dialing %s ...\n", url.c_str());
@@ -115,16 +130,19 @@ static bool relayDial() {
     Serial.println("[relay] ws connect FAILED — retrying in 5s");
     return false;
   }
+  if (relayDeviceId[0] == '\0') {
+    strlcpy(relayDeviceId, DEVICE_ID, sizeof(relayDeviceId));
+  }
   StaticJsonDocument<320> hello;
   hello["kind"] = "device_hello";
-  hello["id"] = DEVICE_ID;
+  hello["id"] = relayDeviceId;
   hello["version"] = relayCfg.version ? relayCfg.version() : "unknown";
   hello["secret"] = relayDeviceSecret;
   hello["frame_kb"] = RELAY_FRAME_KB;
   String out; serializeJson(hello, out);
   relaySendText(out);
   relayWsConnected = true;
-  Serial.printf("[relay] registered as %s — waiting for pushes\n", DEVICE_ID);
+  Serial.printf("[relay] registered as %s — waiting for pushes\n", relayDeviceId);
   return true;
 }
 // relayOnEvt tracks link state so relayLinkLoop can re-dial after a drop.
@@ -137,6 +155,7 @@ static void relayOnEvt(WebsocketsEvent e, String data) {
       break;
     case WebsocketsEvent::ConnectionClosed:
       relayWsConnected = false;
+      relayAwaitingPong = false; // no pong can arrive on a closed link
       Serial.println("[relay] link closed — will re-dial");
       break;
     default:
@@ -148,10 +167,17 @@ static void relayDispatch(WebsocketsMessage msg) {
   if (msg.isText()) {
     String t = msg.data();
     // Heartbeat reply from the hub: the link is proven alive end-to-end.
-    if (t.indexOf("pong") >= 0) {
-      relayAwaitingPong = false;
-      relayLastPong = millis();
-      return;
+    // Match on the PARSED kind, not a substring: indexOf("pong") would also
+    // accept any future text frame that merely contains those letters (a
+    // status message, an error body) and call a dead link healthy.
+    StaticJsonDocument<128> doc;
+    if (deserializeJson(doc, t) == DeserializationError::Ok) {
+      const char *kind = doc["kind"] | "";
+      if (kind[0] && strcmp(kind, "pong") == 0) {
+        relayAwaitingPong = false;
+        relayLastPong = millis();
+        return;
+      }
     }
     if (relayCfg.onText) relayCfg.onText(t);
     return;

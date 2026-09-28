@@ -117,8 +117,12 @@ char otaHostname[32] = OTA_HOSTNAME_DEFAULT;
 #ifndef DEVICE_TOKEN
   #define DEVICE_TOKEN  "YOUR_DEVICE_TOKEN"  // COMPANION_RELAY_DEVICES_TOKEN on the hub
 #endif
+// DEVICE_ID_DEFAULT is the BASE name; unless config.local.h sets DEVICE_ID
+// explicitly, the real id is this plus a MAC-derived suffix (resolveRelayDeviceId)
+// so two boards from the same config never collide on the hub.
+#define DEVICE_ID_DEFAULT "companion-bridge"
 #ifndef DEVICE_ID
-  #define DEVICE_ID     "companion-bridge-01" // unique per bridge
+  #define DEVICE_ID     DEVICE_ID_DEFAULT
 #endif
 #ifndef RELAY_FRAME_KB
   #define RELAY_FRAME_KB 8
@@ -155,32 +159,56 @@ static void bridgeOnRelayBinary(WebsocketsMessage &msg) {
 static const char *bridgeFwVersion() { return FW_VERSION; }
 static bool bridgeNeverPushing() { return false; } // the bridge is never an OTA target here
 
+// resolveRelayDeviceId decides what this board calls itself on the hub. An
+// explicit DEVICE_ID in config.local.h always wins; the DEFAULT is suffixed
+// from the MAC, exactly like the LAN OTA hostname. A fixed literal default is
+// not cosmetic here: two boards flashed from the example config would take the
+// same id, and since re-registration supersedes the incumbent, they would
+// flip-flop forever — each side closing the other every 5s as its watchdog
+// re-dials.
+static void macSuffix(char *out, size_t outLen); // defined below, with the hostname logic
+static void resolveRelayDeviceId() {
+  if (strcmp(DEVICE_ID, DEVICE_ID_DEFAULT) != 0) {
+    strlcpy(relayDeviceId, DEVICE_ID, sizeof(relayDeviceId));
+    return;
+  }
+  char suffix[7];
+  macSuffix(suffix, sizeof(suffix));
+  snprintf(relayDeviceId, sizeof(relayDeviceId), "%s-%s", DEVICE_ID_DEFAULT, suffix);
+}
+
 static const RelayLinkConfig bridgeRelayLink = {
   bridgeFwVersion,
   bridgeNeverPushing,   // the watchdog never stands down — always on
   bridgeOnRelayText,
   bridgeOnRelayBinary,
 };
+// macSuffix fills out with six hex characters derived from the last 3 bytes of
+// the MAC ("AA:BB:CC:DD:EE:FF" → "DDEEFF"). Shared by every name the sketch
+// derives from hardware identity, so the OTA hostname and the relay device id
+// always agree about which board this is.
+static void macSuffix(char *out, size_t outLen) {
+  String mac = WiFi.macAddress();
+  const int pick[6] = { 9, 10, 12, 13, 15, 16 };
+  size_t n = 0;
+  for (int i = 0; i < 6 && n + 1 < outLen; i++) {
+    int idx = pick[i];
+    char c = (idx < (int)mac.length()) ? mac.charAt(idx) : '0';
+    if (c == ':') c = '0';
+    if (c >= 'a' && c <= 'f') c = (char)(c - 'a' + 'A');
+    out[n++] = c;
+  }
+  out[n] = '\0';
+}
+
 void resolveOtaHostname() {
   if (strcmp(OTA_HOSTNAME, OTA_HOSTNAME_DEFAULT) != 0) {
     strncpy(otaHostname, OTA_HOSTNAME, sizeof(otaHostname) - 1);
     otaHostname[sizeof(otaHostname) - 1] = '\0';
     return;
   }
-  String mac = WiFi.macAddress(); // "AA:BB:CC:DD:EE:FF"
-  // Last 3 bytes = chars at 9,10,12,13,15,16 (skip colons).
   char suffix[7];
-  int n = 0;
-  const int pick[6] = { 9, 10, 12, 13, 15, 16 };
-  for (int i = 0; i < 6 && n < 6; i++) {
-    int idx = pick[i];
-    char c = (idx < (int)mac.length()) ? mac.charAt(idx) : '0';
-    if (c == ':') c = '0';
-    // Normalise to uppercase hex.
-    if (c >= 'a' && c <= 'f') c = (char)(c - 'a' + 'A');
-    suffix[n++] = c;
-  }
-  suffix[n] = '\0';
+  macSuffix(suffix, sizeof(suffix));
   snprintf(otaHostname, sizeof(otaHostname), "companion-%s", suffix);
 }
 
@@ -367,7 +395,8 @@ void setup() {
 #if RELAY_MODE_REMOTE
   // Relay mode: dial the hub and pipe WS↔UART. No LAN TCP server, no mDNS —
   // the IDE reaches this bridge through `companion relay bridge`.
-  relayBegin(bridgeRelayLink);   // secret + callbacks + dial the hub
+  resolveRelayDeviceId();      // MAC-suffixed unless config.local.h set DEVICE_ID
+  relayBegin(bridgeRelayLink); // secret + callbacks + dial the hub
   Serial.println("  → relay link up: flashing through the hub (no LAN server)\n");
 #else
   tcpServer.begin();
@@ -433,10 +462,45 @@ void setup() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ── Client transport ──────────────────────────────────────────
+// The ONE place bytes leave for the client that is driving the target.
+// LAN mode writes to the TCP socket; RELAY_MODE_REMOTE writes to the paired
+// relay connection. Both share the same byte parser (pumpTcpByte) and the
+// same control replies, so they MUST share the writer too — an early version
+// of remote mode registered and paired but never forwarded a byte, because the
+// UART path had a TCP-only writer and loop() returned before it.
+static void bridgeWriteToClient(const uint8_t *p, size_t n) {
+#if RELAY_MODE_REMOTE
+  relaySendBinary(p, n);
+#else
+  if (tcpClient && tcpClient.connected()) tcpClient.write(p, n);
+#endif
+}
+
+static void bridgeWriteToClient(const char *s) {
+  bridgeWriteToClient((const uint8_t *)s, strlen(s));
+}
+
 void loop() {
 #if defined(ARDUINO_ARCH_ESP32)
   ArduinoOTA.handle(); // keep the OTA server responsive
 #endif
+
+#if RELAY_MODE_REMOTE
+  // ── Remote mode: the relay IS the transport ─────────────────────
+  // relayLinkLoop() polls the socket, runs the zombie-link watchdog and
+  // re-dials — it was missing here, so the board registered, paired, and then
+  // sat on a socket it never read or wrote. The incoming side (hub → UART)
+  // is the onBinary callback; the outgoing side is here.
+  relayLinkLoop();
+
+  // ── UART → client (relay) ─────────────────────────────────────
+  int avail = 0;
+  while (Serial2.available() && avail < BUF_SIZE) {
+    buf[avail++] = (uint8_t)Serial2.read();
+  }
+  if (avail > 0) bridgeWriteToClient(buf, avail);
+#else
   // Accept new client if none connected
   if (!tcpClient || !tcpClient.connected()) {
     WiFiClient candidate = tcpServer.accept();
@@ -444,8 +508,8 @@ void loop() {
       tcpClient = candidate;
       tcpClient.setNoDelay(true);
       ctrlLen = 0; // fresh frame boundary for the new connection
-      Serial.printf("\n✓ IDE connected from: %s:%d\n", 
-                    tcpClient.remoteIP().toString().c_str(), 
+      Serial.printf("\n✓ IDE connected from: %s:%d\n",
+                    tcpClient.remoteIP().toString().c_str(),
                     tcpClient.remotePort());
       Serial.println("  → Ready to receive upload commands\n");
     }
@@ -472,7 +536,8 @@ void loop() {
   while (Serial2.available() && avail < BUF_SIZE) {
     buf[avail++] = (uint8_t)Serial2.read();
   }
-  if (avail > 0) tcpClient.write(buf, avail);
+  if (avail > 0) bridgeWriteToClient(buf, avail);
+#endif // RELAY_MODE_REMOTE
 }
 
 // ── Control command handler ───────────────────────────────────
@@ -531,7 +596,7 @@ int handleControl(uint8_t* payload, int available) {
                "%s profile=%d(%s) baud=%u EN=%d BOOT=%d ota=on(mdns=%s,port=3232)\r\n",
                FW_VERSION, currentProfile, profiles[currentProfile].name,
                currentBaud, PIN_TARGET_EN, PIN_TARGET_BOOT, otaHostname);
-      tcpClient.print(resp);
+      bridgeWriteToClient(resp); // same transport as the client's own bytes
       return 1;
     }
 

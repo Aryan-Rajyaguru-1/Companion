@@ -41,7 +41,12 @@
 // #define RELAY_HOST        "ota.example.com"      // the hub's TLS endpoint
 // #define RELAY_PORT        443
 // #define RELAY_TLS         true                   // wss:// — required behind a proxy
-// #define DEVICE_ID         "companion-bridge-01"  // unique per bridge
+// Device id on the hub. LEAVE THIS COMMENTED unless you really need a fixed
+// name: the default id is "companion-bridge-<MAC>" (derived from the board, so
+// two boards from this same config never collide — and colliding boards would
+// take turns evicting each other from the hub). Setting it explicitly pins the
+// id, which only makes sense for a single known board.
+// #define DEVICE_ID         "companion-bridge-01"
 // #define DEVICE_TOKEN      "..."                  // COMPANION_RELAY_DEVICES_TOKEN from relay.env
 
 #endif /* CONFIG_LOCAL_H */
