@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/companion-ide/companion-cli/internal/ota"
@@ -42,6 +43,21 @@ func FrameKBFromAck(raw []byte) int {
 		kb = 8
 	}
 	return kb * 1024
+}
+
+// DeviceFromAck pulls the device's reported firmware version and LAN address
+// out of a push_ack. Both are optional: legacy firmware reports neither, and
+// the LAN path (ArduinoOTA) exposes no version at all — callers must treat ""
+// as "unknown", never as "up to date".
+func DeviceFromAck(raw []byte) (version, ip string) {
+	var ack struct {
+		Version string `json:"version"`
+		IP      string `json:"ip"`
+	}
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(ack.Version), strings.TrimSpace(ack.IP)
 }
 
 // PushDevice pushes a firmware image to a remote device over the paired

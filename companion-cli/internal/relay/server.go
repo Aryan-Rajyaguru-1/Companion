@@ -310,6 +310,16 @@ func (h *Hub) startPush(a *agentConn, devID, secret string, size int64, md5 stri
 	if d.frameKB > 0 {
 		ackBody["frame_kb"] = d.frameKB
 	}
+	// The firmware the board is running RIGHT NOW, and its LAN address. Both
+	// are learned only at pairing time, and both are what a fleet needs to
+	// roll out safely: "skip what is already current" is impossible without
+	// the version, and the LAN address is what a local recovery push needs.
+	if d.version != "" {
+		ackBody["version"] = d.version
+	}
+	if d.ip != "" {
+		ackBody["ip"] = d.ip
+	}
 	_ = h.send2(a, KindPushAck, ackBody)
 }
 

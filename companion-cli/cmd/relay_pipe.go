@@ -48,7 +48,8 @@ func RelayPushFunc(hubBase, token, imagePath string) fleet.PushFunc {
 // OnProgress/OnMessage callback (fleet/unattended pushes pass nil).
 func RelayPushFuncOpts(hubBase, token, imagePath string, so *ota.StreamOptions) fleet.PushFunc {
 	return func(ctx context.Context, d fleet.Device) error {
-		return relayPushOne(ctx, hubBase, token, d, imagePath, so)
+		_, _, err := relayPushOne(ctx, hubBase, token, d, imagePath, so)
+		return err
 	}
 }
 
@@ -57,20 +58,25 @@ func RelayPushFuncOpts(hubBase, token, imagePath string, so *ota.StreamOptions) 
 // It shares the exact wire steps of `relay push` so behaviour stays
 // identical; the only variation is the controller-supplied stream options,
 // which carry progress reporting and (optionally) transport tuning.
-func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, imagePath string, so *ota.StreamOptions) error {
+// relayPushOne pushes to one device over the relay. It also returns what the
+// hub reported about the device at pairing time — the firmware version it was
+// running and its LAN address — because that is the only moment the agent
+// learns either, and a fleet rollout needs both (skip-what-is-current, and a
+// target for a local recovery push).
+func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, imagePath string, so *ota.StreamOptions) (version, ip string, err error) {
 	if token == "" {
-		return fmt.Errorf("agent token required: --token or COMPANION_RELAY_AGENTS_TOKEN")
+		return version, ip, fmt.Errorf("agent token required: --token or COMPANION_RELAY_AGENTS_TOKEN")
 	}
 	img, err := os.ReadFile(imagePath)
 	if err != nil {
-		return fmt.Errorf("read image: %w", err)
+		return version, ip, fmt.Errorf("read image: %w", err)
 	}
 	sum := md5.Sum(img)
 	md5hex := hex.EncodeToString(sum[:])
 
 	u, err := url.Parse(hubBase)
 	if err != nil {
-		return fmt.Errorf("bad hub URL: %w", err)
+		return version, ip, fmt.Errorf("bad hub URL: %w", err)
 	}
 	u.Path = "/agent"
 	q := u.Query()
@@ -79,7 +85,7 @@ func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, im
 
 	ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		return fmt.Errorf("dial hub agent port: %w", err)
+		return version, ip, fmt.Errorf("dial hub agent port: %w", err)
 	}
 	defer ws.Close()
 
@@ -89,12 +95,12 @@ func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, im
 		"size":   len(img), "md5": md5hex,
 	})
 	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
-		return fmt.Errorf("push_req: %w", err)
+		return version, ip, fmt.Errorf("push_req: %w", err)
 	}
 	ws.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, raw, err := ws.ReadMessage()
 	if err != nil {
-		return fmt.Errorf("push_ack: %w", err)
+		return version, ip, fmt.Errorf("push_ack: %w", err)
 	}
 	var ack struct {
 		Kind  string `json:"kind"`
@@ -102,15 +108,17 @@ func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, im
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &ack); err != nil {
-		return fmt.Errorf("push_ack parse: %w", err)
+		return version, ip, fmt.Errorf("push_ack parse: %w", err)
 	}
 	if ack.Kind == relay.KindPushResult && !ack.OK {
-		return fmt.Errorf("hub rejected push: %s", ack.Error)
+		return version, ip, fmt.Errorf("hub rejected push: %s", ack.Error)
 	}
 	if ack.Kind != relay.KindPushAck || !ack.OK {
-		return fmt.Errorf("unexpected hub reply: %s", raw)
+		return version, ip, fmt.Errorf("unexpected hub reply: %s", raw)
 	}
 	ws.SetReadDeadline(time.Time{})
+	// What the board reported at pairing (may be empty for legacy firmware).
+	version, ip = relay.DeviceFromAck(raw)
 	pipe := newAgentPipe(ws)
 	// Frame size: negotiated at hello and relayed via push_ack (see
 	// FrameKBFromAck). A caller-set ChunkBytes wins; otherwise use the
@@ -127,11 +135,11 @@ func relayPushOne(ctx context.Context, hubBase, token string, d fleet.Device, im
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	if err := relay.PushDeviceStream(pctx, pipe, bytes.NewReader(img), int64(len(img)), so); err != nil {
-		return fmt.Errorf("push to %s failed: %w", d.Key(), err)
+		return version, ip, fmt.Errorf("push to %s failed: %w", d.Key(), err)
 	}
 	doneMsg, _ := json.Marshal(map[string]string{"kind": relay.KindPushDone})
 	_ = ws.WriteMessage(websocket.TextMessage, doneMsg)
-	return nil
+	return version, ip, nil
 }
 
 // relayHTTPServer is a thin net/http wrapper so cmd stays stdlib-only

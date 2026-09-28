@@ -217,6 +217,65 @@ nothing changes at the target end:
 
 ---
 
+## Rolling out to a fleet (10–50 boards)
+
+`companion fleet push <image> [selectors...]` is the batch tool, and a rollout
+is a **plan** you can inspect before anything is written.
+
+```bash
+# 1. See exactly what would happen — no device is contacted at all
+companion fleet push fw.bin --dry-run
+
+# 2. Canary: flash 2 of 25, hold the rest back, then stop
+companion fleet push fw.bin --canary 2 @lab-a
+
+# 3. The rest, after the canary looks healthy
+companion fleet push fw.bin @lab-a --skip-if-version 1.4.0 --mark-version 1.4.0
+
+# 4. Machine-readable, for CI or a dashboard (stdout is JSON only)
+companion fleet push fw.bin --json --dry-run
+```
+
+**Selecting** — selectors are ANDed, so they narrow:
+
+| Selector | Matches |
+|---|---|
+| `@tag` | a tag (`@prod`, `@lab-a`) |
+| `+@tag` | OR-ed: `+@lab-a +@lab-b` means either |
+| anything else | substring of id, name, MAC, host or MCU (case-insensitive) |
+
+`@lab-a @prod` is therefore "tagged lab-a **and** prod". Note that a bare word
+does **not** match tags — use the `@` form, otherwise `fleet push fw.bin prod`
+finds nothing and looks like a bug.
+
+**Version awareness** — a board reports the firmware it is running in its hello,
+and the fleet records it. That buys two things:
+
+- `--skip-if-version <v>` skips boards already on `v`, which makes a rollout
+  **re-runnable**: the second run has nothing to do. A board whose version is
+  *unknown* is never skipped — the LAN ArduinoOTA path reports no version at
+  all, and treating that as "current" would silently exclude every LAN board.
+- `--mark-version <v>` records the version you are deploying (a `.bin` carries
+  no version metadata of its own), so the next run knows what to skip.
+
+**Throughput** — a 1.2 MB relay push measures ~165 s. With `--workers N`:
+
+| Devices | 4 (default) | 8 |
+|---|---|---|
+| 10 | ~8 min | ~5 min |
+| 30 | ~22 min | ~11 min |
+| 50 | ~35 min | ~14 min |
+
+The hub is not the bottleneck: every board is an independent pairing, and 50
+concurrent sockets is nothing for the process. The estimate in the plan uses
+`--est-push-seconds` (default 165) so you can tune it to your own link.
+
+At this size two things are worth knowing. The registry is a single YAML file
+holding **every device secret in plaintext** — fine on a workstation, but move
+it to a secret manager before it becomes a liability. And a rollout is only as
+safe as its canary: `--canary` exists because 50 boards flashing the same
+untested image simultaneously is a bad afternoon.
+
 ## Recovering a board when the hub is the problem
 
 Firmware normally reaches a board through the relay, so if the hub, the tunnel

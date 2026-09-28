@@ -12,13 +12,20 @@ import (
 // reuse the same BatchOptions plumbing as LAN OTA pushes.
 type PushFunc func(ctx context.Context, d Device) error
 
+// PushWithInfoFunc is a PushFunc that also reports what the device was running
+// when it was contacted (relay pushes learn this from the hub's push_ack; LAN
+// ArduinoOTA cannot, and returns ""). Used instead of Push when set, so a
+// rollout can record versions without every caller learning the relay.
+type PushWithInfoFunc func(ctx context.Context, d Device) (version, ip string, err error)
+
 // BatchOptions configures a fleet push.
 type BatchOptions struct {
-	Devices     []Device // resolved target list (exactly what will be flashed)
-	ImagePath   string   // pre-compiled binary path
-	Push        PushFunc // per-device push implementation (default ota.Push wrapper)
-	Concurrency int      // bounded worker count; 0 → 4
-	Retries     int      // automatic retries per failing device; 0 → 1
+	Devices      []Device         // resolved target list (exactly what will be flashed)
+	ImagePath    string           // pre-compiled binary path
+	Push         PushFunc         // per-device push implementation (default ota.Push wrapper)
+	PushWithInfo PushWithInfoFunc // when set, used instead of Push; reports version+ip
+	Concurrency  int              // bounded worker count; 0 → 4
+	Retries      int              // automatic retries per failing device; 0 → 1
 }
 
 // Retry generous defaults so a fresh call is safe.
@@ -37,6 +44,11 @@ type DeviceResult struct {
 	OK       bool
 	Error    string
 	Attempts int
+	// Version and IP are what the device reported AT PUSH TIME — the firmware
+	// it was running before this push, and its LAN address (both may be empty
+	// on the LAN path or with legacy firmware).
+	Version string
+	IP      string
 }
 
 // BatchResults holds the outcome table plus rollup counters.
@@ -104,6 +116,14 @@ func pushWithRetry(ctx context.Context, d Device, opts BatchOptions) DeviceResul
 			return DeviceResult{Device: d, Attempts: attempts, Error: "aborted: " + ctx.Err().Error()}
 		}
 		attempts++
+		if opts.PushWithInfo != nil {
+			version, ip, err := opts.PushWithInfo(ctx, d)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			return DeviceResult{Device: d, OK: true, Attempts: attempts, Version: version, IP: ip}
+		}
 		if err := opts.Push(ctx, d); err != nil {
 			lastErr = err
 			continue

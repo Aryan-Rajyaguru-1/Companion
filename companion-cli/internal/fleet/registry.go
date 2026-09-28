@@ -12,15 +12,24 @@ import (
 
 // Device is one OTA-capable board known to the registry.
 type Device struct {
-	ID     string    `yaml:"id"`               // stable ID: registry name or MAC-derived hostname
-	Name   string    `yaml:"name"`             // friendly name (may equal ID)
-	MAC    string    `yaml:"mac,omitempty"`    // last-seen MAC, "" when unknown
-	Host   string    `yaml:"host"`             // device IP
-	Port   int       `yaml:"port"`             // OTA port (3232 default)
-	MCU    string    `yaml:"mcu,omitempty"`    // esp32 | esp8266 | avr | stm32 | generic
-	Secret string    `yaml:"secret,omitempty"` // per-device OTA secret (relay pushes; also sent to LAN OTA when set)
-	Tags   []string  `yaml:"tags,omitempty"`
-	SeenAt time.Time `yaml:"seen_at"`
+	ID     string   `yaml:"id"`               // stable ID: registry name or MAC-derived hostname
+	Name   string   `yaml:"name"`             // friendly name (may equal ID)
+	MAC    string   `yaml:"mac,omitempty"`    // last-seen MAC, "" when unknown
+	Host   string   `yaml:"host"`             // device IP
+	Port   int      `yaml:"port"`             // OTA port (3232 default)
+	MCU    string   `yaml:"mcu,omitempty"`    // esp32 | esp8266 | avr | stm32 | generic
+	Secret string   `yaml:"secret,omitempty"` // per-device OTA secret (relay pushes; also sent to LAN OTA when set)
+	Tags   []string `yaml:"tags,omitempty"`
+	// Version is the firmware the board last reported (relay pushes learn it
+	// from the hub's push_ack). Empty means UNKNOWN, never "up to date" — the
+	// LAN ArduinoOTA protocol exposes no version at all. Rollouts depend on
+	// that distinction: skipping an unknown board would silently exclude every
+	// LAN device from an update.
+	Version string `yaml:"version,omitempty"`
+	// LastPushAt is when this board last accepted firmware, so an operator can
+	// tell "never updated" from "updated weeks ago".
+	LastPushAt time.Time `yaml:"last_push_at,omitempty"`
+	SeenAt     time.Time `yaml:"seen_at"`
 }
 
 // ID returns the stable key for a device.
@@ -136,27 +145,56 @@ func (r *Registry) snapshotLocked() []Device {
 	return out
 }
 
-// Select returns the devices matching all selectors (AND) in ID order.
-// An empty selector list matches every device.
+// Select returns the devices matching the selectors in ID order.
+//
+// Semantics: selectors are ANDed, so "@lab @esp32" means "tagged lab AND
+// an ESP32" — the intersection people reach for when narrowing a rollout. A
+// selector prefixed with "+" is ORed instead, so "@lab-a +@lab-b +@lab-c"
+// means any of those tags. An empty selector list matches every device.
 func (r *Registry) Select(selectors []string) []Device {
 	all := r.All()
-	var out []Device
-	for _, d := range all {
-		ok := true
-		for _, sel := range selectors {
-			if sel == "" {
-				continue
-			}
-			if !d.Match(sel) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			out = append(out, d)
+	var required, optional []string
+	for _, sel := range selectors {
+		sel = strings.TrimSpace(sel)
+		switch {
+		case sel == "":
+			// ignore
+		case strings.HasPrefix(sel, "+"):
+			optional = append(optional, strings.TrimPrefix(sel, "+"))
+		default:
+			required = append(required, sel)
 		}
 	}
+
+	var out []Device
+	for _, d := range all {
+		if !matchAll(d, required) {
+			continue
+		}
+		if len(optional) > 0 && !matchAny(d, optional) {
+			continue
+		}
+		out = append(out, d)
+	}
 	return out
+}
+
+func matchAll(d Device, sels []string) bool {
+	for _, sel := range sels {
+		if !d.Match(sel) {
+			return false
+		}
+	}
+	return true
+}
+
+func matchAny(d Device, sels []string) bool {
+	for _, sel := range sels {
+		if d.Match(sel) {
+			return true
+		}
+	}
+	return false
 }
 
 // Remove deletes a device by stable ID and persists the change.

@@ -190,7 +190,7 @@ shares one Update state machine.`,
 				start := time.Now()
 				last := time.Now()
 				dev := fleet.Device{ID: relayDevice, Name: relayDevice, Secret: relaySecret}
-				err := relayPushOne(cmd.Context(), relayHub, relayToken, dev, imagePath, &ota.StreamOptions{
+				_, _, err := relayPushOne(cmd.Context(), relayHub, relayToken, dev, imagePath, &ota.StreamOptions{
 					OnProgress: func(sent, total int64) {
 						if time.Since(last) < 150*time.Millisecond && sent < total {
 							return
