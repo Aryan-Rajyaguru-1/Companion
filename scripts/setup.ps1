@@ -74,8 +74,12 @@ if (-not $Built) {
     try {
         $sumsTxt = (Invoke-WebRequest -Uri "$Repo/releases/download/$Tag/SHA256SUMS.txt" -UseBasicParsing).Content
         foreach ($line in ($sumsTxt -split "`n")) {
-            $f = $line -split '\s+' | Where-Object { $_ -ne '' }
-            if ($f.Count -ge 2 -and $f[1] -eq $Asset) { $Want = $f[0]; break }
+            # Compare the whole name after the hash, not just the second
+            # field: the IDE installers contain spaces ("Companion IDE Setup
+            # 0.3.1-alpha.exe"), which a field split would never match.
+            if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+                if ($Matches[2] -eq $Asset) { $Want = $Matches[1]; break }
+            }
         }
     } catch { $Want = $null }
 

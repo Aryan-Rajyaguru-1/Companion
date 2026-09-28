@@ -85,7 +85,11 @@ if [ "$BUILT" -eq 0 ]; then
   # its own installer should not be the weak link.
   SUMS="$(mktemp)"
   if curl -fsSL --retry 2 -o "$SUMS" "$REPO/releases/download/$TAG/SHA256SUMS.txt" 2>/dev/null; then
-    WANT="$(awk -v a="$ASSET" '$2 == a {print $1}' "$SUMS" | head -n1)"
+    # Match the NAME as everything after the hash, not as $2: the IDE
+    # installers are named "Companion IDE Setup 0.3.1-alpha.exe", so a
+    # field-based match silently found nothing for exactly the assets a
+    # human downloads by hand.
+    WANT="$(awk -v a="$ASSET" '{h=$1; $1=""; sub(/^[[:space:]]+/,""); sub(/^[*]/,""); if ($0 == a) print h}' "$SUMS" | head -n1)"
     if [ -n "$WANT" ]; then
       GOT="$(sha256_of "$BIN")"
       if [ "$GOT" = "$WANT" ]; then
