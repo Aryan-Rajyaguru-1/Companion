@@ -349,6 +349,16 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				if device == "" || image == "" {
 					return "", fmt.Errorf("device and image_path are both required")
 				}
+				// Check the credential BEFORE dialling the hub. Without this the
+				// agent only sees "device secret required (pass --device-secret)",
+				// which is a CLI flag it cannot set and says nothing about the
+				// environment variable that would fix it.
+				if os.Getenv("COMPANION_RELAY_DEVICE_SECRET") == "" {
+					return "", fmt.Errorf(
+						"COMPANION_RELAY_DEVICE_SECRET is not set in the server's environment. " +
+							"It is the per-board provisioning secret (printed by the board on first boot). " +
+							"Export it before starting the server — it is deliberately never passed through this interface.")
+				}
 				return runCLI(newRelayCmd(),
 					[]string{"push", "--hub", s.hub, "--device", device, image})
 			},
