@@ -71,15 +71,14 @@ jobs:
             echo "$out" | grep -q "$VERSION" \
               || { echo "::error::version stamp missing — expected $VERSION inside the built binary"; exit 1; }
           fi
-      - name: Generate SHA256SUMS
+      - name: Remove the per-job sums file
         working-directory: companion-cli
         shell: bash
-        run: |
-          # setup.sh/ps1 verify downloads against SHA256SUMS.txt, but nothing
-          # ever produced that file, so verification silently skipped itself.
-          cd ../dist-cli
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+        run: rm -f ../dist-cli/SHA256SUMS.txt
+        # Generated ONCE in the release job instead: three CLI jobs each
+        # produced a file of the same name containing only their own binaries,
+        # and one of the three won — leaving a file that cannot verify the
+        # Linux or macOS download at all.
       - uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.os }}
@@ -177,6 +176,18 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { merge-multiple: true, path: artifacts }
+      - name: Generate SHA256SUMS over every artifact
+        shell: bash
+        run: |
+          # setup.sh / setup.ps1 verify a download against SHA256SUMS.txt, and
+          # until now no such file was ever produced, so verification skipped
+          # itself with a warning. Generated here, once, over ALL artifacts.
+          cd artifacts
+          ls -1
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 \
+            | sort -z | xargs -0 sha256sum | sed 's| \./| |' > SHA256SUMS.txt
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
