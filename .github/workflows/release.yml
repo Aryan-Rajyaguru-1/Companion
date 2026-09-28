@@ -77,18 +77,35 @@ jobs:
         with: { node-version: 20 }
       - name: Build installers
         working-directory: companion-ide
+        # bash on every runner: the version stamping below is POSIX shell, and
+        # windows-latest would otherwise default to pwsh.
+        shell: bash
+        env:
+          # Stamp the tag into the IDE. Without this the installers report the
+          # hardcoded package.json version while the CLI reports the tag, so a
+          # bug report cannot say which build it came from.
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
         run: |
           npm install --no-audit --no-fund
+          # electron-builder takes the version from package.json. Rewrite it
+          # with node rather than `npm version`: npm refuses to run on a dirty
+          # git tree, and `npm install` above is enough to dirty package-lock.
+          if [ "$VERSION" != "dev" ]; then
+            node -e 'const f="package.json",p=require("./package.json");p.version=process.argv[1];require("fs").writeFileSync(f,JSON.stringify(p,null,2)+"\n")' "${VERSION#v}"
+            echo "IDE version stamped: $(node -p "require('./package.json').version")"
+          fi
           npm run build
       - name: Verify the expected installer exists for this OS
         working-directory: companion-ide
         shell: bash
         run: |
-          # electron-builder's output naming differs per OS; fail loudly here
-          # rather than letting an empty release/ propagate to the release page.
-          # nullglob + a quoted array: the produced filenames contain SPACES
-          # ("Companion IDE Setup 1.0.0.exe"), and an unquoted `for f in $glob`
-          # word-splits them, so a SUCCESSFUL build reported failure.
+          # electron-builder's output naming differs per OS and now carries the
+          # stamped version ("Companion IDE Setup <version>.exe"); fail loudly
+          # here rather than letting an empty release/ propagate to the release
+          # page.
+          # nullglob + a quoted array: the produced filenames contain SPACES,
+          # and an unquoted `for f in $glob` word-splits them, so a SUCCESSFUL
+          # build reported failure.
           shopt -s nullglob
           case "${{ matrix.os }}" in
             ubuntu-latest)  files=(release/*.AppImage release/*.deb) ;;

@@ -53,6 +53,17 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
 > drivers (CP210x/CH340), the 2.4 GHz-only bridge radio, Windows Firewall on
 > port 3333, and the `py -m pip install esptool` step.
 
+**Step 3 — check your environment before the first upload:**
+
+```bash
+companion doctor                 # toolchain, esptool/avrdude/Python, config perms
+companion doctor --hub wss://<your-host>   # …and your relay, if you self-host one
+```
+
+It prints what is missing and the exact fix for your OS, and exits non-zero
+when something required is absent — so a failure is explained here rather than
+halfway through an upload.
+
 ## 🚀 Fleet OTA (batch flash)
 
 Register your boards once, then update many over WiFi in one command:

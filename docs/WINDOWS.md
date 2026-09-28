@@ -129,6 +129,19 @@ installer). Verify with `py --version`.
 The errors Companion prints now tell you the right command for your OS instead
 of assuming Linux.
 
+**One command tells you what is missing.** `companion doctor` checks the config
+file, the board toolchain, esptool / avrdude / Python (running esptool to prove
+it works, not just that it resolves) and, with `--hub`, your relay:
+
+```powershell
+.\companion.exe doctor
+.\companion.exe doctor --hub wss://your-host
+```
+
+It exits non-zero when something required is missing, and prints the fix for
+each gap — the same resolution the upload paths use, so it cannot disagree with
+them.
+
 ---
 
 ## 7. Remote OTA (off-LAN) on Windows

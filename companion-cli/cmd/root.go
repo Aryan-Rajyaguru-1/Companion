@@ -92,6 +92,7 @@ func init() {
 		newUpgradeCmd(),
 		newFleetCommand(), // device registry + batch OTA push
 		newRelayCmd(),     // remote OTA over the internet via relay hub
+		newDoctorCmd(),    // environment/toolchain diagnosis
 	)
 }
 
