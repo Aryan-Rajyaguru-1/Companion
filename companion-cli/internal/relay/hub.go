@@ -182,13 +182,17 @@ func (h *Hub) Pair(agent *agentConn, req PairRequest) error {
 	if d.agent != nil && d.agent != agent {
 		return fmt.Errorf("device %q is already paired to another agent", req.DeviceID)
 	}
-	if d.secret != "" {
-		if req.Secret == "" {
-			return fmt.Errorf("device secret required (pass --device-secret)")
-		}
-		if subtle.ConstantTimeCompare([]byte(req.Secret), []byte(d.secret)) != 1 {
-			return fmt.Errorf("device secret rejected for %q", req.DeviceID)
-		}
+	// The secret is REQUIRED, never optional. An empty stored secret used to
+	// skip this block entirely, so a board registered with an empty secret
+	// could be pushed to (or piped from) by anyone holding the devices token.
+	// deviceLoop now rejects empty secrets at hello, so d.secret is always set —
+	// and this must stay strict anyway: a future path that lets a device in
+	// without a secret must not silently disable verification here.
+	if req.Secret == "" {
+		return fmt.Errorf("device secret required (pass --device-secret)")
+	}
+	if subtle.ConstantTimeCompare([]byte(req.Secret), []byte(d.secret)) != 1 {
+		return fmt.Errorf("device secret rejected for %q", req.DeviceID)
 	}
 
 	d.busy = true

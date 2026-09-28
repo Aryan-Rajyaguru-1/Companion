@@ -335,7 +335,7 @@ func TestDeviceHeartbeat(t *testing.T) {
 		t.Fatalf("device dial: %v", err)
 	}
 	defer ws.Close()
-	hello, _ := json.Marshal(map[string]any{"kind": KindDeviceHello, "id": "hb-dev", "version": "1.0.3"})
+	hello, _ := json.Marshal(map[string]any{"kind": KindDeviceHello, "id": "hb-dev", "version": "1.0.3", "secret": "hb-secret"})
 	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
 		t.Fatalf("hello: %v", err)
 	}
@@ -467,13 +467,14 @@ func TestRelayEndToEnd(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
 	// Two devices: one flashes successfully, one fails mid-push. The success
-	// device provisions a per-device secret (boards without one keep working:
-	// secret checks only apply when the device presented one at hello).
+	// Every device provisions a per-device secret: an empty one is now REFUSED
+	// at hello, because it used to mean "no check" and let anyone holding the
+	// devices token claim the board's id.
 	devWS, dev := dialDevice(t, wsURL, "dev-tok", "dev-alpha", "s3cr3t-alpha")
 	defer devWS.Close()
 	go runDeviceLoop(t, devWS, dev, false, nil)
 
-	failWS, failDev := dialDevice(t, wsURL, "dev-tok", "dev-beta", "")
+	failWS, failDev := dialDevice(t, wsURL, "dev-tok", "dev-beta", "s3cr3t-beta")
 	defer failWS.Close()
 	go runDeviceLoop(t, failWS, failDev, true, nil)
 
@@ -545,7 +546,7 @@ func TestRelayEndToEnd(t *testing.T) {
 	t.Logf("✓ per-device secret enforced")
 
 	// 2. Failure path: device rejects mid-stream → error surfaces.
-	err = agentPush(t, wsURL, "agent-tok", "dev-beta", "", img)
+	err = agentPush(t, wsURL, "agent-tok", "dev-beta", "s3cr3t-beta", img)
 	if err == nil {
 		t.Fatal("expected failure-path push to error, got nil")
 	}
@@ -565,7 +566,7 @@ func TestRelayEndToEnd(t *testing.T) {
 	// is immediately pushable again without a reconnect. The CLI-side agent
 	// sends push_done right after PushDevice sees "OK" (mirroring what the
 	// real `relay push` command does), so simulate that here too.
-	devWS2, dev2 := dialDevice(t, wsURL, "dev-tok", "dev-alpha2", "")
+	devWS2, dev2 := dialDevice(t, wsURL, "dev-tok", "dev-alpha2", "s3cr3t-alpha2")
 	defer devWS2.Close()
 	firstDone := make(chan struct{})
 	go func() {
@@ -586,7 +587,7 @@ func TestRelayEndToEnd(t *testing.T) {
 			t.Fatalf("push_done write: %v", err)
 		}
 	}
-	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha2", "", small); err != nil {
+	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha2", "s3cr3t-alpha2", small); err != nil {
 		t.Fatalf("first push for push_done check: %v", err)
 	}
 	// The device's own push_done already cleared the hub pairing; the
@@ -598,8 +599,104 @@ func TestRelayEndToEnd(t *testing.T) {
 		t.Fatal("device did not finish first push")
 	}
 	sendAgentPushDone()
-	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha2", "", small); err != nil {
+	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha2", "s3cr3t-alpha2", small); err != nil {
 		t.Fatalf("second push after push_done should succeed, got: %v", err)
 	}
 	t.Logf("✓ push_done clears pairing: same device pushable twice in a row")
+}
+
+// TestEmptySecretRejectedAtHello: a device that presents no secret is refused
+// outright. An empty secret used to mean "no check" — Pair skipped
+// verification, so anyone holding the devices token could register a board with
+// an empty secret and receive its firmware (or, in pipe mode, its raw UART).
+func TestEmptySecretRejectedAtHello(t *testing.T) {
+	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device?token=dev-tok", nil)
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "no-secret", "version": "1.0.3",
+	})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected a refusal frame, got read error: %v", err)
+	}
+	if !strings.Contains(string(raw), "secret") {
+		t.Fatalf("expected a secret-related refusal, got: %s", raw)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(hub.DeviceIDs()) > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ids := hub.DeviceIDs(); len(ids) != 0 {
+		t.Fatalf("empty-secret device must not be registered, got %v", ids)
+	}
+	t.Logf("✓ empty secret refused at hello, device not registered")
+}
+
+// TestImpostorCannotStealDeviceID: re-registration by id is legitimate (a
+// reconnect after a drop) — but only from the same board. Superseding on id
+// alone let any holder of the devices token evict the incumbent, take its id,
+// and receive its pushes.
+func TestImpostorCannotStealDeviceID(t *testing.T) {
+	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// The real board registers and stays online.
+	realWS, real := dialDevice(t, wsURL, "dev-tok", "target-dev", "real-secret")
+	defer realWS.Close()
+	go runDeviceLoop(t, realWS, real, false, nil)
+	deadline0 := time.Now().Add(5 * time.Second)
+	for len(hub.DeviceIDs()) < 1 && time.Now().Before(deadline0) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(hub.DeviceIDs()) != 1 {
+		t.Fatalf("real board did not register: %v", hub.DeviceIDs())
+	}
+
+	// An attacker holding the devices token registers the SAME id, with an empty
+	// secret and with a different one. Each attempt gets a fresh socket: a
+	// refusal ends the connection (the hub nudges and hangs up), so the next
+	// attempt must not reuse it.
+	for _, secret := range []string{"", "attacker-secret"} {
+		impostor, _, err := websocket.DefaultDialer.Dial(wsURL+"/device?token=dev-tok", nil)
+		if err != nil {
+			t.Fatalf("impostor dial: %v", err)
+		}
+		hello, _ := json.Marshal(map[string]any{
+			"kind": KindDeviceHello, "id": "target-dev", "version": "9.9.9", "secret": secret,
+		})
+		if err := impostor.WriteMessage(websocket.TextMessage, hello); err != nil {
+			t.Fatalf("impostor hello: %v", err)
+		}
+		impostor.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, raw, err := impostor.ReadMessage()
+		impostor.Close()
+		if err == nil && strings.Contains(string(raw), `"ok":true`) {
+			t.Fatalf("impostor was welcomed (secret=%q): %s", secret, raw)
+		}
+		// A refusal frame or an immediate close both mean "not registered".
+	}
+
+	// The incumbent is untouched and still pushable with the real secret.
+	devs := hub.ListDevices()
+	if len(devs) != 1 || devs[0].ID != "target-dev" || devs[0].Version != "1.0.3" {
+		t.Fatalf("incumbent was replaced or dropped: %+v", devs)
+	}
+	if err := agentPush(t, wsURL, "agent-tok", "target-dev", "real-secret", []byte("x")); err == nil {
+		t.Logf("push accepted against the real board (attacker never got the id)")
+	}
+	t.Logf("✓ impostor refused, incumbent kept the id")
 }

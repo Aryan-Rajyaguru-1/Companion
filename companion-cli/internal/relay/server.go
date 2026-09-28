@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -128,10 +129,29 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		h.nudge(d, "device id required")
 		return
 	}
+	// A device MUST present a secret. An empty one used to mean "no check":
+	// Pair skipped verification entirely, so anyone holding the devices token
+	// could register a board with an empty secret and receive its pushes — and,
+	// since pipe mode carries raw UART bytes, its whole flashing session.
+	if d.secret == "" {
+		log.Printf("[relay] rejected device hello with an empty secret (id=%q)", d.id)
+		h.nudge(d, "device_hello must carry a provisioning secret")
+		return
+	}
 
 	h.mu.Lock()
-	if old, ok := h.devices[d.id]; ok {
-		old.close() // superseded re-registration
+	if old, ok := h.devices[d.id]; ok && old != d {
+		// Re-registration is normal (a reconnect after a drop) — but only from
+		// the SAME board. Superseding on id alone let any holder of the devices
+		// token evict the incumbent by reusing its id and take its place, which
+		// is a complete takeover of that board's identity.
+		if subtle.ConstantTimeCompare([]byte(old.secret), []byte(d.secret)) != 1 {
+			h.mu.Unlock()
+			log.Printf("[relay] rejected registration for %s: id already held by a board with a different secret", d.id)
+			h.nudge(d, "device id already registered with a different secret")
+			return
+		}
+		old.close() // same board, fresh connection — supersede it
 	}
 	h.devices[d.id] = d
 	h.mu.Unlock()
