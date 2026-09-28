@@ -36,8 +36,12 @@
 // DEVICE_TOKEN must equal COMPANION_RELAY_DEVICES_TOKEN on the hub.
 #define DEVICE_TOKEN    "YOUR_DEVICE_TOKEN"
 
-// DEVICE_ID must be unique per board — the hub keys devices by it, and a
-// re-registration supersedes any earlier socket with the same id.
+// DEVICE_ID identifies the board to the hub. Leave it commented unless you
+// need a fixed name: the firmware then derives a unique id from the MAC, so
+// two boards built from this same file cannot collide (a collision means they
+// would each try to evict the other — and since 02728f2 the hub only lets a
+// re-registration supersede an online id when the SECRET matches, so a
+// same-default pair simply refuses rather than flip-flops).
 #define DEVICE_ID       "esp32-bridge-01"
 
 #endif /* CONFIG_LOCAL_H */

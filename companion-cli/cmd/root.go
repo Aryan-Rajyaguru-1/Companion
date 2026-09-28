@@ -96,6 +96,7 @@ func init() {
 		newFleetCommand(), // device registry + batch OTA push
 		newRelayCmd(),     // remote OTA over the internet via relay hub
 		newDoctorCmd(),    // environment/toolchain diagnosis
+		newMCPCmd(),       // Model Context Protocol server (stdio) for AI agents
 	)
 }
 

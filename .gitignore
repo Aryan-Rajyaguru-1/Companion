@@ -1,7 +1,10 @@
 # Companion workspace — root gitignore
 
 # Bridge firmware — keep personal WiFi credentials out of git
-# config.local.h is tracked as a sanitized TEMPLATE (placeholders only).
+# config.local.h holds real credentials (WiFi, relay tokens) and is NEVER
+# tracked. The sanitized template to copy is config.example.h next to it.
+# The old arrangement tracked the template itself and relied on
+# `git update-index --skip-worktree`, which a single `git add -A` defeats.
 # Keep personal credentials out of git after editing it locally:
 #   git update-index --skip-worktree companion-ide/esp32-bridge-firmware/esp32_bridge/config.local.h
 
@@ -43,6 +46,8 @@ companion-cli/companion-fixed
 companion-ide/esp32-bridge-firmware/esp32_bridge/build/
 companion-ide/esp32-bridge-firmware/LEDBlink/build/
 companion-ide/esp32-bridge-firmware/RelayDevice/build/
-# Personal WiFi/token credentials — same template+skip-worktree pattern as
-# esp32_bridge/config.local.h (see note at top of this file).
+# Personal WiFi/token credentials. NEVER tracked: both sketches compile without
+# config.local.h (they use __has_include) and fall back to inert defaults, and
+# config.example.h next to each is the sanitized template to copy.
 companion-ide/esp32-bridge-firmware/RelayDevice/config.local.h
+companion-ide/esp32-bridge-firmware/esp32_bridge/config.local.h

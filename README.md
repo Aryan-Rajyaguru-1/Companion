@@ -105,6 +105,21 @@ it as a local socket for any `socket://`/`net:` tool, or
 `companion upload --ota-mode remote --relay-hub wss://<your-host> --relay-device <bridge-id>`.
 Full walkthrough, security notes, and uninstall steps: `deploy/README.md`.
 
+## 🤖 Drive it from any AI agent (MCP)
+
+`companion mcp` turns the CLI into a **Model Context Protocol** server, so Claude
+Desktop, Cursor, an IDE assistant or your own agent can check the environment,
+compile, flash a target, and push firmware to a board on the other side of the
+internet:
+
+```bash
+companion mcp --hub wss://ota.example.com --allow-upload
+```
+
+Tools that flash hardware are opt-in, and relay secrets come from the
+environment rather than through the agent. Setup, client config and the safety
+model: **[docs/MCP.md](docs/MCP.md)**.
+
 ## Manual setup
 
 ```bash
