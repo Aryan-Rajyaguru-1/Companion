@@ -7,10 +7,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	CLIName    = "companion"
-	CLIVersion = "1.0.0"
-)
+const CLIName = "companion"
+
+// CLIVersion is a var, not a const, ON PURPOSE: release stamping uses
+// `go build -ldflags -X …cmd.CLIVersion=<tag>`, and -X can only set string
+// VARIABLES — pointed at a const it fails silently, which is exactly how
+// every released binary shipped "1.0.0" while the tag said otherwise.
+var CLIVersion = "1.0.0"
 
 // GlobalFlags holds flags shared across all subcommands.
 type GlobalFlags struct {

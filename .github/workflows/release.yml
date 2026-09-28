@@ -55,6 +55,22 @@ jobs:
               || { echo "::error::build failed for GOOS=$os GOARCH=$arch"; exit 1; }
           done
           ls -la ../dist-cli
+          # Prove the version stamp took INSIDE the artifact: `go build -X`
+          # silently no-ops when its target is a const instead of a var —
+          # that is how every release shipped "1.0.0" while the tag said
+          # otherwise, with nothing failing. Only the host's own binary can
+          # be executed here; the stamping mechanism is identical per target.
+          native=""
+          case "$(uname -s)" in
+            Linux*)  native=../dist-cli/companion-linux-amd64 ;;
+            Darwin*) native=../dist-cli/companion-darwin-arm64 ;;
+          esac
+          if [ "$VERSION" != "dev" ] && [ -n "$native" ] && [ -x "$native" ]; then
+            out=$("$native" --no-color version)
+            echo "$out"
+            echo "$out" | grep -q "$VERSION" \
+              || { echo "::error::version stamp missing — expected $VERSION inside the built binary"; exit 1; }
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.os }}
