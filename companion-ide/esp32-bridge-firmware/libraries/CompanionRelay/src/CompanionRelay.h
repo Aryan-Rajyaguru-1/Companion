@@ -48,9 +48,48 @@
 #include <WiFi.h>
 #include <string.h>
 #include <ArduinoJson.h>
+
+// A board behind a Cloudflare tunnel needs longer than ArduinoWebsockets'
+// default of 1s to read the handshake response.
+//
+// Measured against a live tunnel on 2026-09-29: the CLEAN path (edge → healthy
+// connector → hub) still took 1.09s from sending `Upgrade: websocket` to
+// reading the `101`. The default is 1000ms, so the board lost the handshake by
+// about 90ms, on every attempt, forever — `link=0` with a hub that answered
+// 101 instantly when asked directly. It looks exactly like "the hub is down".
+//
+// This has to be set HERE rather than with a -D build flag, because
+// ws_config_defs.hpp does `#define _CONNECTION_TIMEOUT 1000` unconditionally —
+// a command-line define would only earn a redefinition warning and lose. That
+// header is `#pragma once`, though, so including it ourselves FIRST and then
+// redefining the macro sticks: the library's own include becomes a no-op and
+// every header that uses the macro is preprocessed against our value.
+#if defined(ESP32) && defined(__has_include)
+#  if __has_include(<tiny_websockets/ws_config_defs.hpp>)
+#    include <tiny_websockets/ws_config_defs.hpp>
+#    undef _CONNECTION_TIMEOUT
+#    define _CONNECTION_TIMEOUT 20000
+#  endif
+#endif
+
 #include <ArduinoWebsockets.h>
 #include <Preferences.h>
 #include <esp_system.h>
+
+#if defined(ESP32)
+// Prove the override above actually took effect. If ArduinoWebsockets moves
+// ws_config_defs.hpp, the include above quietly stops matching and the 1s
+// default comes back — which is precisely the failure this whole exercise is
+// about: a board that builds cleanly and can never connect. Say so at compile
+// time instead, where it costs nothing to fix.
+#  ifndef _CONNECTION_TIMEOUT
+#    error "CompanionRelay: _CONNECTION_TIMEOUT is undefined — ArduinoWebsockets moved ws_config_defs.hpp; update the override in CompanionRelay.h"
+#  endif
+static_assert(_CONNECTION_TIMEOUT >= 15000,
+              "CompanionRelay: _CONNECTION_TIMEOUT is back to ArduinoWebsockets' 1s default, "
+              "which loses the WebSocket handshake against a Cloudflare tunnel. "
+              "Re-apply the override in CompanionRelay.h.");
+#endif
 
 using namespace websockets;
 
