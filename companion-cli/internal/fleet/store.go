@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -25,6 +26,15 @@ func (f FileStore) Load() ([]Device, error) {
 	if err := yaml.Unmarshal(data, &devs); err != nil {
 		return nil, err
 	}
+	// Decrypt at rest (see secrets.go). An encrypted file with no key is an
+	// error, never a silent empty secret.
+	for i := range devs {
+		v, err := unprotectSecret(devs[i].Secret)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", devs[i].Key(), err)
+		}
+		devs[i].Secret = v
+	}
 	return devs, nil
 }
 
@@ -36,7 +46,16 @@ func (f FileStore) Save(devs []Device) error {
 	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
 		return err
 	}
-	data, err := yaml.Marshal(devs)
+	out := make([]Device, len(devs))
+	copy(out, devs)
+	for i := range out {
+		v, err := protectSecret(out[i].Secret)
+		if err != nil {
+			return fmt.Errorf("%s: encrypt secret: %w", out[i].Key(), err)
+		}
+		out[i].Secret = v
+	}
+	data, err := yaml.Marshal(out)
 	if err != nil {
 		return err
 	}

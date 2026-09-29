@@ -327,11 +327,26 @@ The hub is not the bottleneck: every board is an independent pairing, and 50
 concurrent sockets is nothing for the process. The estimate in the plan uses
 `--est-push-seconds` (default 165) so you can tune it to your own link.
 
-At this size two things are worth knowing. The registry is a single YAML file
-holding **every device secret in plaintext** — fine on a workstation, but move
-it to a secret manager before it becomes a liability. And a rollout is only as
-safe as its canary: `--canary` exists because 50 boards flashing the same
-untested image simultaneously is a bad afternoon.
+At this size two things are worth knowing.
+
+**The registry holds a secret per board.** It is written 0600 (owner only) and
+atomically, which covers other users on the machine — but not a synced folder,
+a backup, or a stolen disk. Encrypt the secrets at rest by setting a key before
+you register devices:
+
+```bash
+# 32 bytes as hex (openssl rand -hex 32) or a passphrase
+export COMPANION_FLEET_SECRET_KEY=$(openssl rand -hex 32)
+companion fleet register esp32-node-01 --secret-stdin
+```
+
+From then on the file stores AES-GCM ciphertext (a fresh nonce per secret) and
+a missing or wrong key fails loudly instead of degrading to an empty secret.
+A registry written before this existed still loads unchanged, and with no key
+set the file stays plaintext so you can always read your own inventory.
+
+**A rollout is only as safe as its canary.** `--canary` exists because 50
+boards flashing the same untested image simultaneously is a bad afternoon.
 
 ## Recovering a board when the hub is the problem
 
