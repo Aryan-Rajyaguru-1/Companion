@@ -1,3 +1,12 @@
+# Every action is pinned to a full commit SHA, with the version kept as a
+# comment. A tag like `actions/checkout@v4` is a MOVABLE reference: whoever
+# controls that repository can repoint the tag at new code, and this workflow
+# would run it — with `contents: write` and a publishing token. A commit SHA
+# cannot be repointed, so the exact code that was reviewed is what runs.
+#
+# To update one, resolve the tag and replace both parts:
+#   gh api repos/<owner>/<repo>/commits/<tag> --jq .sha
+#   # uses: owner/repo@<sha>  # <tag>
 name: Release
 
 on:
@@ -20,8 +29,8 @@ jobs:
           - { os: windows-latest, targets: 'windows-amd64.exe windows-arm64.exe' }
           - { os: macos-latest,   targets: 'darwin-amd64 darwin-arm64' }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
           go-version: 'stable'
           # go.mod/go.sum live in companion-cli/, not the repo root — without
@@ -79,7 +88,7 @@ jobs:
         # produced a file of the same name containing only their own binaries,
         # and one of the three won — leaving a file that cannot verify the
         # Linux or macOS download at all.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: cli-${{ matrix.os }}
           path: dist-cli/
@@ -96,8 +105,8 @@ jobs:
           - { os: windows-latest, path: 'release/*.exe' }
           - { os: macos-latest,   path: 'release/*.dmg' }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with: { node-version: 20 }
       - name: Build installers
         working-directory: companion-ide
@@ -151,7 +160,7 @@ jobs:
           fi
           echo "installers produced:"
           ls -la "${files[@]}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: ide-${{ matrix.os }}
           # Installers only: release/ also holds win-unpacked/ (a full unpacked
@@ -174,7 +183,7 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with: { merge-multiple: true, path: artifacts }
       - name: Generate SHA256SUMS over every artifact
         shell: bash
@@ -188,7 +197,7 @@ jobs:
             | sort -z | xargs -0 sha256sum | sed 's| \./| |' > SHA256SUMS.txt
           echo "--- SHA256SUMS.txt ---"
           cat SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           files: artifacts/*
           generate_release_notes: true
