@@ -46,6 +46,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <string.h>
 #include <ArduinoJson.h>
 #include <ArduinoWebsockets.h>
 #include <Preferences.h>
@@ -116,6 +117,7 @@ static const char *relayHostOverride  = "";
 static const char *relayTokenOverride = "";
 static int         relayPortOverride  = 0;
 static int         relayTLSOverride   = -1; // -1 unset, 0/1 explicit
+static bool        relayConfigWarned  = false; // the "not dialling" notice prints once
 
 // macSuffix fills out with six hex characters from the last 3 MAC bytes.
 static void relayMacSuffix(char *out, size_t outLen) {
@@ -200,9 +202,51 @@ static void relayLoadOrCreateSecret() {
   Serial.println("[relay] *** copy it now: fleet register --secret-stdin / COMPANION_RELAY_DEVICE_SECRET ***");
 }
 
+// relayConfigProblem returns a human-readable reason when the sketch has no
+// usable relay credentials, or "" when it does.
+//
+// This exists because of a real outage: a build assembled from a config.local.h
+// that only set one flag booted with NO WiFi and NO hub, and then dialled
+// `ws://YOUR_HUB_LAN_IP:8931/device?token=YOUR_DEVICE_TOKEN` every 5 seconds,
+// forever. From the outside that looks identical to "the hub is down" — the
+// board is simply never there. Placeholders are the compiler's fault for being
+// helpful: they let a sketch build before it is configured, so the firmware
+// has to notice and say so.
+//
+// The placeholder test is strncmp(...,5)==0 rather than the tempting
+// `strstr(host, "YOUR_") == host`. That version compares POINTERS, and with a
+// literal host the compiler is free to fold the strstr however it likes; the
+// value comparison can only ever fold to "not a placeholder". The symptom of
+// getting this wrong is nasty and quiet: the optimiser proves the guard always
+// trips, deletes the real dial path, and ships a board that refuses to connect
+// while printing a perfectly reasonable-looking error.
+static const char *relayConfigProblem() {
+  const char *host  = relayHostOverride[0]  ? relayHostOverride  : RELAY_HOST;
+  const char *token = relayTokenOverride[0] ? relayTokenOverride : DEVICE_TOKEN;
+  if (host[0] == '\0' || strncmp(host, "YOUR_", 5) == 0) {
+    return "RELAY_HOST is not configured (still the placeholder) — copy config.example.h to config.local.h and set your hub";
+  }
+  if (token[0] == '\0' || strncmp(token, "YOUR_", 5) == 0) {
+    return "DEVICE_TOKEN is not configured (still the placeholder) — it must equal COMPANION_RELAY_DEVICES_TOKEN on the hub";
+  }
+  return "";
+}
+
 // relayDial opens the relay link and sends device_hello (carrying the secret
 // and the negotiated frame size).
 static bool relayDial() {
+  // Say the problem ONCE. The watchdog keeps retrying, and a message every
+  // 5 seconds is how a real fault turns into noise nobody reads.
+  if (const char *problem = relayConfigProblem()) {
+    if (!relayConfigWarned) {
+      relayConfigWarned = true;
+      Serial.println("[relay] NOT DIALING — configuration is incomplete:");
+      Serial.print("[relay]   ");
+      Serial.println(problem);
+    }
+    return false;
+  }
+  relayConfigWarned = false;
   relayLastDialAttempt = millis();
   // A fresh link starts with no outstanding ping: without this reset a pong
   // timer left over from the DEAD link can fire against the new one and kill a

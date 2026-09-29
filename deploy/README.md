@@ -385,6 +385,19 @@ The flag is off by default because ArduinoOTA carries no per-device secret of
 its own: enabling it adds an unauthenticated service to your network. Turn it
 on for boards you trust, and use the relay for everything else.
 
+There is one more trap worth naming, because it bit us here. A build assembled
+from a `config.local.h` that sets only *one* flag — `RELAY_LAN_OTA 1` and
+nothing else — compiles perfectly, and the resulting board has no WiFi
+credentials and no hub address. It boots, dials a placeholder URL forever, and
+is unreachable by every route: not the relay, not ArduinoOTA, not even the LAN
+it was supposed to be recoverable on. The LAN path cannot save a board that has
+no working network, because that is the thing that broke.
+
+The firmware now refuses that specific case rather than dialling a placeholder:
+it logs `NOT DIALING — configuration is incomplete` with the reason, once, and
+leaves the rest of the boot alone. Watch for it on the serial log after any
+first flash.
+
 ## Customising
 
 | Want to change | How |

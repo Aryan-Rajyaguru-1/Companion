@@ -6,8 +6,19 @@ server, or the fleet tools) flashes it from anywhere.
 
 ## Install
 
-Copy `src/CompanionRelay.h` into your sketch folder, or add this folder to your
-Arduino libraries directory.
+Copy this folder into your Arduino libraries directory:
+
+```bash
+cp -r libraries/CompanionRelay ~/Arduino/libraries/
+```
+
+**Keep exactly one copy.** If an older `CompanionRelay` is also sitting in
+`~/Arduino/libraries/`, the Arduino build resolves `#include
+<CompanionRelay.h>` by search order, not by date — so a stale copy quietly
+wins and you compile a different protocol than the one you are reading. When
+you pull changes from this repository, re-copy the folder (or `rsync -a
+--delete`) rather than merging into the installed copy. The two first-party
+sketches are immune, because they include the file by relative path.
 
 ## Use
 
