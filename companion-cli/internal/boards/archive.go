@@ -29,14 +29,20 @@ var (
 // The declared entry size is NOT trusted: zip/tar headers can lie, so the cap
 // is enforced while the bytes actually move.
 func copyBounded(dst io.Writer, src io.Reader, remaining *int64) error {
-	n, err := io.Copy(dst, io.LimitReader(src, *remaining+1))
+	// Compare against the budget as it was BEFORE this copy, then charge the
+	// copy to it. Subtracting first and then testing `n > *remaining` compares
+	// the entry against what is left after it, which halves the effective
+	// limit: a 100-byte budget accepted a 50-byte entry and rejected a
+	// 99-byte one that comfortably fitted. It also drove the budget negative.
+	before := *remaining
+	n, err := io.Copy(dst, io.LimitReader(src, before+1))
 	if err != nil {
 		return err
 	}
-	*remaining -= n
-	if n > *remaining {
+	if n > before {
 		return fmt.Errorf("archive expands past the %d byte limit — refusing (possible decompression bomb)", maxArchiveTotalBytes)
 	}
+	*remaining = before - n
 	return nil
 }
 

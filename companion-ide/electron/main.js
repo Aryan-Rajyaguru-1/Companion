@@ -234,25 +234,62 @@ function registerIPC() {
   // allowlist would break those flows silently. What the denylist does block is
   // the realistic damage — system directories and the places credentials live.
   const DENY_DIRS = [
-    '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/var', '/boot',
+    '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/boot',
     '/proc', '/sys', '/dev', '/root', '/opt/homebrew', '/System', '/Library',
+    // NOTE: '/var' is deliberately NOT here. On macOS os.tmpdir() is
+    // /var/folders/<a>/<b>/T, so denying /var denied every temp-sketch compile —
+    // and also denied the fallback at the os:mkdtemp handler above, since that
+    // fallback IS os.tmpdir(). The genuinely sensitive parts of /var are covered
+    // explicitly below.
+    '/var/db', '/var/root', '/var/log', '/var/run', '/var/vm', '/private/etc',
   ];
   const DENY_HOME_SUFFIXES = [
     '.ssh', '.aws', '.gnupg', '.kube', '.docker', '.config', '.gnome2',
     'keyrings', '.companion-cli', '.companion-relay', '.arduino15',
+    // Persistence locations: a compromised renderer that can write a shell
+    // profile, a launch agent or a Startup-folder entry gets code execution on
+    // the next login. Denying .ssh but not these left the same door open.
+    'Library/LaunchAgents', 'Library/LaunchDaemons',
+    'AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup',
+    '.bashrc', '.bash_profile', '.profile', '.zshrc', '.zprofile', '.zshenv',
   ];
   const DENY_NAME_RE = /(^|[\\/])(auth-token|\.env(\..*)?|.*\.(pem|key|p12|pfx))$/i;
 
+  // Resolve symlinks before deciding. Without this a link in a permitted
+  // directory (~/sketches -> /etc, say) walks straight through the denylist,
+  // and the real target is what gets read or written.
+  const realpath = (p) => {
+    try {
+      return fs.realpathSync.native ? fs.realpathSync.native(p) : fs.realpathSync(p);
+    } catch {
+      return null; // does not exist yet (e.g. a path about to be created)
+    }
+  };
+
   const isDenied = (p) => {
     if (!p) return true;
-    const norm = path.resolve(p).replace(/\\/g, '/').toLowerCase();
+    let norm = path.resolve(p).replace(/\\/g, '/').toLowerCase();
+    const resolved = realpath(p);
+    if (resolved) norm = resolved.replace(/\\/g, '/').toLowerCase();
+
+    // The OS temp directory is explicitly permitted, and this check comes
+    // first: on macOS it lives under /var, and blocking it breaks the IDE's own
+    // temp-sketch compile flow. Nothing else under /var is opened.
+    const tmp = (os.tmpdir() || '').replace(/\\/g, '/').toLowerCase();
+    if (tmp && (norm === tmp || norm.startsWith(tmp + '/'))) return false;
+
     for (const d of DENY_DIRS) {
       if (norm === d || norm.startsWith(d + '/')) return true;
     }
     const home = (os.homedir() || '').replace(/\\/g, '/').toLowerCase();
     if (home) {
       for (const s of DENY_HOME_SUFFIXES) {
-        if (norm === `${home}/${s}` || norm.startsWith(`${home}/${s}/`)) return true;
+        // norm is lowercased, so the suffix must be too. Every original entry
+        // happened to be lowercase ('.ssh', '.gnupg'), which hid the mismatch:
+        // the first multi-segment entry ('Library/LaunchAgents') silently
+        // never matched anything, and its path was allowed.
+        const suf = s.toLowerCase();
+        if (norm === `${home}/${suf}` || norm.startsWith(`${home}/${suf}/`)) return true;
       }
     }
     return DENY_NAME_RE.test(norm);

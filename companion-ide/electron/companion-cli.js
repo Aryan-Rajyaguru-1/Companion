@@ -89,10 +89,18 @@ class CompanionCLI {
   }
 
   // ── Subprocess runner: kind-tagged procs + cross-chunk diag buffering ──
-  _run(args, onOutput = null, onDiag = null, kind = 'other') {
+  //
+  // `env` exists so a caller can hand the child extra environment (otaUpload
+  // passes COMPANION_OTA_PASSWORD through it). It used to be read here as a
+  // bare `childEnv` identifier that was declared inside otaUpload() — not in
+  // this scope — so every _run() call threw ReferenceError. The IDE still
+  // looked fine because each caller wraps this in try/catch and degrades to an
+  // empty result, so the breakage was silent: no ports listed, no board
+  // detected, config never initialised.
+  _run(args, onOutput = null, onDiag = null, kind = 'other', env = null) {
     const callId = ++this._procSeq;
     return new Promise((resolve, reject) => {
-      const proc = spawn(this.binaryPath, args, { env: childEnv || { ...process.env } });
+      const proc = spawn(this.binaryPath, args, { env: env || { ...process.env } });
       this._procs.set(callId, { proc, kind });
       let stdout = '', stderr = '';
       let diagBuf = ''; // Bug-14 fix: JSON lines split across chunks
@@ -179,7 +187,11 @@ class CompanionCLI {
     const childEnv = { ...process.env };
     if (password) childEnv.COMPANION_OTA_PASSWORD = password;
     try {
-      await this._run(args, onOutput, null, 'upload');
+      // childEnv must actually be handed over: building it and not passing it
+      // meant COMPANION_OTA_PASSWORD never reached the child, so the upload
+      // failed on the device with no obvious cause — while looking, from here,
+      // exactly like the password had been applied correctly.
+      await this._run(args, onOutput, null, 'upload', childEnv);
       return { success: true };
     } catch (err) {
       const cancelled = err.message.startsWith('Job cancelled (upload)');
