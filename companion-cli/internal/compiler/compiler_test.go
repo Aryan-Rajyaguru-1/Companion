@@ -1,9 +1,108 @@
 package compiler
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestSplitPlatformArgsWindowsPaths is the regression test for issue #6.
+//
+// A backslash used to be treated as a shell escape everywhere, so the
+// -iprefix value from the reporter's log
+//
+//	C:Usersraghv.companion-clidatapackagesesp32toolsesp32-libs3.3.11/include/
+//
+// arrived mangled — every path separator swallowed — and the ESP32 core failed
+// to compile with no indication that the damage had been done locally.
+func TestSplitPlatformArgsWindowsPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{
+			name: "issue #6: -iprefix with a quoted Windows path",
+			in:   `-iprefix "C:\Users\raghv\AppData\Local\arduino15\packages\esp32\tools\esp32-libs\3.3.11\include/"`,
+			want: []string{`-iprefix`, `C:\Users\raghv\AppData\Local\arduino15\packages\esp32\tools\esp32-libs\3.3.11\include/`},
+		},
+		{
+			name: "unquoted Windows path",
+			in:   `-IC:\Users\raghv\AppData\Local\Temp`,
+			want: []string{`-IC:\Users\raghv\AppData\Local\Temp`},
+		},
+		{
+			name: "path with spaces must still split into two tokens",
+			in:   `-iprefix "C:\Program Files\Arduino\hardware"`,
+			want: []string{`-iprefix`, `C:\Program Files\Arduino\hardware`},
+		},
+		{
+			name: "several flags, mixed quoting",
+			in:   `-DARDUINO=10819 -iprefix "C:\a\b" -I"D:\c\d"`,
+			want: []string{`-DARDUINO=10819`, `-iprefix`, `C:\a\b`, `-ID:\c\d`},
+		},
+		{
+			name: "escaped quote inside a quoted string",
+			in:   `-DNAME="a\"b"`,
+			want: []string{`-DNAME=a"b`},
+		},
+		{
+			name: "doubled backslash collapses to one",
+			in:   `-DPATH=C:\\tmp`,
+			want: []string{`-DPATH=C:\tmp`},
+		},
+		{
+			name: "trailing lone backslash is kept",
+			in:   `-DPATH=C:\dir\`,
+			want: []string{`-DPATH=C:\dir\`},
+		},
+		{
+			name: "POSIX behaviour is unchanged",
+			in:   `-iprefix /usr/share/arduino15/packages/esp32/tools/esp32-libs/3.3.11/include/`,
+			want: []string{`-iprefix`, `/usr/share/arduino15/packages/esp32/tools/esp32-libs/3.3.11/include/`},
+		},
+		{
+			name: "single quotes still group",
+			in:   `-DROOT='/opt/my dir' -DX=1`,
+			want: []string{`-DROOT=/opt/my dir`, `-DX=1`},
+		},
+		{
+			name: "collapses repeated whitespace, drops empties",
+			in:   "  -A   -B\t-C\r\n-D  ",
+			want: []string{`-A`, `-B`, `-C`, `-D`},
+		},
+		{
+			name: "empty input",
+			in:   "",
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitPlatformArgs(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("splitPlatformArgs(%q)\n got: %q\nwant: %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSplitPlatformArgsNoMangling guards the exact symptom from the issue
+// report: a Windows path must come back byte-for-byte, not merely "close".
+func TestSplitPlatformArgsNoMangling(t *testing.T) {
+	const want = `C:\Users\raghv\AppData\Local\arduino15\packages`
+	got := splitPlatformArgs(`-iprefix "` + want + `"`)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tokens, got %d: %q", len(got), got)
+	}
+	if got[1] != want {
+		t.Errorf("path was mangled\n got: %q\nwant: %q", got[1], want)
+	}
+	if strings.Contains(got[1], "Usersraghv") {
+		t.Errorf("path lost its separators (the issue #6 symptom): %q", got[1])
+	}
+}
 
 // sysVOutput mirrors `xtensa-esp32s3-elf-size -A` output for a trivial
 // Blink sketch on the XIAO ESP32-S3 (captured from a real build). The

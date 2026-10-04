@@ -2236,6 +2236,73 @@ func arduinoOSName() string {
 	}
 }
 
+// splitPlatformArgs splits a platform.txt flag string into arguments, honouring
+// single and double quotes.
+//
+// Backslash is NOT a shell escape here, and treating it as one is what broke
+// Windows. platform.txt on Windows is full of paths like
+//
+//	-iprefix "{build.path}/{build.sys}"
+//	  -> C:\Users\raghv\AppData\Local\arduino15\packages\...
+//
+// and the old scanner consumed every backslash as an escape character, handing
+// the compiler `C:Usersraghv.AppDataLocalarduino15packages...` — a path that
+// cannot exist, so core compilation failed with no hint that the mangling had
+// happened locally (issue #6).
+//
+// The only escapes platform.txt actually uses are a quote inside a quoted
+// string and a doubled backslash, so those are the only two honoured. Anything
+// else keeps its backslash verbatim, which is exactly right for a Windows path
+// separator and unchanged for POSIX, where these strings have no backslashes
+// to begin with.
+func splitPlatformArgs(input string) []string {
+	var res []string
+	var cur strings.Builder
+	inQuote := rune(0)
+	runes := []rune(input)
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		// An escape only when it actually escapes something. The escaped
+		// character is kept literally and does NOT toggle quote state, so
+		// "a\"b" is the single argument a"b rather than a truncated string.
+		if r == '\\' && i+1 < len(runes) {
+			switch next := runes[i+1]; next {
+			case '"', '\'', '\\':
+				cur.WriteRune(next)
+				i++
+				continue
+			}
+		}
+
+		if inQuote != 0 {
+			if r == inQuote {
+				inQuote = 0
+				continue
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		if r == '\'' || r == '"' {
+			inQuote = r
+			continue
+		}
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if cur.Len() > 0 {
+				res = append(res, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+		cur.WriteRune(r)
+	}
+	if cur.Len() > 0 {
+		res = append(res, cur.String())
+	}
+	return res
+}
+
 // expandPlatformFlags expands a platform.txt flag string into a []string,
 // substituting placeholders and stripping unresolved ones.
 func expandPlatformFlags(flags string, rb *boards.ResolvedBoard, sdkPath string) []string {
@@ -2263,56 +2330,14 @@ func expandPlatformFlags(flags string, rb *boards.ResolvedBoard, sdkPath string)
 		s = s[:start] + s[start+end+1:]
 	}
 
-	splitArgs := func(input string) []string {
-		var res []string
-		var cur strings.Builder
-		inQuote := rune(0)
-		escaped := false
-		for _, r := range input {
-			if escaped {
-				cur.WriteRune(r)
-				escaped = false
-				continue
-			}
-			if r == '\\' {
-				escaped = true
-				continue
-			}
-			if inQuote != 0 {
-				if r == inQuote {
-					inQuote = 0
-					continue
-				}
-				cur.WriteRune(r)
-				continue
-			}
-			if r == '\'' || r == '"' {
-				inQuote = r
-				continue
-			}
-			if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-				if cur.Len() > 0 {
-					res = append(res, cur.String())
-					cur.Reset()
-				}
-				continue
-			}
-			cur.WriteRune(r)
-		}
-		if cur.Len() > 0 {
-			res = append(res, cur.String())
-		}
-		return res
-	}
-
 	var out []string
-	toks := splitArgs(s)
+	toks := splitPlatformArgs(s)
 	for i := 0; i < len(toks); i++ {
 		tok := toks[i]
 		if strings.HasPrefix(tok, "@") {
 			fpath := strings.TrimPrefix(tok, "@")
 			if data, err := os.ReadFile(fpath); err == nil {
-				sub := splitArgs(string(data))
+				sub := splitPlatformArgs(string(data))
 				newToks := make([]string, 0, len(toks)+len(sub))
 				newToks = append(newToks, toks[:i]...)
 				newToks = append(newToks, sub...)

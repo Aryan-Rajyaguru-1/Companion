@@ -2,6 +2,7 @@ package boards
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,5 +86,53 @@ func TestIndexSizeBytesFallsBackToCeiling(t *testing.T) {
 	// A huge published size is still clamped to the ceiling.
 	if got := indexSizeBytes(json.Number("999999999999")); got != maxDownloadBytes {
 		t.Errorf("indexSizeBytes(999999999999) = %d, want the ceiling", got)
+	}
+}
+
+// TestIndexSizeBytesFitsRealESP32Toolchain is the regression test for issue #6's
+// second half: `companion board install esp32:esp32` could not fetch esp-rv32.
+//
+// The index publishes the true size of every tool archive, but indexSizeBytes
+// clamped it to maxDownloadBytes, which was 512 MiB. The real esp-rv32 archives
+// are 556-673 MiB depending on host, so the download was cut off part-way and
+// the reporter was told to copy the tools out of the Arduino IDE by hand.
+//
+// These are the exact byte counts from package_esp32_index.json, esp32 3.3.11,
+// tool version 2601. They must survive the clamp.
+func TestIndexSizeBytesFitsRealESP32Toolchain(t *testing.T) {
+	const mib = 1 << 20
+	for _, tc := range []struct {
+		name  string
+		bytes int64
+	}{
+		{"esp-x32 x86_64-mingw32", 413859845},
+		{"esp-rv32 arm-linux-gnueabihf", 596288860},
+		{"esp-rv32 x86_64-pc-linux-gnu", 590607738},
+		{"esp-rv32 i686-mingw32", 698196605},
+		{"esp-rv32 x86_64-mingw32 (largest)", 705866147},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := indexSizeBytes(json.Number(fmt.Sprintf("%d", tc.bytes)))
+			if got < tc.bytes {
+				t.Errorf("published size %d bytes (%.1f MiB) was clamped to %d — the download would abort part-way",
+					tc.bytes, float64(tc.bytes)/mib, got)
+			}
+		})
+	}
+}
+
+// TestMaxDownloadBytesStillBounded makes sure raising the ceiling for the
+// toolchain did not turn it off. It exists to stop an untrusted index, so an
+// unbounded download is a disk-fill vulnerability, not a nicety.
+func TestMaxDownloadBytesStillBounded(t *testing.T) {
+	const (
+		mib = 1 << 20
+		gib = 1 << 30
+	)
+	if maxDownloadBytes < 673*mib {
+		t.Errorf("ceiling %d MiB is below the largest real toolchain (673 MiB)", maxDownloadBytes/mib)
+	}
+	if maxDownloadBytes > 2*gib {
+		t.Errorf("ceiling is %d GiB — too generous to defend against a hostile index", maxDownloadBytes/gib)
 	}
 }

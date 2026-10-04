@@ -1061,7 +1061,22 @@ func removeIfInside(dir, path string) error {
 // maxDownloadBytes caps a single archive download. The index publishes a size
 // (used when present); this is the hard ceiling for an index that does not, so
 // a hostile or broken mirror cannot stream until the disk is full.
-const maxDownloadBytes = 512 << 20 // 512 MiB
+//
+// This was 512 MiB, which no longer fits the ESP32 toolchain. Measured from the
+// live package_esp32_index.json for esp32 3.3.11 (tool v2601):
+//
+//	esp-x32  x86_64-mingw32        394.7 MiB
+//	esp-rv32 arm-linux-gnueabihf   556.5 MiB   <- over the old ceiling
+//	esp-rv32 x86_64-pc-linux-gnu   563.2 MiB
+//	esp-rv32 i686-mingw32          666.0 MiB
+//	esp-rv32 x86_64-mingw32        673.2 MiB   <- the largest we ship against
+//
+// So `companion board install esp32:esp32` could never fetch esp-rv32: the
+// index states the true size, indexSizeBytes clamps it to this constant, and
+// the download aborts part-way (issue #6). 1 GiB clears the largest real
+// archive with room for toolchain growth, and is still a hard bound — a mirror
+// claiming a petabyte, or one that never stops sending, is refused.
+const maxDownloadBytes = 1 << 30 // 1 GiB
 
 func downloadFile(url, dest string, maxBytes int64, onProgress func(string)) error {
 	// Check if file exists and has reasonable size (> 1KB)
