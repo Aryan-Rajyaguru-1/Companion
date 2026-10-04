@@ -259,6 +259,16 @@ static void relayLoadOrCreateSecret() {
 // getting this wrong is nasty and quiet: the optimiser proves the guard always
 // trips, deletes the real dial path, and ships a board that refuses to connect
 // while printing a perfectly reasonable-looking error.
+// relayConfigProblem returns nullptr when the configuration is usable, and a
+// human-readable reason when it is not.
+//
+// The "all good" result MUST be nullptr, not "". An empty string literal is a
+// valid NON-NULL pointer to a one-byte array, so a caller testing
+// `if (problem := relayConfigProblem())` takes the failure branch even when
+// there is no problem — and the board silently never dials. That is exactly
+// what happened: this returned "", so relayDial() bailed on every call, left
+// relayLastDialAttempt untouched, and the watchdog re-entered it on every loop
+// iteration. A symptom like that reads like "the hub is unreachable".
 static const char *relayConfigProblem() {
   const char *host  = relayHostOverride[0]  ? relayHostOverride  : RELAY_HOST;
   const char *token = relayTokenOverride[0] ? relayTokenOverride : DEVICE_TOKEN;
@@ -268,7 +278,7 @@ static const char *relayConfigProblem() {
   if (token[0] == '\0' || strncmp(token, "YOUR_", 5) == 0) {
     return "DEVICE_TOKEN is not configured (still the placeholder) — it must equal COMPANION_RELAY_DEVICES_TOKEN on the hub";
   }
-  return "";
+  return nullptr; // no problem — nullptr, NOT ""
 }
 
 // relayDial opens the relay link and sends device_hello (carrying the secret
