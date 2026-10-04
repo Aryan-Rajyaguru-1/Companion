@@ -22,32 +22,115 @@ package fleet
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 )
 
-// encPrefix marks a value in the YAML as encrypted by this package.
-const encPrefix = "gcm1:"
+// Value prefixes in the YAML. Each records HOW the key was derived, because a
+// bare "encrypted" marker cannot be decrypted correctly once more than one
+// derivation exists:
+//
+//	encPrefix    "gcm1:" legacy  key = SHA-256(passphrase), or a raw 32-byte key
+//	encPrefixKDF "gcm2:" key = PBKDF2-HMAC-SHA256(passphrase, salt, iters)
+//	encPrefixKey "gcmk:" key = the configured 32 bytes, used verbatim
+//
+// gcm1 is read-only in practice: registries written before this change must
+// keep working, and their derivation cannot be improved retroactively.
+const (
+	encPrefix    = "gcm1:"
+	encPrefixKDF = "gcm2:"
+	encPrefixKey = "gcmk:"
+)
 
-// fleetSecretKey returns the AES key, or nil when encryption is not configured.
-func fleetSecretKey() ([]byte, error) {
+// pbkdf2Iterations is the work factor for deriving an AES key from a
+// passphrase. A single unsalted SHA-256 — what this replaced — is not a
+// key derivation at all: it is one hash, so anyone holding an encrypted
+// registry can test billions of candidate passphrases per second on a GPU and
+// recover a weak one. The cost here is paid once per CLI invocation.
+const pbkdf2Iterations = 210000
+
+// pbkdf2SaltLen is the random per-registry salt length in bytes.
+const pbkdf2SaltLen = 16
+
+// pbkdf2SHA256 is PBKDF2-HMAC-SHA256 (RFC 2898) on the standard library.
+// golang.org/x/crypto is not a dependency, and crypto/pbkdf2 postdates the
+// Go version this module builds with, so it is written out here.
+func pbkdf2SHA256(password, salt []byte, iter, keyLen int) []byte {
+	out := make([]byte, 0, keyLen)
+	var counter [4]byte
+	for block := 1; len(out) < keyLen; block++ {
+		mac := hmac.New(sha256.New, password)
+		mac.Write(salt)
+		binary.BigEndian.PutUint32(counter[:], uint32(block))
+		mac.Write(counter[:])
+		u := mac.Sum(nil)
+		t := make([]byte, len(u))
+		copy(t, u)
+		for i := 1; i < iter; i++ {
+			mac.Reset()
+			mac.Write(u)
+			u = mac.Sum(nil)
+			for j := range t {
+				t[j] ^= u[j]
+			}
+		}
+		out = append(out, t...)
+	}
+	return out[:keyLen]
+}
+
+// secretKey is the resolved encryption key plus how to re-derive it when
+// decrypting: salt is set only for the PBKDF2 form, and direct marks a key the
+// operator supplied already at full strength (no KDF, no salt).
+type secretKey struct {
+	raw    []byte
+	salt   []byte
+	direct bool
+}
+
+// fleetSecretKey returns the encryption key, or nil when encryption is not
+// configured at all.
+//
+// COMPANION_FLEET_SECRET_KEY may be a 32-byte key (hex or base64), which is
+// used verbatim, or a passphrase of any strength, which is stretched with
+// PBKDF2-HMAC-SHA256. A passphrase is only as strong as the passphrase — but
+// stretching is what makes a weak one cost an attacker real work to recover.
+func fleetSecretKey() (*secretKey, error) {
 	raw := strings.TrimSpace(os.Getenv("COMPANION_FLEET_SECRET_KEY"))
 	if raw == "" {
 		return nil, nil
 	}
-	// A 32-byte key may be given as hex or base64; anything else is treated
-	// as a passphrase and stretched with SHA-256 (documented: a passphrase is
-	// only as strong as the passphrase, it is not stretched on purpose).
 	if b, err := hexOrBase64(raw); err == nil && len(b) == 32 {
-		return b, nil
+		return &secretKey{raw: b, direct: true}, nil
+	}
+	salt := make([]byte, pbkdf2SaltLen)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return nil, err
+	}
+	return &secretKey{raw: pbkdf2SHA256([]byte(raw), salt, pbkdf2Iterations, 32), salt: salt}, nil
+}
+
+// legacyKey reproduces the original derivation, for values written before the
+// KDF existed. It cannot know whether the operator supplied a 32-byte key or a
+// passphrase, because the old format did not record it — so it keeps the old
+// ambiguity rather than invalidating existing registries.
+func legacyKey() (*secretKey, error) {
+	raw := strings.TrimSpace(os.Getenv("COMPANION_FLEET_SECRET_KEY"))
+	if raw == "" {
+		return nil, nil
+	}
+	if b, err := hexOrBase64(raw); err == nil && len(b) == 32 {
+		return &secretKey{raw: b, direct: true}, nil
 	}
 	sum := sha256.Sum256([]byte(raw))
-	return sum[:], nil
+	return &secretKey{raw: sum[:]}, nil
 }
 
 func hexOrBase64(s string) ([]byte, error) {
@@ -94,7 +177,7 @@ func protectSecret(v string) (string, error) {
 	if key == nil {
 		return v, nil
 	}
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(key.raw)
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +190,21 @@ func protectSecret(v string) (string, error) {
 		return "", err
 	}
 	ct := gcm.Seal(nonce, nonce, []byte(v), nil)
-	return encPrefix + base64.StdEncoding.EncodeToString(ct), nil
+	if key.direct {
+		// A full-strength key: no KDF was applied, so record that, or a later
+		// read would try to PBKDF2 something that was never a passphrase.
+		return encPrefixKey + base64.StdEncoding.EncodeToString(ct), nil
+	}
+	return encPrefixKDF +
+		base64.StdEncoding.EncodeToString(key.salt) + ":" +
+		base64.StdEncoding.EncodeToString(ct), nil
+}
+
+// isEncrypted reports whether a stored value is in any of the encrypted forms.
+func isEncrypted(v string) bool {
+	return strings.HasPrefix(v, encPrefix) ||
+		strings.HasPrefix(v, encPrefixKDF) ||
+		strings.HasPrefix(v, encPrefixKey)
 }
 
 // unprotectSecret reverses protectSecret. An encrypted value with no key
@@ -117,21 +214,48 @@ func unprotectSecret(v string) (string, error) {
 	if v == "" {
 		return "", nil
 	}
-	if !strings.HasPrefix(v, encPrefix) {
+	if !isEncrypted(v) {
 		return v, nil // plaintext (file written before encryption was enabled)
 	}
-	key, err := fleetSecretKey()
-	if err != nil {
-		return "", err
+
+	// The prefix decides the derivation. For the PBKDF2 form the salt travels
+	// with the ciphertext, so re-deriving needs only the passphrase.
+	var key *secretKey
+	var encoded string
+	switch {
+	case strings.HasPrefix(v, encPrefixKDF):
+		rest := strings.TrimPrefix(v, encPrefixKDF)
+		parts := strings.SplitN(rest, ":", 2)
+		if len(parts) != 2 {
+			return "", fmt.Errorf("corrupt encrypted secret: missing salt")
+		}
+		salt, err := base64.StdEncoding.DecodeString(parts[0])
+		if err != nil {
+			return "", fmt.Errorf("corrupt encrypted secret: bad salt: %w", err)
+		}
+		pass := os.Getenv("COMPANION_FLEET_SECRET_KEY")
+		if pass == "" {
+			return "", fmt.Errorf("this registry has ENCRYPTED device secrets but COMPANION_FLEET_SECRET_KEY is not set")
+		}
+		key = &secretKey{raw: pbkdf2SHA256([]byte(pass), salt, pbkdf2Iterations, 32), salt: salt}
+		encoded = parts[1]
+	default:
+		// gcmk: a raw key, or gcm1: the original SHA-256 derivation.
+		var err error
+		key, err = legacyKey()
+		if err != nil {
+			return "", err
+		}
+		if key == nil {
+			return "", fmt.Errorf("this registry has ENCRYPTED device secrets but COMPANION_FLEET_SECRET_KEY is not set")
+		}
+		encoded = strings.TrimPrefix(strings.TrimPrefix(v, encPrefixKey), encPrefix)
 	}
-	if key == nil {
-		return "", fmt.Errorf("this registry has ENCRYPTED device secrets but COMPANION_FLEET_SECRET_KEY is not set")
-	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(v, encPrefix))
+	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return "", fmt.Errorf("corrupt encrypted secret: %w", err)
 	}
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(key.raw)
 	if err != nil {
 		return "", err
 	}

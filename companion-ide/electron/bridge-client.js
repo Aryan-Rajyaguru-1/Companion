@@ -80,6 +80,9 @@ class BridgeClient {
     // Destroy any previous in-flight socket — re-connecting without this
     // leaked the old connection and duplicated 'data' event handlers.
     this.disconnectSerial();
+    // A new connection means a new STM32 session: anything still queued
+    // belongs to the previous one.
+    resetSTM32RX();
 
     return new Promise((resolve) => {
       let settled = false;
@@ -119,6 +122,9 @@ class BridgeClient {
   }
 
   disconnectSerial() {
+    // Drop queued bytes on the way out too, so a later connect cannot inherit
+    // them even if it skips its own reset.
+    resetSTM32RX();
     if (this._serialSock) {
       this._serialSock.destroy();
       this._serialSock = null;
@@ -480,6 +486,17 @@ class BridgeClient {
 // AN3155 handshake (and a leaked listener from a timed-out read would later
 // resolve the WRONG promise with a stray byte).
 let stm32RX = Buffer.alloc(0);
+
+// resetSTM32RX drops bytes left over from a previous session. The buffer
+// outlives the socket on purpose — that is what stops one TCP read's tail being
+// dropped mid-handshake — but nothing ever cleared it between sessions, so a
+// session that was cancelled or timed out with bytes still queued handed them
+// to the NEXT session's readByte(). That desynchronises the AN3155 handshake,
+// and a stray byte from the old run can resolve a fresh read with the wrong
+// value. Any session boundary must call this.
+function resetSTM32RX() {
+  stm32RX = Buffer.alloc(0);
+}
 
 function readByte(sock, timeout = 3000) {
   if (stm32RX.length > 0) {

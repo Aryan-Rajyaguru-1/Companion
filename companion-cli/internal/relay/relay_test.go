@@ -745,3 +745,72 @@ func TestDeviceAdvertisesItsLANIP(t *testing.T) {
 	}
 	t.Logf("✓ board IP flows through: %s at %s", devs[0].ID, devs[0].IP)
 }
+
+// An id must stay bound to its secret even while the board is OFFLINE.
+//
+// TestImpostorCannotStealDeviceID covers the online case: the hub compares
+// against the connected device. That check is not enough, because a board that
+// is powered off is absent from h.devices entirely — so anyone holding the
+// devices token could claim the id first, and the genuine board would then be
+// locked out of its own identity on return, while the squatter collected its
+// firmware pushes.
+func TestDeviceIDStaysBoundWhileBoardIsOffline(t *testing.T) {
+	hub := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// The real board registers once...
+	realWS, _ := dialDevice(t, wsURL, "dev-tok", "parked-dev", "real-secret")
+	realWS.Close() // ...and goes offline (powered off, network drop)
+	waitForDevices(t, hub, 0, 5*time.Second)
+
+	// A squatter holding the devices token claims the now-free id. Dialed raw
+	// rather than via dialDevice, because that helper asserts a successful
+	// welcome — which is precisely what must NOT happen here.
+	attackWS, _, err := websocket.DefaultDialer.Dial(wsURL+"/device?token=dev-tok", nil)
+	if err != nil {
+		t.Fatalf("squatter dial: %v", err)
+	}
+	attackHello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "parked-dev", "version": "9.9.9", "secret": "squatter-secret",
+	})
+	if err := attackWS.WriteMessage(websocket.TextMessage, attackHello); err != nil {
+		t.Fatalf("squatter hello: %v", err)
+	}
+	attackWS.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, raw, err := attackWS.ReadMessage(); err == nil && strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("squatter was welcomed onto an id whose board is offline: %s", raw)
+	}
+	// Leave the hub clean for the next step.
+	attackWS.Close()
+	waitForDevices(t, hub, 0, 5*time.Second)
+
+	// The genuine board returns with its real secret and must get its id back.
+	backWS, _ := dialDevice(t, wsURL, "dev-tok", "parked-dev", "real-secret")
+	defer backWS.Close()
+	waitForDevices(t, hub, 1, 5*time.Second)
+
+	devs := hub.ListDevices()
+	if len(devs) != 1 || devs[0].ID != "parked-dev" || devs[0].Version != "1.0.3" {
+		t.Fatalf("the real board did not get its own id back: %+v", devs)
+	}
+	t.Logf("✓ id stayed bound to its secret across the board being offline")
+}
+
+// waitForDevices polls until the hub reports want devices (or the deadline
+// passes), so tests do not depend on registration winning a race with the
+// reader.
+func waitForDevices(t *testing.T, hub *Hub, want int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if len(hub.ListDevices()) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(hub.ListDevices()); got != want {
+		t.Fatalf("expected %d device(s) on the hub, got %d (%+v)", want, got, hub.ListDevices())
+	}
+}

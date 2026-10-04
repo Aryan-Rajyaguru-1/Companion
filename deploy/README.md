@@ -345,6 +345,19 @@ a missing or wrong key fails loudly instead of degrading to an empty secret.
 A registry written before this existed still loads unchanged, and with no key
 set the file stays plaintext so you can always read your own inventory.
 
+**A passphrase is stretched; a 32-byte key is used as-is.** A passphrase of any
+length is run through PBKDF2-HMAC-SHA256 (210,000 iterations, a fresh random
+salt per registry) to produce the AES key, so a weak passphrase costs an
+attacker real work to recover rather than one hash. A 32-byte hex or base64 key
+is used verbatim — that is the stronger option, and `openssl rand -hex 32` above
+gives you one. **Prefer the generated key over a passphrase** if you can keep it
+in a secret manager; a passphrase is only ever as strong as the passphrase, and
+stretching only makes guessing it expensive rather than impossible.
+
+Encrypted values record how their key was derived (`gcm2:` passphrase, `gcmk:`
+raw key, `gcm1:` the original single-SHA-256 form), so old registries keep
+decrypting and old keys keep working.
+
 **A rollout is only as safe as its canary.** `--canary` exists because 50
 boards flashing the same untested image simultaneously is a bad afternoon.
 

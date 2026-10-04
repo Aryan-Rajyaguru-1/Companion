@@ -151,18 +151,24 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 	}
 
 	h.mu.Lock()
+	// The id must already be free OR be presented with the same secret. This
+	// compares against the secret that id has always used — not merely against
+	// whoever happens to be connected — so an id cannot be claimed while its
+	// board is offline.
+	established, seen := h.knownSecrets[d.id]
+	if seen && subtle.ConstantTimeCompare([]byte(established), []byte(d.secret)) != 1 {
+		h.mu.Unlock()
+		log.Printf("[relay] rejected registration for %s: id already bound to a different secret", d.id)
+		h.nudge(d, "device id already registered with a different secret")
+		return
+	}
 	if old, ok := h.devices[d.id]; ok && old != d {
 		// Re-registration is normal (a reconnect after a drop) — but only from
-		// the SAME board. Superseding on id alone let any holder of the devices
-		// token evict the incumbent by reusing its id and take its place, which
-		// is a complete takeover of that board's identity.
-		if subtle.ConstantTimeCompare([]byte(old.secret), []byte(d.secret)) != 1 {
-			h.mu.Unlock()
-			log.Printf("[relay] rejected registration for %s: id already held by a board with a different secret", d.id)
-			h.nudge(d, "device id already registered with a different secret")
-			return
-		}
+		// the SAME board, which the check above has just established.
 		old.close() // same board, fresh connection — supersede it
+	}
+	if !seen {
+		h.knownSecrets[d.id] = d.secret
 	}
 	h.devices[d.id] = d
 	h.mu.Unlock()

@@ -37,6 +37,19 @@ type Hub struct {
 	mu      sync.Mutex
 	devices map[string]*deviceConn // by device id
 	agents  map[*agentConn]struct{}
+
+	// knownSecrets remembers the secret each device id has presented, and
+	// outlives the connection that presented it.
+	//
+	// Checking h.devices[id] is not enough, because that map holds only boards
+	// connected *right now*. A board that is powered off or has lost the network
+	// is simply absent, so anyone holding the devices token could claim its id
+	// with a secret of their own — and then the genuine board, coming back with
+	// its real secret, would fail the same-secret check and be locked out of its
+	// own identity, while the squatter collected its pushes. An entry here is
+	// never removed and never overwritten, so the first secret to claim an id
+	// owns it for the lifetime of the hub process.
+	knownSecrets map[string]string
 }
 
 // NewHub builds a Hub with the given config.
@@ -59,9 +72,10 @@ func NewHub(cfg Config) *Hub {
 			"Never run a deployed hub this way. ***", strings.Join(roles, " and "))
 	}
 	return &Hub{
-		cfg:     cfg,
-		devices: make(map[string]*deviceConn),
-		agents:  make(map[*agentConn]struct{}),
+		cfg:          cfg,
+		devices:      make(map[string]*deviceConn),
+		agents:       make(map[*agentConn]struct{}),
+		knownSecrets: make(map[string]string),
 	}
 }
 
