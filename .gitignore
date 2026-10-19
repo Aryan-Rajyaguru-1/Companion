@@ -43,9 +43,10 @@ companion-cli/dist/
 dist-cli/
 companion-cli/companion_test
 companion-cli/companion-fixed
-companion-ide/esp32-bridge-firmware/esp32_bridge/build/
-companion-ide/esp32-bridge-firmware/LEDBlink/build/
-companion-ide/esp32-bridge-firmware/RelayDevice/build/
+# Any Arduino build/ directory underneath the firmware tree, including library
+# example builds (e.g. libraries/CompanionRelay/examples/RelayBlink/build/) —
+# these are generated artifacts and must never be committed.
+companion-ide/esp32-bridge-firmware/**/build/
 # Personal WiFi/token credentials. NEVER tracked: both sketches compile without
 # config.local.h (they use __has_include) and fall back to inert defaults, and
 # config.example.h next to each is the sanitized template to copy.

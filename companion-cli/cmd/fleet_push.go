@@ -30,6 +30,7 @@ func newFleetPushCmd() *cobra.Command {
 		yes           bool
 		skipIfVersion string
 		canary        int
+		finishWith    bool
 		markVersion   string
 		dryRun        bool
 		jsonOut       bool
@@ -82,19 +83,27 @@ func newFleetPushCmd() *cobra.Command {
 			}
 			printSuccess(fmt.Sprintf("Image: %s", colorCyan(imagePath)))
 
-			// Build the plan first: a dry run must work with every board
-			// offline, and the filters (skip-if-version, canary) have to be
-			// applied before anything contacts a device.
-			plan := fleet.BuildPlan(r, fleet.PlanOptions{
+			// Reject meaningless flag combinations before the plan is built or
+			// any device is contacted.
+			planOpts := fleet.PlanOptions{
 				Selectors:         selectors,
 				SkipIfVersion:     skipIfVersion,
 				Canary:            canary,
+				FinishWith:        finishWith,
 				Workers:           concurrency,
 				EstPushSeconds:    estSeconds,
 				ImageBytes:        imageBytes(imagePath),
 				DeployVer:         markVersion,
 				DeployVerDeclared: markVersion != "",
-			})
+			}
+			if err := fleet.ValidatePlanOptions(planOpts); err != nil {
+				return err
+			}
+
+			// Build the plan first: a dry run must work with every board
+			// offline, and the filters (skip-if-version, canary) have to be
+			// applied before anything contacts a device.
+			plan := fleet.BuildPlan(r, planOpts)
 			devs := plan.Targets
 			if len(devs) == 0 {
 				if len(plan.Skipped) > 0 {
@@ -237,6 +246,22 @@ func newFleetPushCmd() *cobra.Command {
 				return fmt.Errorf("fleet push had %d failure(s)", res.Failed)
 			}
 			printSuccess(fmt.Sprintf("Fleet push complete — %d/%d devices flashed", res.OK, res.Total))
+			// A canary wave that succeeded leaves held-back boards behind on
+			// purpose — print the exact phase-2 command so it is a copy-paste,
+			// not a reconstruction from memory.
+			if canary > 0 && !finishWith && res.Failed == 0 {
+				rem := 0
+				for _, row := range plan.Skipped {
+					if row.Reason == "held back by --canary" {
+						rem++
+					}
+				}
+				if rem > 0 {
+					fmt.Println()
+					fmt.Printf("Canary done — %d device(s) held back. Finish the rollout with:\n", rem)
+					fmt.Printf("  companion fleet push %s %s --canary %d --finish-with\n", target, strings.Join(selectors, " "), canary)
+				}
+			}
 			return nil
 		},
 	}
@@ -248,6 +273,8 @@ func newFleetPushCmd() *cobra.Command {
 		"skip devices already reporting this firmware version (makes a rollout re-runnable)")
 	cmd.Flags().IntVar(&canary, "canary", 0,
 		"flash only the first N selected devices, hold the rest back for a staged rollout")
+	cmd.Flags().BoolVar(&finishWith, "finish-with", false,
+		"second phase of a staged rollout: skip the first --canary N again and flash the held-back remainder (needs the same --canary N as phase 1)")
 	cmd.Flags().StringVar(&markVersion, "mark-version", "",
 		"record this version on devices after a successful push (the image carries no version metadata)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,

@@ -1,0 +1,61 @@
+# Continuous integration — runs on EVERY push and pull request, unlike
+# release.yml which only fires on tags. Without this, nothing gated a merge:
+# the v0.3.1-alpha..v0.3.3-alpha IDE shipped with a main-process ReferenceError
+# that no CI job could catch, because there was no CI job.
+#
+# Every action is pinned to a full commit SHA (same policy as release.yml):
+# a tag is a movable reference, and this workflow runs on contributed code.
+name: CI
+
+on:
+  push:
+    branches: [main, cli, ide]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: CLI (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: companion-cli
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: 'stable'
+          # go.mod/go.sum live in companion-cli/, not the repo root — without
+          # this the build-cache restore warns and is skipped every run.
+          cache-dependency-path: companion-cli/go.sum
+      - name: gofmt (fail on unformatted files)
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./... -count=1
+
+  ide:
+    name: IDE (Node)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: companion-ide
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: companion-ide/package-lock.json
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Test
+        run: npm test

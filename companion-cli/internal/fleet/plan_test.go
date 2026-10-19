@@ -83,6 +83,109 @@ func TestBuildPlanCanaryHoldsBackTheRest(t *testing.T) {
 	}
 }
 
+// Finish mode replays the phase-1 canary positionally: it must target exactly
+// the held-back remainder — same size, same members — so --dry-run on phase 2
+// shows the complement of phase 1's report.
+func TestBuildPlanFinishTargetsTheRemainder(t *testing.T) {
+	r := sampleRegistry(t)
+	all := r.All()
+	phase1 := BuildPlan(r, PlanOptions{Canary: 1, Workers: 4})
+	phase2 := BuildPlan(r, PlanOptions{Canary: 1, FinishWith: true, Workers: 4})
+	if len(phase2.Targets) != len(all)-1 {
+		t.Fatalf("finish targets = %d, want remainder %d", len(phase2.Targets), len(all)-1)
+	}
+	held := map[string]bool{}
+	for _, d := range phase1.Remaining() {
+		held[d.Key()] = true
+	}
+	for _, d := range phase2.Targets {
+		if !held[d.Key()] {
+			t.Errorf("finish targets %s, which was not held back in phase 1", d.Key())
+		}
+		if d.Key() == phase1.Targets[0].Key() {
+			t.Errorf("finish re-targets the phase-1 canary device %s", d.Key())
+		}
+	}
+	for _, s := range phase2.Skipped {
+		if !strings.Contains(s.Reason, "finished") {
+			t.Errorf("finish skip reason should explain the canary was done: %q", s.Reason)
+		}
+	}
+}
+
+// A canary is only deterministic while the registry is unchanged: registering
+// a board between phase 1 and phase 2 reorders the remainder, and the plan
+// must still target exactly "everything except the first N" rather than
+// replaying stale membership.
+func TestBuildPlanFinishAfterRegistryDrift(t *testing.T) {
+	r := sampleRegistry(t)
+	phase1 := BuildPlan(r, PlanOptions{Canary: 1, Workers: 4})
+	phase1Canary := phase1.Targets[0].Key()
+	// A board registered before every existing ID sorts FIRST — inside the
+	// replayed canary window — so the remainder shifts: phase-1's canary
+	// device is now IN the remainder, and only the new board is held back.
+	if err := r.Upsert(Device{ID: "companion-000000", Name: "early-board", Host: "10.0.0.1", Port: 3232, MCU: "avr"}); err != nil {
+		t.Fatal(err)
+	}
+	phase2 := BuildPlan(r, PlanOptions{Canary: 1, FinishWith: true, Workers: 4})
+	if len(phase2.Targets) != len(r.All())-1 {
+		t.Fatalf("finish after drift targets = %d, want %d", len(phase2.Targets), len(r.All())-1)
+	}
+	if len(phase2.Skipped) != 1 || phase2.Skipped[0].Device.Key() != "companion-000000" {
+		t.Fatalf("drift must hold back only the new board, got %+v", phase2.Skipped)
+	}
+	found := false
+	for _, d := range phase2.Targets {
+		if d.Key() == phase1Canary {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("phase-1 canary %s should be in the shifted remainder", phase1Canary)
+	}
+}
+
+// Boards PROVEN current by --skip-if-version are excluded in finish mode too,
+// even when they sat inside the original canary window — the version record
+// always beats the positional replay.
+func TestBuildPlanFinishExcludesConfirmedDevices(t *testing.T) {
+	r := sampleRegistry(t)
+	devs := r.All()
+	devs[0].Version = "1.2.0"
+	if err := r.Upsert(devs[0]); err != nil {
+		t.Fatal(err)
+	}
+	phase2 := BuildPlan(r, PlanOptions{Canary: 1, FinishWith: true, SkipIfVersion: "1.2.0", Workers: 4})
+	for _, d := range phase2.Targets {
+		if d.Key() == devs[0].Key() {
+			t.Errorf("confirmed-current device %s must not be re-flashed in finish mode", d.Key())
+		}
+	}
+	found := false
+	for _, s := range phase2.Skipped {
+		if s.Device.Key() == devs[0].Key() && strings.Contains(s.Reason, "finished") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("confirmed-current device should be skipped with a (finished) reason")
+	}
+}
+
+// --finish-with with no --canary is meaningless: there is no canary to replay,
+// and silently flashing everything again is exactly what the operator feared.
+func TestValidatePlanOptionsRejectsFinishWithoutCanary(t *testing.T) {
+	if err := ValidatePlanOptions(PlanOptions{FinishWith: true}); err == nil {
+		t.Fatal("expected an error for --finish-with without --canary")
+	}
+	if err := ValidatePlanOptions(PlanOptions{FinishWith: false, Canary: 2}); err != nil {
+		t.Fatalf("ordinary canary must stay valid: %v", err)
+	}
+	if err := ValidatePlanOptions(PlanOptions{FinishWith: true, Canary: 2}); err != nil {
+		t.Fatalf("finish replay must be valid: %v", err)
+	}
+}
+
 // Waves and the estimate must reflect concurrency, so the operator can judge a
 // 50-device run before committing to it.
 func TestBuildPlanWavesAndEstimate(t *testing.T) {

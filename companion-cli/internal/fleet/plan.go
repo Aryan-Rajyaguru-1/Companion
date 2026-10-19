@@ -35,12 +35,37 @@ type PlanOptions struct {
 	// what makes a rollout re-runnable: the second run has nothing to do.
 	SkipIfVersion string
 	// Canary limits the first wave to N devices. 0 = flash everything.
-	Canary            int
+	Canary int
+	// FinishWith replays a canary of size Canary and targets only the
+	// remainder: the first Canary matches are held back positionally.
+	// The registry can prove a board is already flashed only on paths that
+	// report a version; for the version-unknown boards left over, canary
+	// ORDER is the only identity phase 1 and phase 2 share.
+	FinishWith        bool
 	Workers           int
 	ImageBytes        int64
 	EstPushSeconds    int
 	DeployVer         string
 	DeployVerDeclared bool
+}
+
+const maxVersionLen = 64 // guard against garbage clogging the plan report
+
+// ValidatePlanOptions rejects flag combinations that cannot mean anything,
+// before any plan is built or device contacted. --finish-with without
+// --canary has no canary to replay, so it would silently flash everything
+// again — exactly the outcome the operator is trying to avoid.
+func ValidatePlanOptions(opts PlanOptions) error {
+	if opts.FinishWith && opts.Canary <= 0 {
+		return fmt.Errorf("--finish-with needs --canary N: the finish phase replays the phase-1 canary to find the remainder")
+	}
+	if opts.Canary < 0 {
+		return fmt.Errorf("--canary must be >= 0")
+	}
+	if len(opts.SkipIfVersion) > maxVersionLen {
+		return fmt.Errorf("--skip-if-version is too long (%d chars)", len(opts.SkipIfVersion))
+	}
+	return nil
 }
 
 // BuildPlan resolves selectors, applies the version filter, and computes the
@@ -68,28 +93,52 @@ func BuildPlan(reg *Registry, opts PlanOptions) Plan {
 		plan.VersionFrom = "--mark-version (declared, not verified)"
 	}
 
+	finish := opts.FinishWith
 	want := strings.TrimSpace(opts.SkipIfVersion)
 	for _, d := range selected {
-		if want != "" {
-			// Only skip a device we actually KNOW is current. An unknown
-			// version (LAN path, legacy firmware) must still be flashed.
-			if d.Version != "" && d.Version == want {
-				plan.Skipped = append(plan.Skipped, Skip{Device: d,
-					Reason: fmt.Sprintf("already on %s", d.Version)})
-				continue
+		// Only skip a device we actually KNOW is current. An unknown
+		// version (LAN path, legacy firmware) must still be flashed — the
+		// LAN ArduinoOTA protocol exposes no version at all, so treating
+		// "" as current would silently exclude every LAN board.
+		// In finish mode a proven-current board is labelled "(finished)":
+		// it is not part of the remainder, even if it sat inside the
+		// original canary.
+		if want != "" && d.Version != "" && d.Version == want {
+			reason := fmt.Sprintf("already on %s", d.Version)
+			if finish {
+				reason = fmt.Sprintf("already on %s (finished)", d.Version)
 			}
+			plan.Skipped = append(plan.Skipped, Skip{Device: d, Reason: reason})
+			continue
 		}
 		plan.Targets = append(plan.Targets, d)
 	}
 
 	// Deterministic canary order (registry order is already id-sorted) so a
 	// rerun picks the same boards — a canary you cannot repeat is a coin flip.
+	// Finish mode replays that same order positionally: the first Canary
+	// matches of phase 1's canary are assumed already flashed, because
+	// recordResults only learns versions on the relay path — a LAN wave-1
+	// push, or one run without --mark-version, leaves the registry with
+	// nothing to skip on. Versioned devices are excluded above; what remains
+	// here are the version-unknown boards, for which registry ORDER is the
+	// only stable identity phase 1 and phase 2 share.
 	if opts.Canary > 0 && len(plan.Targets) > opts.Canary {
-		for _, d := range plan.Targets[opts.Canary:] {
-			plan.Skipped = append(plan.Skipped, Skip{Device: d,
-				Reason: "held back by --canary"})
+		if finish {
+			// Phase 2: hold back the first N (phase 1's canary), flash the rest.
+			for _, d := range plan.Targets[:opts.Canary] {
+				plan.Skipped = append(plan.Skipped, Skip{Device: d,
+					Reason: fmt.Sprintf("flashed in canary wave (--canary %d finished)", opts.Canary)})
+			}
+			plan.Targets = plan.Targets[opts.Canary:]
+		} else {
+			// Phase 1: flash the first N, hold the rest back explicitly.
+			for _, d := range plan.Targets[opts.Canary:] {
+				plan.Skipped = append(plan.Skipped, Skip{Device: d,
+					Reason: "held back by --canary"})
+			}
+			plan.Targets = plan.Targets[:opts.Canary]
 		}
-		plan.Targets = plan.Targets[:opts.Canary]
 	}
 	sort.Slice(plan.Skipped, func(i, j int) bool {
 		return plan.Skipped[i].Device.Key() < plan.Skipped[j].Device.Key()
