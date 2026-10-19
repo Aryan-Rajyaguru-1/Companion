@@ -105,6 +105,7 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 		"companion_doctor", "companion_list_ports", "companion_board_list",
 		"companion_compile", "companion_upload",
 		"companion_relay_devices", "companion_relay_push",
+		"companion_fleet_list", "companion_fleet_push",
 	} {
 		if !byName[want] {
 			t.Errorf("tools/list is missing %s", want)
@@ -117,7 +118,7 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 // and the refusal must be a tool error (so the model can read and react to it),
 // not a protocol error.
 func TestMCPDisablesFlashToolsByDefault(t *testing.T) {
-	for _, tool := range []string{"companion_upload", "companion_relay_push"} {
+	for _, tool := range []string{"companion_upload", "companion_relay_push", "companion_fleet_push"} {
 		srv := newMCPServer("", false)
 		resps := drive(t, srv,
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+tool+`","arguments":{}}}`)

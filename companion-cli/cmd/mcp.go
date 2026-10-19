@@ -422,6 +422,52 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 					positionalArgs(image)...))
 			},
 		},
+		{
+			Name:        "companion_fleet_list",
+			Description: "List devices registered in the Companion fleet registry (id, name, host, MCU, tags). Use before a fleet push to see the exact targets that would be flashed.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+			handler: func(ctx context.Context, args map[string]any) (string, error) {
+				return runCLI(ctx, newFleetCommand(), []string{"list"})
+			},
+		},
+		{
+			Name:        "companion_fleet_push",
+			Description: "Compile (if a sketch directory is given) and push firmware to every fleet device matching the selectors, with bounded concurrency, retries, and an mDNS identity preflight that refuses to flash a swapped board. Flashes hardware, so it needs --allow-upload on the server. Agents cannot confirm interactively, so confirm must be true and the server adds --yes automatically.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"image":     map[string]any{"type": "string", "description": "path to a .bin image, or a sketch directory to compile once and flash to every target"},
+					"selectors": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "device selectors (id/name/host/mcu/tags, @tag). Empty = every registered device"},
+					"confirm":   map[string]any{"type": "boolean", "description": "must be true -- this is the safety gate, because an agent cannot type 'yes' at a prompt"},
+				},
+				"required": []string{"image", "confirm"},
+			},
+			destructive: true,
+			handler: func(ctx context.Context, args map[string]any) (string, error) {
+				if !boolArg(args, "confirm") {
+					return "", fmt.Errorf("confirm must be true to run a fleet push")
+				}
+				image, err := pathArg(args, "image")
+				if err != nil {
+					return "", err
+				}
+				if image == "" {
+					return "", fmt.Errorf("image is required")
+				}
+				// --yes skips the interactive confirmation (an agent cannot
+				// type it). It is placed before the positional image and
+				// selectors so pflag parses it as a flag, not a selector.
+				a := []string{"push", "--yes", image}
+				if sels, ok := args["selectors"].([]any); ok {
+					for _, sel := range sels {
+						if v, ok := sel.(string); ok && v != "" {
+							a = append(a, v)
+						}
+					}
+				}
+				return runCLI(ctx, newFleetCommand(), a)
+			},
+		},
 	}
 }
 
@@ -623,6 +669,8 @@ this command and speak JSON-RPC over stdin/stdout. Tools:
   companion_upload         flash a target through the bridge  (--allow-upload)
   companion_relay_devices  boards online on a self-hosted relay hub
   companion_relay_push     push firmware over the internet   (--allow-upload)
+  companion_fleet_list     list registered fleet devices
+  companion_fleet_push     flash many fleet devices   (--allow-upload)
 
 Each tool is a thin adapter over the matching CLI command, so an agent and a
 human get identical behaviour. Relay secrets come from the environment
@@ -644,6 +692,6 @@ hardware, add --allow-upload.`,
 	}
 	cmd.Flags().StringVar(&hub, "hub", "", "relay hub base URL (ws:// or wss://) for the remote tools")
 	cmd.Flags().BoolVar(&allowUpload, "allow-upload", false,
-		"allow the tools that flash hardware (companion_upload, companion_relay_push)")
+		"allow the tools that flash hardware (companion_upload, companion_relay_push, companion_fleet_push)")
 	return cmd
 }
