@@ -18,13 +18,33 @@ app.disableHardwareAcceleration();
 
 const CompanionCLI = require('./companion-cli');
 const BridgeClient = require('./bridge-client');
+const { createPathPolicy } = require('./path-policy');
 
 const isDev = process.env.NODE_ENV === 'development';
+const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
 console.log('isDev:', isDev);
 let mainWindow;
 let monitorWindow = null; // P5 #11: tear-off serial-monitor window (single instance)
 const companionCLI = new CompanionCLI();
 const bridgeClient = new BridgeClient();
+
+// Renderer navigation is not part of the app's feature set: the UI is a
+// single loaded page. Blocking navigation prevents an XSS or a hostile sketch
+// preview from turning the window into a browser for attacker-controlled
+// content (and, in dev, from silently leaving the Vite origin).
+function hardenWindow(win) {
+  win.webContents.on('will-navigate', (event) => event.preventDefault());
+  win.webContents.on('will-attach-webview', (event) => event.preventDefault());
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const u = new URL(url);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        shell.openExternal(url).catch(() => {});
+      }
+    } catch {}
+    return { action: 'deny' };
+  });
+}
 
 // ── Window ─────────────────────────────────────────────────────
 function createWindow() {
@@ -35,7 +55,7 @@ function createWindow() {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true, nodeIntegration: false, sandbox: false,
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
     },
   });
 
@@ -79,17 +99,29 @@ function createWindow() {
 
     mainWindow.webContents.send('menu:save');
 
-    // Safety fallback: destroy after 10s if neither IPC ever fires
-    const fallback = setTimeout(() => {
+    // Safety fallback. The old version destroyed the window unconditionally
+    // after 10s — which fires while a native Save As dialog is still open, so
+    // closing the app mid-save threw the work away. Re-check for unsaved
+    // changes first and only quit when there are none; otherwise leave the
+    // window up and let the user finish or cancel.
+    const fallback = setTimeout(async () => {
       ipcMain.removeListener('save:completed', onSaveCompleted);
       ipcMain.removeListener('save:aborted', onSaveAborted);
+      const stillDirty = await mainWindow.webContents
+        .executeJavaScript('window.__companionHasUnsaved ? window.__companionHasUnsaved() : false')
+        .catch(() => true);
+      if (stillDirty) {
+        console.warn('Close timed out waiting for save; window kept open (unsaved changes remain)');
+        return;
+      }
       mainWindow?.destroy();
-    }, 10_000);
+    }, 30_000);
   });
 
+  hardenWindow(mainWindow);
   if (isDev) {
-    console.log('Loading dev URL: http://localhost:5173');
-    mainWindow.loadURL('http://localhost:5173');
+    console.log('Loading dev URL:', DEV_URL);
+    mainWindow.loadURL(DEV_URL);
     mainWindow.webContents.openDevTools({ mode: 'bottom' });
     console.log('Dev tools opened');
   } else {
@@ -168,7 +200,7 @@ function buildMenu() {
     {
       label: 'Help', submenu: [
         { label: 'Arduino Language Reference', click: () => shell.openExternal('https://docs.arduino.cc/language-reference/') },
-        { label: 'Companion IDE on GitHub',    click: () => shell.openExternal('https://github.com/companion-ide/companion-ide') },
+        { label: 'Companion IDE on GitHub',    click: () => shell.openExternal('https://github.com/Aryan-Rajyaguru-1/Companion') },
         { type: 'separator' },
         { label: 'About Companion IDE',        click: () => send('about') },
       ],
@@ -200,21 +232,61 @@ function registerIPC() {
   ipcMain.handle('os:tempdir', () => os.tmpdir());
   // Unique temp dir per compile (fs.mkdtemp) — prevents two IDE instances
   // or parallel compiles from overwriting each other's sketch
-  ipcMain.handle('os:mkdtemp', (_, { prefix }) => fs.mkdtempSync(prefix || (os.tmpdir() + '/companion_')));
+  ipcMain.handle('os:mkdtemp', (_, { dir, prefix } = {}) => {
+    // Renderer input reaches fs.mkdtempSync, so both the base directory and
+    // the prefix are checked: a prefix like "../../etc/foo" would otherwise
+    // walk out of the permitted base before mkdtemp appends its random suffix.
+    const rawPrefix = String(prefix || 'companion_');
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(rawPrefix) || rawPrefix === '.' || rawPrefix === '..') {
+      throw new Error(`invalid temp directory prefix: ${rawPrefix}`);
+    }
+    const base = isDenied(dir) ? os.tmpdir() : dir;
+    return fs.mkdtempSync(path.join(base, rawPrefix));
+  });
 
   // BUG E FIX: renderer sends this after save completes; the close handler
   // registers its own ipcMain.once('save:completed') listener on demand.
   ipcMain.on('save:completed', () => {});
 
+  // ── Renderer path sandbox ─────────────────────────────────────
+  // The renderer hands main-process handlers paths directly: file:save /
+  // file:readSketch read and wrote whatever it asked for, and file:openFolder
+  // fed any path to shell.openPath. With an XSS (or a compromised dependency)
+  // in the renderer that is account-wide access.
+  //
+  // This is a DENYLIST, not an allowlist, on purpose: the IDE's sketch flow can
+  // legitimately reach a directory the user never picked in a dialog (a path
+  // from the CLI setup wizard, a recent-folder entry, an argv), and an
+  // allowlist would break those flows silently. What the denylist does block is
+  // the realistic damage — system directories and the places credentials live.
+  const { isDenied } = createPathPolicy();
+
+  const denyPath = (p) => ({
+    success: false,
+    error: `path blocked by the IDE's file policy: ${p}`,
+  });
+  // vendor:architecture:board[:key=value,key=value] — the optional menu
+  // segment is part of the FQBN standard and is preserved by recent-board
+  // selections. Colons, slashes, whitespace and control bytes stay rejected.
+  const FQBN_RE = /^[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+-]+(?::[A-Za-z0-9_.+=,-]+)?$/;
+  const isSafeMainIno = (name) => !name || (/^[^/\\\x00]+\.ino$/i.test(name) && !name.startsWith('-'));
+
   // File ops
   ipcMain.handle('file:save', async (_, { path: p, content }) => {
+    if (isDenied(p)) return denyPath(p);
     try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, content, 'utf-8'); return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
   });
   ipcMain.handle('file:saveAs', async (_, { content, defaultName = 'sketch.ino' }) => {
     try {
+      // The renderer controls only the suggested name. Strip directory
+      // components so an XSS cannot pre-fill the dialog outside the sketch
+      // folder (or with a hidden file).
+      const suggested = path.basename(String(defaultName || 'sketch.ino'));
+      const safeName = (/^[^/\\\x00]+\.ino$/i.test(suggested) && !suggested.startsWith('.'))
+        ? suggested : 'sketch.ino';
       const r = await dialog.showSaveDialog(mainWindow, {
-        defaultPath: path.join(os.homedir(), 'CompanionSketches', defaultName),
+        defaultPath: path.join(os.homedir(), 'CompanionSketches', safeName),
         filters: [{ name: 'Arduino Sketch', extensions: ['ino'] }],
       });
       if (r.canceled) return { success: false };
@@ -235,6 +307,7 @@ function registerIPC() {
     return { path: p, content: fs.readFileSync(p, 'utf-8') };
   });
   ipcMain.handle('file:listSketchFiles', async (_, { dir, showAll = false }) => {
+    if (isDenied(dir)) return [];
     try {
       if (!dir || !fs.existsSync(dir)) return [];
       const CORE = new Set(['ino','cpp','c','h','hpp','s']);
@@ -247,12 +320,39 @@ function registerIPC() {
     } catch { return []; }
   });
   ipcMain.handle('file:readSketch', async (_, { path: p }) => {
+    if (isDenied(p)) return denyPath(p);
     try { return { success: true, content: fs.readFileSync(p, 'utf-8') }; }
     catch (e) { return { success: false, error: e.message }; }
   });
+
+  // Sketch layout analysis: which .ino files in a folder are *complete*
+  // sketches (define setup()/loop())? A folder holding more than one cannot be
+  // merged into a single translation unit — the compile would die with
+  // "redefinition of 'void setup()'". The renderer uses this to compile just
+  // the active sketch via --main-ino instead.
+  ipcMain.handle('sketch:analyze', async (_, { dir } = {}) => {
+    if (isDenied(dir)) return denyPath(dir);
+    try {
+      if (!dir || !fs.existsSync(dir)) return { success: false, error: 'No such folder' };
+      const complete = /^[ \t]*(?:void|int|auto)[ \t]+(?:setup|loop)[ \t]*\(/m;
+      const inos = fs.readdirSync(dir, { withFileTypes: true })
+        .filter(e => e.isFile() && e.name.toLowerCase().endsWith('.ino'))
+        .map(e => {
+          let isComplete = false;
+          try { isComplete = complete.test(fs.readFileSync(path.join(dir, e.name), 'utf-8')); } catch {}
+          return { name: e.name, complete: isComplete };
+        });
+      const candidates = inos.filter(i => i.complete).map(i => i.name);
+      return { success: true, inos, candidates, hasMainConflict: candidates.length > 1 };
+    } catch (e) { return { success: false, error: e.message }; }
+  });
   ipcMain.handle('file:openFolder', async (_, { dir }) => {
-    try { shell.openPath(dir); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    if (isDenied(dir)) return denyPath(dir);
+    try {
+      const err = await shell.openPath(dir);
+      if (err) return { success: false, error: err };
+      return { success: true };
+    } catch (e) { return { success: false, error: e.message }; }
   });
 
   // Daemon
@@ -272,12 +372,17 @@ function registerIPC() {
   });
 
   // Compile only (no upload)
-  ipcMain.handle('arduino:compile', async (_, { sketchDir, fqbn, exportBin = false, verbose = false, warnings = 'default', json = false }) =>
-    companionCLI.compile(sketchDir, fqbn, emit, exportBin, verbose, warnings, json));
+  ipcMain.handle('arduino:compile', async (_, { sketchDir, fqbn, exportBin = false, verbose = false, warnings = 'default', json = false, mainIno = '' }) => {
+    if (isDenied(sketchDir)) return denyPath(sketchDir);
+    if (!FQBN_RE.test(String(fqbn || ''))) return { success: false, error: `Invalid FQBN: ${fqbn}` };
+    if (!isSafeMainIno(mainIno)) return { success: false, error: `Invalid main .ino name: ${mainIno}` };
+    return companionCLI.compile(sketchDir, fqbn, emit, exportBin, verbose, warnings, json, mainIno);
+  });
 
   // BUG H FIX: Upload-binary is a separate IPC — only does wireless transfer,
   // not compile. UI calls compile first, checks result, then calls this.
   ipcMain.handle('arduino:upload-binary', async (_, { binaryPath, fqbn, mcu, host, port, baud, verbose }) => {
+    if (isDenied(binaryPath)) return denyPath(binaryPath);
     if (!binaryPath || !fs.existsSync(binaryPath)) {
       return { success: false, error: `Binary not found: ${binaryPath}` };
     }
@@ -288,9 +393,11 @@ function registerIPC() {
   // USB upload: flash prebuilt binary over a local serial port.
   // (The CLI handles esptool/avrdude; we just stream its output.)
   ipcMain.handle('arduino:upload-usb', async (_, { binaryPath, fqbn, serialPort, baud }) => {
+    if (isDenied(binaryPath)) return denyPath(binaryPath);
     if (!binaryPath || !fs.existsSync(binaryPath)) {
       return { success: false, error: `Binary not found: ${binaryPath}` };
     }
+    if (!FQBN_RE.test(String(fqbn || ''))) return { success: false, error: `Invalid FQBN: ${fqbn}` };
     if (!serialPort) return { success: false, error: 'No serial port selected' };
     emit(`» Uploading via USB → ${serialPort} [${fqbn}]\n`);
     return companionCLI.uploadUSB({ binaryPath, fqbn, serialPort, baud }, emit);
@@ -302,8 +409,18 @@ function registerIPC() {
     catch (err) { return { success: false, ports: [], error: err.message }; }
   });
 
+  // Plug-and-play board detection (board detect --json).
+  // probe=true additionally boot-ROM-probes unidentified ports, which
+  // resets the attached board — only pass it on explicit user action.
+  ipcMain.handle('board:detect', async (_, { probe = false } = {}) => {
+    try { return { success: true, detection: await companionCLI.detectBoard(probe) }; }
+    catch (err) { return { success: false, detection: null, error: err.message }; }
+  });
+
   // Legacy combined compile+upload (kept for compatibility)
   ipcMain.handle('arduino:upload', async (_, { sketchDir, fqbn, mcu, host, port, baud, verbose }) => {
+    if (isDenied(sketchDir)) return denyPath(sketchDir);
+    if (!FQBN_RE.test(String(fqbn || ''))) return { success: false, error: `Invalid FQBN: ${fqbn}` };
     emit(`» Compiling for wireless upload...\n`);
     const compile = await companionCLI.compile(sketchDir, fqbn, emit, true, verbose);
     if (!compile.success) return { success: false, error: compile.error || 'Compile failed' };
@@ -317,8 +434,19 @@ function registerIPC() {
   ipcMain.handle('arduino:list-all-boards',  async ()      => companionCLI.listAllBoards());
   ipcMain.handle('arduino:search-cores',     async (_, q)  => companionCLI.searchBoards(q));
   ipcMain.handle('arduino:search-packages',  async (_, q)  => companionCLI.searchBoardPackages(q));
-  ipcMain.handle('arduino:install-core',     async (_, id) => companionCLI.installCore(id, emit));
-  ipcMain.handle('compile:flags',            async (_, { sketchDir, file }) => companionCLI.compileFlags(sketchDir, file));
+  ipcMain.handle('arduino:install-core', async (_, id) => {
+    if (!/^[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+-]+(?:@[A-Za-z0-9_.+-]+)?$/.test(String(id || ''))) {
+      return { success: false, error: `Invalid platform id: ${id}` };
+    }
+    return companionCLI.installCore(id, emit);
+  });
+  ipcMain.handle('compile:flags', async (_, { sketchDir, file }) => {
+    if (isDenied(sketchDir)) return denyPath(sketchDir);
+    if (file && (/[/\\\x00]/.test(file) || file.startsWith('-'))) {
+      return { success: false, error: `Invalid file name: ${file}` };
+    }
+    return companionCLI.compileFlags(sketchDir, file);
+  });
   ipcMain.handle('ota:discover',             async (_, { waitMs } = {}) => companionCLI.otaDiscover(waitMs || 3000));
   ipcMain.handle('arduino:update-index',     async ()      => companionCLI.updateIndex(emit));
 
@@ -344,9 +472,16 @@ function registerIPC() {
   ipcMain.handle('companion:config-set', async (_, { key, value }) => companionCLI.setConfig(key, value));
 
   // OTA (P4c): per-sketch switch + status + push
-  ipcMain.handle('ota:toggle',  async (_, { enabled, sketchDir }) => companionCLI.otaToggle(enabled, sketchDir));
-  ipcMain.handle('ota:status',  async (_, { sketchDir })          => companionCLI.otaStatus(sketchDir));
+  ipcMain.handle('ota:toggle',  async (_, { enabled, sketchDir }) => {
+    if (isDenied(sketchDir)) return denyPath(sketchDir);
+    return companionCLI.otaToggle(enabled, sketchDir);
+  });
+  ipcMain.handle('ota:status',  async (_, { sketchDir }) => {
+    if (isDenied(sketchDir)) return denyPath(sketchDir);
+    return companionCLI.otaStatus(sketchDir);
+  });
   ipcMain.handle('ota:upload',  async (_, opts) => {
+    if (isDenied(opts?.sketchDir)) return denyPath(opts?.sketchDir);
     emit(`» OTA: compiling sketch for wireless flash…\n`);
     const r = await companionCLI.otaUpload(opts, emit);
     if (!r.success && !r.cancelled) emit(`\n✗ OTA failed: ${r.error}\n`);
@@ -382,11 +517,12 @@ function registerIPC() {
       autoHideMenuBar: true,
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
-        contextIsolation: true, nodeIntegration: false, sandbox: false,
+        contextIsolation: true, nodeIntegration: false, sandbox: true,
       },
     });
-    const devUrl = process.env.VITE_DEV_SERVER_URL;
-    if (devUrl) {
+    hardenWindow(monitorWindow);
+    const devUrl = process.env.VITE_DEV_SERVER_URL || DEV_URL;
+    if (isDev) {
       monitorWindow.loadURL(`${devUrl}?${qs}`);
     } else {
       monitorWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { query: Object.fromEntries(params) });

@@ -64,7 +64,7 @@ function stageLabel(stageKey, allStages) {
 }
 
 // ── Component ─────────────────────────────────────────────────
-export default function UploadProgress({ isCompiling, isUploading, consoleLogs, onCancel }) {
+export default function UploadProgress({ isCompiling, isUploading, uploadTarget = 'wifi', consoleLogs, onCancel }) {
   const [currentStage, setCurrentStage] = useState(null);
   const [displayPct,   setDisplayPct]   = useState(0);
   const animFrameRef   = useRef(null);
@@ -121,11 +121,17 @@ export default function UploadProgress({ isCompiling, isUploading, consoleLogs, 
 
   const label = currentStage
     ? stageLabel(currentStage.key, allStages)
-    : (isUploading ? 'Uploading wirelessly…' : 'Compiling…');
+    : (isUploading
+        ? (uploadTarget === 'usb' ? 'Uploading via USB…' : 'Uploading wirelessly…')
+        : 'Compiling…');
 
   const currentIdx = currentStage
     ? allStages.findIndex(s => s.key === currentStage.key)
     : -1;
+
+  const title = isUploading
+    ? (uploadTarget === 'usb' ? 'USB Upload' : 'Wireless Upload')
+    : 'Compiling Sketch';
 
   return (
     <div className="upload-progress-overlay">
@@ -133,7 +139,7 @@ export default function UploadProgress({ isCompiling, isUploading, consoleLogs, 
         {/* Title */}
         <div className="up-title">
           <span className="spin">⟳</span>
-          {isUploading ? 'Wireless Upload' : 'Compiling Sketch'}
+          {title}
         </div>
 
         {/* Stage label */}

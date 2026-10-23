@@ -1,6 +1,8 @@
+// FIRST import: it must evaluate before App/Editor, which call loader.init()
+// at module scope. See src/monacoSetup.js for why that matters.
+import './monacoSetup';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { loader } from '@monaco-editor/react';
 import ErrorBoundary from './ErrorBoundary';
 import App from './App';  // Switch back to full App
 import SerialMonitor from './components/SerialMonitor';
@@ -8,18 +10,7 @@ import './index.css';
 
 console.log('=== Companion IDE Starting ===');
 
-// Configure Monaco Editor with robust CDN setup
-try {
-  loader.config({
-    paths: {
-      vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.50.0/min/vs'
-    },
-    trustedTypes: false
-  });
-  console.log('✓ Monaco loader configured');
-} catch (e) {
-  console.warn('Monaco config warning (non-critical):', e);
-}
+console.log('✓ Monaco bundled locally (no CDN)');
 
 // Ensure root element exists
 const rootElement = document.getElementById('root');

@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
 ### 1. Get Companion CLI
 The CLI source is not in this checkout — either let the setup script above
 download it into `bin/`, or grab it manually from:
-https://github.com/Aryan-Rajyaguru-1/Companion/releases/tag/v0.1.0-alpha
+https://github.com/Aryan-Rajyaguru-1/Companion/releases/latest
 
 If you have the full workspace, you can also build it:
 ```bash

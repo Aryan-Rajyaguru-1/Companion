@@ -80,6 +80,9 @@ class BridgeClient {
     // Destroy any previous in-flight socket — re-connecting without this
     // leaked the old connection and duplicated 'data' event handlers.
     this.disconnectSerial();
+    // A new connection means a new STM32 session: anything still queued
+    // belongs to the previous one.
+    resetSTM32RX();
 
     return new Promise((resolve) => {
       let settled = false;
@@ -107,22 +110,38 @@ class BridgeClient {
         settle({ success: true });
       });
 
-      sock.on('data', (chunk) => this._onSerialData?.(chunk.toString()));
+      sock.on('data', (chunk) => {
+        // A socket that was replaced by a newer connect must not feed the
+        // current monitor (or the new socket's callback).
+        if (this._serialSock === sock) onData?.(chunk.toString());
+      });
 
       sock.on('error', (err) => {
-        this._serialSock = null;
+        if (this._serialSock === sock) this._serialSock = null;
         settle({ success: false, error: err.message });
       });
 
-      sock.on('close', () => { this._serialSock = null; });
+      // Only the socket that is still current may clear the field. The old
+      // unconditional handler ran after a reconnect and nulled the NEW socket,
+      // leaving send() silently doing nothing.
+      sock.on('close', () => {
+        if (this._serialSock === sock) {
+          this._serialSock = null;
+          this._onSerialData = null;
+        }
+      });
     });
   }
 
   disconnectSerial() {
+    // Drop queued bytes on the way out too, so a later connect cannot inherit
+    // them even if it skips its own reset.
+    resetSTM32RX();
     if (this._serialSock) {
       this._serialSock.destroy();
       this._serialSock = null;
     }
+    this._onSerialData = null;
   }
 
   send(data) {
@@ -289,9 +308,14 @@ class BridgeClient {
 
       proc.on('error', () => {
         if (ctrlSock) { ctrlSock.destroy(); ctrlSock = null; }
+        // Platform-correct hint: Windows has no python3, and testers were
+        // being told to run a command their machine cannot execute.
+        const hint = process.platform === 'win32'
+          ? 'py -m pip install esptool'
+          : 'python3 -m pip install esptool';
         resolve({
           success: false,
-          error: 'esptool not found. Install it with:\n  pip install esptool',
+          error: `esptool not found. Install it with:\n  ${hint}`,
         });
       });
     });
@@ -470,10 +494,42 @@ class BridgeClient {
 // ══════════════════════════════════════════════════════════════
 // STM32 low-level helpers
 // ══════════════════════════════════════════════════════════════
+// stm32RX buffers bytes that arrived but were not consumed yet. A single TCP
+// read can carry several protocol bytes; dropping the tail desynchronises the
+// AN3155 handshake (and a leaked listener from a timed-out read would later
+// resolve the WRONG promise with a stray byte).
+let stm32RX = Buffer.alloc(0);
+
+// resetSTM32RX drops bytes left over from a previous session. The buffer
+// outlives the socket on purpose — that is what stops one TCP read's tail being
+// dropped mid-handshake — but nothing ever cleared it between sessions, so a
+// session that was cancelled or timed out with bytes still queued handed them
+// to the NEXT session's readByte(). That desynchronises the AN3155 handshake,
+// and a stray byte from the old run can resolve a fresh read with the wrong
+// value. Any session boundary must call this.
+function resetSTM32RX() {
+  stm32RX = Buffer.alloc(0);
+}
+
 function readByte(sock, timeout = 3000) {
+  if (stm32RX.length > 0) {
+    const b = stm32RX[0];
+    stm32RX = stm32RX.subarray(1);
+    return Promise.resolve(b);
+  }
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { resolve(null); }, timeout);
-    sock.once('data', (d) => { clearTimeout(timer); resolve(d[0]); });
+    const onData = (d) => {
+      if (!d || d.length === 0) return;
+      detach();
+      stm32RX = Buffer.from(d.subarray(1)); // keep the rest for the next read
+      resolve(d[0]);
+    };
+    const timer = setTimeout(() => { detach(); resolve(null); }, timeout);
+    function detach() {
+      clearTimeout(timer);
+      sock.off('data', onData); // never leave a listener behind
+    }
+    sock.on('data', onData);
   });
 }
 

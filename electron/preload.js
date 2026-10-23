@@ -13,7 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fileSaveAs:      (p)            => ipcRenderer.invoke('file:saveAs', p),
   fileOpen:        ()             => ipcRenderer.invoke('file:open'),
   getTempDir:      ()             => ipcRenderer.invoke('os:tempdir'),
-  mkTempDir:       (dir, prefix)  => ipcRenderer.invoke('os:mkdtemp', { prefix: require('path').join(dir, prefix || 'companion_') }),
+  // The path join happens in MAIN: a sandboxed preload has no 'path' module.
+  mkTempDir:       (dir, prefix)  => ipcRenderer.invoke('os:mkdtemp', { dir, prefix: prefix || 'companion_' }),
   listSketchFiles: (dir, showAll) => ipcRenderer.invoke('file:listSketchFiles', { dir, showAll }),
   readSketchFile:  (fp)           => ipcRenderer.invoke('file:readSketch', { path: fp }),
   openFolder:      (dir)          => ipcRenderer.invoke('file:openFolder', { dir }),
@@ -33,6 +34,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uploadUSB:      (p)  => ipcRenderer.invoke('arduino:upload-usb', p),
   // Detect connected serial boards (VID/PID → FQBN)
   listSerialPorts: ()  => ipcRenderer.invoke('serial:list-ports'),
+  // Best-guess board detection (board detect --json). probe=true boots the
+  // unidentified board into its ROM to read the chip banner — it resets the
+  // board, so only pass true on an explicit user action.
+  detectBoard:     (probe = false) => ipcRenderer.invoke('board:detect', { probe }),
   // Legacy combined (kept for backward compat)
   upload:         (p)  => ipcRenderer.invoke('arduino:upload', p),
 
@@ -54,6 +59,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   searchPackages:  (q)   => ipcRenderer.invoke('arduino:search-packages', q),
   installCore:     (id)  => ipcRenderer.invoke('arduino:install-core', id),
   getCompileFlags: (sketchDir, file) => ipcRenderer.invoke('compile:flags', { sketchDir, file }),
+  // Which .ino files in a folder are complete sketches (setup()/loop())?
+  analyzeSketch:  (dir) => ipcRenderer.invoke('sketch:analyze', { dir }),
   otaDiscover:     (waitMs) => ipcRenderer.invoke('ota:discover', { waitMs }),
   updateIndex:     ()    => ipcRenderer.invoke('arduino:update-index'),
 

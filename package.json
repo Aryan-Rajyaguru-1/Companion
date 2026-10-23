@@ -1,7 +1,9 @@
 {
   "name": "companion-ide",
   "version": "1.0.0",
+  "author": "Aryan Rajyaguru <Aryan-Rajyaguru-1@users.noreply.github.com>",
   "description": "Wireless Arduino-compatible IDE \u2014 no cable needed",
+  "license": "MIT",
   "main": "electron/main.js",
   "homepage": "./",
   "scripts": {
@@ -52,8 +54,8 @@
     "@vitest/ui": "^1.6.0",
     "concurrently": "^8.2.0",
     "cross-env": "^7.0.3",
-    "electron": "^28.1.0",
-    "electron-builder": "^24.9.0",
+    "electron": "44.4.5",
+    "electron-builder": "^26.0.12",
     "jsdom": "^29.1.1",
     "vite": "^5.0.0",
     "vitest": "^1.6.0",
@@ -65,7 +67,5 @@
     "include": [
       "src/**/*.test.{js,jsx}"
     ]
-  },
-  "author": "Aryan Rajyaguru <Aryan-Rajyaguru-1@users.noreply.github.com>",
-  "license": "MIT"
+  }
 }

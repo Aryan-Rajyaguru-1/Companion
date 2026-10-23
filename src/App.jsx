@@ -43,6 +43,7 @@ import {
 } from './utils/error-parser';
 import { hasAutoFix }    from './utils/auto-correct';
 import { addRecentFile } from './utils/recent-files';
+import { probeCandidate, unidentifiedMessage, unwrapDetection, deviceKey } from './utils/board-detect';
 import './App.css';
 
 const DEFAULT_SKETCH = `/*
@@ -139,7 +140,14 @@ export default function App() {
   const [flashUsage,      setFlashUsage]      = useState(null);
 
   // ── Settings ───────────────────────────────────────────────
-  const [bridgeHost,    setBridgeHostSt]    = useState(localStorage.getItem('bridgeHost')    || 'esp32-bridge.local');
+  const [bridgeHost,    setBridgeHostSt]    = useState(() => {
+    const saved = localStorage.getItem('bridgeHost');
+    // v1.0 default was 'esp32-bridge.local', a name the bridge firmware
+    // never announces (AP mode: 192.168.4.1; mDNS: companion-XXXXXX).
+    // Migrate the stale default once — user-set hosts are kept.
+    if (!saved || saved === 'esp32-bridge.local') return '192.168.4.1';
+    return saved;
+  });
   const [uploadBaud,    setUploadBaudSt]    = useState(Number(localStorage.getItem('uploadBaud')) || 115200);
   // P4c: per-sketch OTA switch (persisted in sketch.yaml profile).
   const [otaEnabled,  setOTAEnabled]  = useState(false);
@@ -177,6 +185,9 @@ export default function App() {
   const [wordWrap,     setWordWrap]      = useState(prefs.get('arduino.editor.wordWrap'));
   const [showAllFiles, setShowAllFiles]  = useState(prefs.get('arduino.sketchbook.showAllFiles'));
   const [daemonEnabled,setDaemonEnabled] = useState(prefs.get('companion.daemon.enabled'));
+  // Automatic device verification: allowed to reset an unidentified board once
+  // per session to read its chip's boot-ROM banner (see utils/board-detect.js).
+  const [autoProbe]                      = useState(prefs.get('companion.detect.autoProbe'));
 
   const editorRef = useRef(null);
 
@@ -185,6 +196,7 @@ export default function App() {
   const setBridgePort    = v => { setBridgePortSt(v);    localStorage.setItem('bridgePort', v); };
   const setSelectedBoard = v => {
     const fqbn = normalizeFQBN(v);
+    window.__boardPickedAt = Date.now();   // suppress auto-detect override for 10 s
     setSelectedBoardSt(fqbn); localStorage.setItem('selectedBoard', fqbn);
     prefs.addRecentFQBN(fqbn);
     const mcu = mcuFromFQBN(fqbn);
@@ -311,6 +323,26 @@ export default function App() {
     return dir;
   }, []);
 
+  // A sketch folder may hold several independent sketches (each defining
+  // setup()/loop()). Merging them cannot compile, so when that is the case we
+  // compile only the active file via --main-ino. Multi-file sketches (one
+  // setup()/loop() plus helpers) are left alone — those merge correctly.
+  const resolveMainIno = useCallback(async (dir) => {
+    const tab = activeTabRef.current;
+    if (!dir || !/\.ino$/i.test(tab?.name || '')) return '';
+    try {
+      const a = await window.electronAPI?.analyzeSketch?.(dir);
+      if (!a?.success || !a.hasMainConflict) return '';
+      const list = (a.candidates || []).join(', ');
+      if (a.candidates.includes(tab.name)) {
+        appendConsole(`» ${dir} holds ${a.candidates.length} sketches (${list}) — compiling only ${tab.name}\n`, 'warning');
+        return tab.name;
+      }
+      appendConsole(`» ${dir} holds ${a.candidates.length} sketches (${list}) and ${tab.name} is not one of them — open one of those files to compile it\n`, 'warning');
+    } catch { /* best-effort: absence just means "compile the folder as-is" */ }
+    return '';
+  }, [appendConsole]);
+
   // ── Sketch folder / export ─────────────────────────────────
   const handleShowSketchFolder = useCallback(() => {
     const tab = activeTabRef.current;
@@ -327,9 +359,11 @@ export default function App() {
       await saveCurrentTab();
       const tab = activeTabRef.current;
       const dir = tab?.path?.replace(/[/\\][^/\\]+$/, '') || await getTempSketchDir();
+      const mainIno = await resolveMainIno(dir);
       const r = await window.electronAPI?.compile({
         sketchDir: dir, fqbn: selectedBoardRef.current,
         exportBin: true, verbose: false, warnings: 'default', json: true,
+        mainIno,
       });
       if (r?.success) appendConsole('✓ Binary exported to sketch/build/\n', 'success');
       else appendConsole(`✗ Export failed: ${r?.error || 'unknown'}\n`, 'error');
@@ -368,11 +402,13 @@ export default function App() {
       cancelRef.current = () => window.electronAPI?.cancelCompile?.();
 
       const t0 = Date.now();
+      const mainIno = await resolveMainIno(dir);
       try {
         result = await window.electronAPI?.compile({
           sketchDir: dir, fqbn: selectedBoardRef.current, exportBin: true,
           verbose: prefs.get('arduino.compile.verbose'),
           warnings: prefs.get('arduino.compile.warnings'), json: true,
+          mainIno,
         });
       } catch (e) {
         result = { success: false, error: e?.message || String(e) };
@@ -445,7 +481,7 @@ export default function App() {
       setIsCompiling(false);
       setCompileStatus(compileStatusNext);
     }
-  }, [clearConsole, appendConsole, saveCurrentTab, getTempSketchDir])
+  }, [clearConsole, appendConsole, saveCurrentTab, getTempSketchDir, resolveMainIno])
 
   // compile_commands.json -> Monaco (minimal): after a successful compile, read the
   // -I include paths / -D defines for the active file and feed Editor completions.
@@ -507,8 +543,12 @@ export default function App() {
   const [selectedPort, setSelectedPort] = useState('');
   const serialPortsRef  = useRef([]);
   const selectedPortRef = useRef('');
+  // Ports already reset for a boot-ROM probe this session — never re-reset.
+  const probedPortsRef  = useRef(new Set());
+  // Ports already reported as unidentified — keeps the console free of repeats.
+  const unidentifiedReportedRef = useRef(new Set());
 
-  const refreshSerialPorts = useCallback(async () => {
+  const refreshSerialPorts = useCallback(async (probe = false) => {
     const r = await window.electronAPI?.listSerialPorts?.();
     if (r?.success) {
       setSerialPorts(r.ports || []);
@@ -521,15 +561,65 @@ export default function App() {
           selectedPortRef.current = best.port;
           return best.port;
         });
-        // Auto-suggest board FQBN when detected and user hasn't picked one
-        if (best.fqbn && (!selectedBoardRef.current || !selectedBoardRef.current.includes(':'))) {
-          setSelectedBoard(best.fqbn);
-          appendConsole(`» Detected ${best.boardName || 'board'} on ${best.port} → ${best.fqbn}\n`, 'info');
-        }
       }
     }
-    return r?.ports || [];
-  }, [appendConsole]);
+    // Full detection (VID/PID match, boot-ROM probe when probe=true and
+    // needed). The saved selection may be stale — e.g. a board swapped
+    // since the last session — so hardware evidence outranks it, but a
+    // manual pick within the last 10 s is never overridden.
+    // detectBoard answers with { success, detection } — unwrapDetection pulls
+    // the payload out. Reading `found` off the envelope silently discarded
+    // every result (passive and probed alike).
+    let d = unwrapDetection(await window.electronAPI?.detectBoard?.(probe));
+    let m = d?.found && d?.matches?.[0];
+
+    // Automatic verification. A bare USB-serial bridge (CH340/CH9102/CP210x)
+    // publishes no board identity, so passive matching returns nothing and the
+    // IDE would otherwise leave whatever board was selected before. Reading the
+    // chip's boot-ROM banner names it for real — at the cost of one reset — so
+    // do that once per port, and only when nothing was identified.
+    if (!probe && autoProbe) {
+      const cand = probeCandidate({
+        ports: d?.ports || r?.ports || [],
+        matches: d?.matches || [],
+        confidence: d?.confidence,
+        probed: probedPortsRef.current,
+      });
+      if (cand) {
+        // Keyed on the device, not the path: swapping boards keeps the same
+        // /dev/ttyACM0, and the new board still needs verifying.
+        probedPortsRef.current.add(deviceKey(cand));
+        appendConsole(`» Verifying device on ${cand.port} — boot-ROM probe, board resets once…\n`, 'info');
+        d = unwrapDetection(await window.electronAPI?.detectBoard?.(true));
+        m = d?.found && d?.matches?.[0];
+      }
+    }
+
+    if (!m?.fqbn) {
+      // Say so plainly instead of leaving a stale board looking detected.
+      // Reported once per device — refresh scans run more than once per session.
+      const unknown = (d?.ports || r?.ports || []).find(p => !p.fqbn);
+      if (unknown) {
+        const key = deviceKey(unknown);
+        if (!unidentifiedReportedRef.current.has(key)) {
+          unidentifiedReportedRef.current.add(key);
+          appendConsole(unidentifiedMessage(unknown) + '\n', 'info');
+        }
+      }
+      return d?.ports || r?.ports || [];
+    }
+    const manual = Date.now() - (window.__boardPickedAt || 0) < 10000;
+    if (!manual && selectedBoardRef.current !== m.fqbn) {
+      const wasStale = selectedBoardRef.current && selectedBoardRef.current.includes(':');
+      // A low-confidence match is the CLI's fuzzy containment guess, not
+      // evidence — say so rather than presenting it as verified hardware.
+      const unverified = d?.confidence === 'low' ? ' (unverified guess)' : '';
+      setSelectedBoard(m.fqbn);
+      appendConsole(`» Detected ${m.boardName || 'board'} on ${m.port} → ${m.fqbn}${unverified}` +
+        (wasStale ? ` (was ${selectedBoardRef.current})\n` : '\n'), 'info');
+    }
+    return d.ports || r?.ports || [];
+  }, [appendConsole, autoProbe]);
 
   // Scan once at startup
   useEffect(() => { refreshSerialPorts(); }, []);
@@ -853,7 +943,8 @@ export default function App() {
         uploadTarget={uploadTarget} onUploadTargetChange={setUploadTarget}
         serialPorts={serialPorts} selectedPort={selectedPort}
         onPortChange={(p) => { setSelectedPort(p); selectedPortRef.current = p; }}
-        onRefreshPorts={() => refreshSerialPorts()}
+        onRefreshPorts={(probe) => refreshSerialPorts(probe)}
+        onDetectBoard={() => refreshSerialPorts(true)}
         onCompile={() => handleCompile()} onUpload={handleUpload} onCancel={handleCancel}
         onToggleSerial={() => { setShowPlotter(false); setShowSerial(p => !p); }}
         onTogglePlotter={() => { setShowSerial(false); setShowPlotter(p => !p); }}
@@ -910,6 +1001,7 @@ export default function App() {
       </div>
 
       <UploadProgress isCompiling={isCompiling} isUploading={isUploading}
+        uploadTarget={uploadTarget}
         consoleLogs={consoleLogs}
         onCancel={(isCompiling || isUploading) ? handleCancel : null} />
 
@@ -970,7 +1062,7 @@ export default function App() {
               <p>Wireless Arduino Programmer</p>
               <p className="about-desc">Upload sketches over WiFi — no USB cable required.</p>
               <div className="about-links">
-                <a href="https://github.com/companion-ide/companion-ide" target="_blank" rel="noreferrer">GitHub</a>
+                <a href="https://github.com/Aryan-Rajyaguru-1/Companion" target="_blank" rel="noreferrer">GitHub</a>
                 <a href="https://docs.arduino.cc/language-reference/" target="_blank" rel="noreferrer">Arduino Reference</a>
               </div>
               <button className="btn btn-primary" style={{marginTop:8}} onClick={() => setShowAbout(false)}>Close</button>
