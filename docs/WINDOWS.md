@@ -90,14 +90,15 @@ under *Other devices* with a warning triangle.
 
 1. **The ESP32 bridge is 2.4 GHz only.** It cannot join or serve a 5 GHz
    network. If your router publishes one SSID for both bands, force the 2.4 GHz
-   one (or use the bridge's own AP mode, `SSID=ESP32-OTA`,
-   `password=flashme!`).
+   one (or use the bridge's own AP mode with the `AP_SSID`/`AP_PASS` you set in
+   `config.local.h`; there is no default password, because the sketch refuses an
+   open AP).
 2. **Windows Firewall.** The bridge listens on TCP **3333**. A prompt appears on
    first run — allow it on **Private** networks. Public-network profiles block
    it by default.
 3. **The laptop must be on the same network as the bridge.** In AP mode that
-   means joining `ESP32-OTA`; your normal internet connection pauses while you
-   are on it.
+   means joining the SSID you configured; your normal internet connection pauses
+   while you are on it.
 4. **Bridge IP.** AP mode is always `192.168.4.1`. In STA mode read the IP the
    bridge prints on its serial console and put it in Bridge Settings.
 5. **Wiring.** Bridge `GPIO17→target RX`, `GPIO16→target TX`, `GND→GND`, plus the

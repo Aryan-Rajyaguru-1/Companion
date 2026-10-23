@@ -13,6 +13,14 @@ package ota
 //	→ bare "OK" only after Update.end() verifies the full-image MD5
 //
 // LAN Push() and remote relay.PushDevice() are thin wrappers over PushStream.
+//
+// MD5 here is the ArduinoOTA wire contract (ESP32 Update.setMD5), kept so one
+// receiver works for both LAN and relay pushes. It detects a truncated or
+// corrupted transfer; it is not a signature and does not authenticate the
+// firmware author. Authenticity comes from relay TLS plus the per-device secret.
+// Replacing it with SHA-256 would break ArduinoOTA-compatible receivers and is
+// not possible on the relay-only path without a second digest field and a
+// firmware-side hasher.
 
 import (
 	"context"

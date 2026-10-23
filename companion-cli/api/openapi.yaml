@@ -11,9 +11,10 @@ info:
 
         Authorization: Bearer <token>
 
-    The daemon generates a fresh token at startup and writes it to
-    `~/.companion-cli/daemon/auth-token` (mode 0600). It is also printed to
-    stdout as `COMPANION_DAEMON_TOKEN=<token>` for programmatic discovery.
+    The daemon generates a fresh token at startup and writes it to a private
+    file (mode 0600): `~/.companion-cli/daemon/auth-token` by default, or the
+    path given by `--token-file` / `COMPANION_DAEMON_TOKEN_FILE`. Clients read
+    that file; the token is never printed to stdout or included in a URL.
 
     ## Streaming conventions
     - Compile and upload streams emit newline-delimited JSON events

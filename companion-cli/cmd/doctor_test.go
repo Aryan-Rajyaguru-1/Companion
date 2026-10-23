@@ -1,36 +1,52 @@
 package cmd
 
 import (
-	"strings"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-// The relay token travels in the /health query string, and net errors quote
-// the URL they failed on. That text reaches terminals and bug reports, so
-// doctor must never echo the secret — this guards the redaction.
-func TestRedactURLTokenRemovesSecret(t *testing.T) {
-	full := "https://ota.example.com/health?token=deadbeefcafe&x=1"
-	query := "token=deadbeefcafe&x=1"
-	text := `Get "https://ota.example.com/health?token=deadbeefcafe&x=1": dial tcp: no such host`
+// The relay token must travel in the Authorization header, never in the
+// /health URL: URLs reach proxy access logs, terminal error messages and bug
+// reports. This also proves doctor sends the header exactly once.
+func TestDoctorCheckHubUsesAuthorizationHeader(t *testing.T) {
+	const token = "deadbeefcafe"
+	var sawAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		if r.URL.RawQuery != "" {
+			t.Errorf("doctor put a query string on /health: %q", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"devices":[]}`))
+	}))
+	defer srv.Close()
 
-	got := redactURLToken(text, full, query)
-	if strings.Contains(got, "deadbeefcafe") {
-		t.Fatalf("token survived redaction: %q", got)
+	t.Setenv("COMPANION_RELAY_AGENTS_TOKEN", token)
+	if err := doctorCheckHub(srv.URL); err != nil {
+		t.Fatalf("doctorCheckHub: %v", err)
 	}
-	if !strings.Contains(got, "no such host") {
-		t.Fatalf("redaction ate the actual error: %q", got)
-	}
-	if !strings.Contains(got, "token=…") {
-		t.Fatalf("expected a placeholder in place of the token: %q", got)
+	if want := "Bearer " + token; sawAuth != want {
+		t.Fatalf("Authorization header = %q, want %q", sawAuth, want)
 	}
 }
 
-// No query (unauthenticated /health, or no token in the environment) means
-// nothing to redact and no reason to rewrite the message.
-func TestRedactURLTokenNoQueryIsPassthrough(t *testing.T) {
-	text := `Get "https://ota.example.com/health": no such host`
-	if got := redactURLToken(text, "https://ota.example.com/health", ""); got != text {
-		t.Fatalf("expected passthrough, got %q", got)
+// A rejected token gets the same liveness-only body as an unauthenticated
+// probe. Doctor must report that as a failed auth check, not "no devices
+// online", or an operator will debug the board instead of the token.
+func TestDoctorHubRejectsTokenThatGetsLivenessOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("Authorization"), "Bearer bad-token"; got != want {
+			t.Errorf("Authorization = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("COMPANION_RELAY_AGENTS_TOKEN", "bad-token")
+	if err := doctorCheckHub(srv.URL); err == nil {
+		t.Fatal("doctor accepted a liveness-only response after sending a token")
 	}
 }
 

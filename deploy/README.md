@@ -74,7 +74,7 @@ Sanity check from the same machine:
 
 ```bash
 curl -s http://127.0.0.1:8931/health                 # {"ok":true}
-curl -s "http://127.0.0.1:8931/health?token=$COMPANION_RELAY_AGENTS_TOKEN"
+curl -s -H "Authorization: Bearer $COMPANION_RELAY_AGENTS_TOKEN" "http://127.0.0.1:8931/health"
 ```
 
 To keep it running across reboots, install it as a service — see
@@ -85,9 +85,11 @@ To keep it running across reboots, install it as a service — see
 Agents and devices connect over **`wss://`**, so the hub must be reachable over
 TLS. Pick whichever fits your infrastructure:
 
-- **Cloudflare Tunnel** — no inbound ports, no certificate work:
-  `bash setup-tunnel.sh` (supports a quick throwaway URL for testing, or a
-  named tunnel for a real hostname).
+- **Cloudflare Tunnel** — no inbound ports and no server certificate to
+  manage. The board still needs a trust anchor: embed the CA that issued the
+  tunnel hostname's certificate in `RELAY_CA_CERT` (see step 4). `bash
+  setup-tunnel.sh` supports a quick throwaway URL for testing, or a named
+  tunnel for a real hostname.
 - **Your own reverse proxy** (nginx/Caddy/Traefik) — no script needed:
 
   ```caddy
@@ -111,11 +113,25 @@ Copy `companion-ide/esp32-bridge-firmware/RelayDevice/config.example.h` to
 #define RELAY_HOST    "ota.example.com"   // the TLS endpoint from step 3
 #define RELAY_PORT    443
 #define RELAY_TLS     true                // wss:// — required through a proxy
-#define DEVICE_ID     "esp32-bridge-01"   // unique per board
+// TLS is fail-closed: paste the PEM CA that signed ota.example.com. Public
+// hostnames usually need their issuer's root; a private proxy needs your CA.
+#define RELAY_CA_CERT "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+// Leave DEVICE_ID commented out: the firmware derives a unique
+// "relay-<MAC>" id. A literal copied to two boards makes them collide.
+// #define DEVICE_ID  "lab-relay-a"   // must be unique per board
 #define DEVICE_TOKEN  "<COMPANION_RELAY_DEVICES_TOKEN>"
 ```
 
-Flash it, then open the serial monitor. On first boot the firmware generates a
+Build and flash it with Companion — for example:
+
+```bash
+companion compile companion-ide/esp32-bridge-firmware/RelayDevice \
+  --fqbn esp32:esp32:esp32 --export-binaries
+companion upload --mcu esp32 --serial /dev/ttyUSB0 \
+  --binary companion-ide/esp32-bridge-firmware/RelayDevice/build/esp32.esp32.esp32/RelayDevice.bin
+```
+
+Then open the serial monitor. On first boot the firmware generates a
 per-device secret, stores it in NVS, and prints it once:
 
 ```
@@ -138,7 +154,8 @@ export COMPANION_RELAY_DEVICE_SECRET=...    # the SECRET the board printed
 
 companion relay devices --hub wss://ota.example.com      # is the board online?
 
-companion ota upload esp32-bridge-01 --ota-mode remote \
+# Use the id printed by `relay devices` (the default is relay-<MAC>).
+companion ota upload <device-id> --ota-mode remote \
   --relay-hub wss://ota.example.com \
   ./build/firmware.bin
 ```
@@ -147,10 +164,10 @@ Two other front doors onto the same relay:
 
 ```bash
 # one device, directly (secret from the env or --device-secret)
-companion relay push --hub wss://ota.example.com --device esp32-bridge-01 ./build/firmware.bin
+companion relay push --hub wss://ota.example.com --device <device-id> ./build/firmware.bin
 
 # a whole fleet — secrets come from the local registry, so register once:
-companion fleet register esp32-bridge-01 --secret-stdin      # paste the board's SECRET
+companion fleet register <device-id> --secret-stdin      # paste the board's SECRET
 companion fleet push ./build/firmware.bin --relay-hub wss://ota.example.com
 ```
 
@@ -175,7 +192,9 @@ nothing changes at the target end:
    #define RELAY_HOST        "ota.example.com"  // the TLS endpoint from step 3
    #define RELAY_PORT        443
    #define RELAY_TLS         true               // wss:// — required through a proxy
-   #define DEVICE_ID         "companion-bridge-01"
+   #define RELAY_CA_CERT     "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+   // Leave DEVICE_ID commented out; the bridge derives companion-bridge-<MAC>.
+   // #define DEVICE_ID      "companion-bridge-01"
    #define DEVICE_TOKEN      "<COMPANION_RELAY_DEVICES_TOKEN>"
    ```
 
@@ -190,7 +209,7 @@ nothing changes at the target end:
 
    companion upload --ota-mode remote \
      --relay-hub wss://ota.example.com \
-     --relay-device companion-bridge-01 \
+     --relay-device <device-id> \
      --mcu avr --fqbn arduino:avr:uno ./sketch
    ```
 
@@ -199,7 +218,7 @@ nothing changes at the target end:
 
    ```bash
    companion relay bridge --hub wss://ota.example.com \
-     --device companion-bridge-01 --listen 127.0.0.1:3333
+     --device <device-id> --listen 127.0.0.1:3333
 
    # another shell — identical to the LAN flow:
    companion upload --host 127.0.0.1 --port 3333 --mcu avr --fqbn arduino:avr:uno ./sketch
@@ -217,9 +236,9 @@ nothing changes at the target end:
 
 ---
 
-## Three ways in — pick the one you already use
+## Four ways in — pick the one you already use
 
-You do not need the Companion IDE. The relay is a protocol, and three standard
+You do not need the Companion IDE. The relay is a protocol, and four standard
 front doors speak it:
 
 **1. The CLI** (what the rest of this guide uses)
@@ -227,34 +246,33 @@ front doors speak it:
 ```bash
 export COMPANION_RELAY_AGENTS_TOKEN=...
 export COMPANION_RELAY_DEVICE_SECRET=...
-companion relay push --hub wss://ota.example.com --device esp32-node-01 firmware.bin
+companion relay push --hub wss://ota.example.com --device <device-id> firmware.bin
 ```
 
 **2. Any AI agent** — `companion mcp` exposes the same push as an MCP tool
 (`companion_relay_push`, `companion_relay_devices`). See [docs/MCP.md](MCP.md).
 
-**3. The Arduino toolchain.** Build with `arduino-cli` exactly as you always
-have, then hand the image to `companion relay push`:
+**3. The Companion build pipeline.** Build with `companion compile`, then hand
+the image to `companion relay push`:
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir ./out ./MySketch
-companion relay push --hub wss://ota.example.com --device esp32-node-01 ./out/MySketch.ino.bin
+companion compile ./MySketch --fqbn esp32:esp32:esp32 --export-binaries
+companion relay push --hub wss://ota.example.com --device <device-id> \
+  ./MySketch/build/esp32.esp32.esp32/MySketch.bin
 ```
 
-That two-step is the honest integration. `arduino-cli upload` itself cannot be
-used for a remote board: it requires a **local serial port** and configures it
-with an ioctl before running any upload command, so `upload_command=` fails
-without a real port attached — and a board on another continent has none. (This
-was tested three ways on arduino-cli 1.4.1: a `companion:` port scheme, no port,
-and `/dev/null`.) The Arduino **IDE** has the same constraint, since it uses
-arduino-cli underneath.
+Companion manages the board core, toolchain, and libraries through its own
+commands, so there is no separate Arduino IDE or `arduino-cli` install. The
+relay uploader also needs no local serial port: the board dials out to the hub.
+If you already have an image from another build system, pass that `.bin` to
+`companion relay push` directly.
 
 **4. A plugin, if you are writing a tool.** The relay is also an ordinary
 uploader plugin, so anything that consumes Companion's plugin API can select it:
 
 ```bash
 companion plugins list
-companion upload --uploader companion.uploader.relay --host esp32-node-01 \
+companion upload --uploader companion.uploader.relay --host <device-id> \
   --ota --ota-mode remote --binary firmware.bin
 ```
 
@@ -265,12 +283,14 @@ board-agnostic, so auto-selecting it would shadow the LAN uploader most people
 want.
 
 **Your own sketch can join the fleet.** `libraries/CompanionRelay` is an
-ordinary Arduino library — one `CompanionRelay.begin(cfg)` and a
-`CompanionRelay.loop()` make any ESP32 sketch remotely flashable, and the
-example under `libraries/CompanionRelay/examples/RelayBlink` is a complete
-starting point. It is the SAME code the two first-party sketches use
-(`shared/relay_link.h` forwards to it), so there is one implementation of the
-protocol, not three.
+ordinary Arduino library: one `CompanionRelay.begin(cfg)` and a
+`CompanionRelay.loop()` give an ESP32 sketch the authenticated relay transport.
+It is NOT an OTA implementation — the sketch must run `Update` and send the
+ArduinoOTA ACK/OK replies. Copy that state machine from `RelayDevice.ino`; the
+example under `libraries/CompanionRelay/examples/RelayBlink` only demonstrates
+the link and is not flashable. It is the SAME link the two first-party sketches
+use (`shared/relay_link.h` forwards to it), so there is one implementation of
+the protocol, not three.
 
 ---
 
@@ -337,7 +357,7 @@ you register devices:
 ```bash
 # 32 bytes as hex (openssl rand -hex 32) or a passphrase
 export COMPANION_FLEET_SECRET_KEY=$(openssl rand -hex 32)
-companion fleet register esp32-node-01 --secret-stdin
+companion fleet register <device-id> --secret-stdin
 ```
 
 From then on the file stores AES-GCM ciphertext (a fresh nonce per secret) and
@@ -443,11 +463,20 @@ first flash.
   board's id and receive its firmware.
 - **A device id belongs to one board.** Re-registering an id that is already
   online is only accepted with the *same* secret, so a stolen devices token
-  cannot evict the incumbent and impersonate it. Keep the default
-  MAC-derived id (it is unique per board); a fixed literal is what makes two
-  boards take turns evicting each other.
+  cannot evict the incumbent and impersonate it. The binding is persisted in a
+  private `~/.companion-cli/relay-secrets.json` (mode `0600`, override with
+  `--secrets-file`) so a hub restart does not forget it; keep that file with
+  your other hub secrets. Keep the default MAC-derived id (it is unique per
+  board); a fixed literal is what makes two boards take turns evicting each
+  other.
 - **No password, no OTA.** The relay authenticates the *transport*; if you also
   want ArduinoOTA password checking on the device, configure it in the sketch.
+- **MD5 is a corruption check, not a signature.** The relay reuses the
+  ArduinoOTA data phase (`Update.setMD5`) so a board can receive LAN and relay
+  pushes through the same state machine. TLS and the per-device secret protect
+  the path and the target; MD5 only catches a truncated or corrupted image.
+  A SHA-256 wire format would require a second digest field and a firmware-side
+  hasher, and would no longer be ArduinoOTA-compatible.
 
 ---
 

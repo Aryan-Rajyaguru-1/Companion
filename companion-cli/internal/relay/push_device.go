@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"time"
@@ -46,7 +47,8 @@ type PushRequest struct {
 // The whole exchange: dial the agent port, ask to be paired (online? not busy?
 // not paired elsewhere? secret matches?), stream the image in the
 // stop-and-wait frame size the board advertised, wait for its MD5-verified
-// "OK", then release the pairing.
+// "OK", then release the pairing. The digest is the ArduinoOTA corruption
+// check, not a firmware signature; see internal/ota/stream.go.
 func PushToDevice(ctx context.Context, req PushRequest) (DeviceInfo, error) {
 	var info DeviceInfo // Version/IP filled from the ack below
 	if req.Token == "" {
@@ -64,11 +66,15 @@ func PushToDevice(ctx context.Context, req PushRequest) (DeviceInfo, error) {
 		return info, fmt.Errorf("bad hub URL: %w", err)
 	}
 	u.Path = "/agent"
+	// A token supplied in a pasted hub URL must not survive into proxy logs,
+	// and authentication now travels only in the Authorization header.
 	q := u.Query()
-	q.Set("token", req.Token)
+	q.Del("token")
 	u.RawQuery = q.Encode()
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+req.Token)
 
-	ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	ws, _, err := websocket.DefaultDialer.Dial(u.String(), headers)
 	if err != nil {
 		return info, fmt.Errorf("dial hub agent port: %w", err)
 	}

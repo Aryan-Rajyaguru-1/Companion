@@ -269,26 +269,26 @@ func TestProbeUnreachable(t *testing.T) {
 
 // ── mDNS discovery parsing ──────────────────────────────────────
 // Regression test built from a verbatim captured ESP32 ArduinoOTA
-// answer (companion-000000, port 3232 → 192.168.4.1), whose SRV target
+// answer (companion-2EA7F4, port 3232 → 192.168.4.1), whose SRV target
 // is a bare hostname — the A record does NOT repeat the service
 // instance name, so IP attribution must follow the SRV target.
 //
 //   header: flags 8400, QD=0 AN=1 NS=0 AR=3
 func TestParseMDNSArduinoOTAAnswer(t *testing.T) {
-	// Captured 2026-09-13 from 192.168.4.1 answering a
-	// _arduino._tcp.local PTR query (193 bytes).
-	pkt := mustHex(t, "000084000000000100000003085f61726475696e6f045f746370056c6f63616c00000c000100001194001310636f6d70616e696f6e2d303030303030c00cc02b00210001000000780019000000000ca010636f6d70616e696f6e2d303030303030c01ac02b001000010000119400420e617574685f75706c6f61643d6e6f0d7373685f75706c6f61643d6e6f0c7463705f636865636b3d6e6f17626f6172643d646f697445535033326465766b69745631c05000010001000000780004c0a80401")
+	// Captured 2026-10-21 from 192.168.4.1 (ESP32 base MAC 88:57:21:2e:a7:f4)
+	// answering a _arduino._tcp.local PTR query (182 bytes).
+	pkt := mustHex(t, "000084000000000100000003085f61726475696e6f045f746370056c6f63616c00000c000100001194001310636f6d70616e696f6e2d324541374634c00cc02b00210001000000780019000000000ca010636f6d70616e696f6e2d324541374634c01ac02b001000010000119400370f617574685f75706c6f61643d7965730d7373685f75706c6f61643d6e6f0c7463705f636865636b3d6e6f0b626f6172643d6573703332c05000010001000000780004c0a80401")
 	records := map[string]*ServiceRecord{}
 	parseMDNSResponses(pkt, records)
-	rec, ok := records["companion-000000"]
+	rec, ok := records["companion-2EA7F4"]
 	if !ok {
 		t.Fatalf("instance record missing, got %v", records)
 	}
 	if rec.Port != 3232 {
 		t.Errorf("port = %d, want 3232", rec.Port)
 	}
-	if rec.Host != "companion-000000.local" {
-		t.Errorf("host = %q, want companion-000000.local", rec.Host)
+	if rec.Host != "companion-2EA7F4.local" {
+		t.Errorf("host = %q, want companion-2EA7F4.local", rec.Host)
 	}
 	if rec.IP != "192.168.4.1" {
 		t.Errorf("IP = %q, want 192.168.4.1 (A record follows SRV target, not instance)", rec.IP)

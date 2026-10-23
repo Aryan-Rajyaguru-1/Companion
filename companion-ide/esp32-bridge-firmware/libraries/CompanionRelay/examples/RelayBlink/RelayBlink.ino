@@ -1,12 +1,9 @@
-// RelayBlink — a sketch that can be re-flashed from anywhere on the internet.
+// RelayBlink — a link demonstration, NOT an OTA receiver.
 //
-// Build it however you like (Companion CLI, arduino-cli, Arduino IDE), then:
-//
-//   companion relay push --hub wss://ota.example.com \
-//     --device esp32-node-01 firmware.bin
-//
-// The board dials the hub outbound, so no inbound port is needed here and the
-// same command works from a laptop that is nowhere near the board.
+// Build it with Companion CLI (or any Arduino-compatible toolchain). It dials
+// the hub outbound and prints any binary frame it receives, but it does not
+// call Update/ACK, so `relay push` cannot flash it. See RelayDevice.ino for the
+// complete ArduinoOTA-compatible receiver.
 #include <Arduino.h>
 #include <CompanionRelay.h>
 
@@ -16,14 +13,17 @@
   #define LED_BUILTIN 2
 #endif
 
-// The hub validated this push with the board's per-device secret before any
-// bytes arrived; the library has already checked the framing and the image MD5.
+// The hub validated the sender with the board's per-device secret before any
+// bytes arrived, but this library only delivers frames: it has not begun an
+// update or verified the image. A real receiver hands these bytes to Update and
+// ACKs them; see RelayDevice.ino.
 static void onRelayFrame(uint8_t *data, size_t n) {
-  Serial.printf("[relay] received %u bytes of firmware\n", (unsigned)n);
-  // A real sketch would hand these to Update.begin()/Update.write() — see
-  // RelayDevice.ino in companion-ide/esp32-bridge-firmware for a complete
-  // OTA state machine. This example only proves the link works.
+  Serial.printf("[relay] received %u binary bytes\n", (unsigned)n);
   (void)data;
+}
+
+static void onRelayText(const String &text) {
+  Serial.printf("[relay] text: %s\n", text.c_str());
 }
 
 static void onRelayCommand(const char *kind) {
@@ -41,13 +41,18 @@ void setup() {
   cfg.relayHost    = "ota.example.com";
   cfg.relayPort    = 443;
   cfg.relayTLS     = true;
+  // REQUIRED for wss://: the PEM trust anchor for the hub's certificate.
+  // TLS is fail-closed — leaving this as a placeholder makes begin() refuse
+  // rather than silently call setInsecure().
+  cfg.caCert       = "YOUR_RELAY_CA_CERT";
   cfg.deviceToken  = "YOUR_DEVICE_TOKEN";
-  cfg.deviceId     = "esp32-node-01";  // unique per board
+  cfg.deviceId     = "";  // empty -> MAC-derived unique id
   cfg.onFrame      = onRelayFrame;
+  cfg.onText       = onRelayText;   // full control frame, including push_start
   cfg.onCommand    = onRelayCommand;
   CompanionRelay.begin(cfg);
 
-  Serial.println("[relay] blink running — this board is now remote-flashable");
+  Serial.println("[relay] blink running — link demo only (no OTA receiver)");
 }
 
 void loop() {

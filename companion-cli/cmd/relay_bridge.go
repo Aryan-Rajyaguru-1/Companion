@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"time"
@@ -42,10 +43,12 @@ func pairRelayBridge(hubBase, token, deviceID, secret string) (*websocket.Conn, 
 	}
 	u.Path = "/agent"
 	q := u.Query()
-	q.Set("token", token)
+	q.Del("token")
 	u.RawQuery = q.Encode()
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
 
-	ws, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	ws, _, err := websocket.DefaultDialer.Dial(u.String(), headers)
 	if err != nil {
 		return nil, fmt.Errorf("dial hub agent port: %w", err)
 	}
@@ -217,7 +220,7 @@ LOCAL TCP socket, so every tool that speaks the bridge protocol over TCP works
 unchanged against a bridge that is anywhere on the internet:
 
   companion relay bridge --hub wss://ota.example.com \
-    --device esp32-bridge-01 --listen 127.0.0.1:3333
+    --device <device-id> --listen 127.0.0.1:3333
 
   # then, unchanged from the LAN flow:
   companion upload --host 127.0.0.1 --port 3333 --fqbn arduino:avr:uno --mcu avr

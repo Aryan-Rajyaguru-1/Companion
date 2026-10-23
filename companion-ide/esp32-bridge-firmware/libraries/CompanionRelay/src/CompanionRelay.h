@@ -1,9 +1,13 @@
-// CompanionRelay.h — dial-out relay updates for ANY ESP32 sketch.
+// CompanionRelay.h — the dial-out relay transport for ESP32 sketches.
 //
 // This is the ONE implementation of the link: the first-party sketches
 // (RelayDevice, esp32_bridge) include the very same file from
 // esp32-bridge-firmware/shared/relay_link.h, and a third-party sketch uses the
 // library form below. One contract, one implementation, no drift.
+//
+// This file carries frames, authentication, provisioning and reconnects. It is
+// NOT an Update implementation: RelayDevice.ino owns the ArduinoOTA-compatible
+// Update/ACK state machine and is the reference for sketches that want OTA.
 //
 // The sketch configures it with a RelayLinkConfig (callback pointers, so no
 // name-based prototype conflicts with Arduino's auto-generated prototypes):
@@ -20,27 +24,34 @@
 //
 //   #include <CompanionRelay.h>
 //
-//   void onRelayFrame(uint8_t *data, size_t n) { /* the pushed bytes */ }
-//   void onRelayCommand(const char *kind)      { /* "start", "done", ... */ }
+//   void onRelayFrame(uint8_t *data, size_t n) { /* pushed bytes; own Update */ }
+//   void onRelayText(const String &text)       { /* full control frame */ }
+//   void onRelayCommand(const char *kind)      { /* convenience: kind only */ }
 //
 //   void setup() {
 //     CompanionRelayConfig cfg;
 //     cfg.wifiSSID = "your-ssid";  cfg.wifiPassword = "your-pass";
 //     cfg.relayHost = "ota.example.com"; cfg.relayPort = 443; cfg.relayTLS = true;
+//     cfg.caCert = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n";
 //     cfg.deviceToken = "<COMPANION_RELAY_DEVICES_TOKEN>";
-//     cfg.deviceId = "esp32-node-01";     // unique per board
-//     cfg.onFrame = onRelayFrame;         // required: receives the pushed image
-//     cfg.onCommand = onRelayCommand;     // optional: push_start / push_done
+//     cfg.deviceId = "";                  // empty -> derived from the MAC
+//     cfg.onFrame = onRelayFrame;         // required: receives binary frames
+//     cfg.onText = onRelayText;           // full TEXT frame, including push_start JSON
+//     cfg.onCommand = onRelayCommand;     // optional: control-frame kinds
 //     CompanionRelay.begin(cfg);           // joins WiFi, then dials the hub
 //   }
 //   void loop() { CompanionRelay.loop(); /* …or relayLinkLoop(); */ }
 //
-// Everything below is that implementation: the same link the two first-party
-// sketches use, so a third-party sketch behaves identically.
+// The sketch owns the OTA state machine: parse push_start from onText, call
+// Update, ACK each chunk and send the final OK. RelayDevice.ino is the complete
+// reference.
+// Everything below is the link both first-party sketches use.
 //
-// The board dials the hub OUTBOUND (wss://host:port/device?token=...), so no
-// inbound ports are needed anywhere, and the zombie-link watchdog (ping/pong,
+// The board dials the hub OUTBOUND (wss://host:port/device), so no inbound
+// ports are needed anywhere, and the zombie-link watchdog (ping/pong,
 // answered by the hub) re-dials when a connection dies without a close frame.
+// The role token travels in `Authorization: Bearer ...`, never in the URL:
+// URLs are copied into proxy/tunnel/access logs and serial consoles.
 
 #pragma once
 
@@ -113,6 +124,15 @@ struct RelayLinkConfig {
 #ifndef RELAY_TLS
   #define RELAY_TLS      false
 #endif
+// RELAY_CA_CERT is the PEM trust anchor used to verify a wss:// hub. TLS is
+// fail-closed: RELAY_TLS=true with an empty/placeholder CA refuses to dial.
+// This matters because ArduinoWebsockets calls setInsecure() when no CA is
+// configured — a silent "encrypted" connection anyone on the path can MITM.
+// The hub's public certificate is usually issued by a public CA; copy that
+// root (or the private CA that signed your hub) here.
+#ifndef RELAY_CA_CERT
+  #define RELAY_CA_CERT  ""
+#endif
 #ifndef DEVICE_TOKEN
   #define DEVICE_TOKEN   "YOUR_DEVICE_TOKEN"
 #endif
@@ -138,6 +158,7 @@ static unsigned long relayLastDialAttempt = 0;
 static unsigned long relayLastPingSent = 0;
 static unsigned long relayLastPong = 0;
 static bool relayAwaitingPong = false;
+static bool relayAuthHeaderSet = false; // addHeader appends; set it once
 static char relayDeviceSecret[33] = {0}; // per-board identity, NVS-provisioned once
 
 // relayDeviceId is what device_hello reports. It is a RUNTIME value, not the
@@ -154,32 +175,61 @@ static const char *relayWiFiSSID      = "";
 static const char *relayWiFiPassword  = "";
 static const char *relayHostOverride  = "";
 static const char *relayTokenOverride = "";
+static const char *relayCAOverride    = "";
 static int         relayPortOverride  = 0;
 static int         relayTLSOverride   = -1; // -1 unset, 0/1 explicit
 static bool        relayConfigWarned  = false; // the "not dialling" notice prints once
+// Library-form callbacks. The first-party sketches use RelayLinkConfig
+// directly; the struct form must still deliver onFrame/onText/onCommand or its
+// documented API would silently do nothing.
+static void (*relayFrameCallback)(uint8_t *, size_t) = nullptr;
+static void (*relayTextCallback)(const String &) = nullptr;
+static void (*relayCommandCallback)(const char *) = nullptr;
+static bool (*relayPushActiveCallback)() = nullptr;
 
-// macSuffix fills out with six hex characters from the last 3 MAC bytes.
+// relayMacSuffix fills out with six hex characters from the last 3 bytes of
+// the eFuse base MAC. Reading the eFuse directly works before WiFi starts and
+// in AP-only mode; WiFi.macAddress() returned 000000 for an uninitialised STA
+// interface, which made every AP-mode bridge advertise companion-000000.
 static void relayMacSuffix(char *out, size_t outLen) {
-  String mac = WiFi.macAddress();
-  const int pick[6] = {9, 10, 12, 13, 15, 16};
-  size_t n = 0;
-  for (int i = 0; i < 6 && n + 1 < outLen; i++) {
-    int idx = pick[i];
-    char c = (idx < (int)mac.length()) ? mac.charAt(idx) : '0';
-    if (c == ':') c = '0';
-    if (c >= 'a' && c <= 'f') c = (char)(c - 'a' + 'A');
-    out[n++] = c;
+  if (outLen == 0) return;
+  if (outLen < 7) {
+    out[0] = '\0';
+    return;
   }
-  out[n] = '\0';
+  // getEfuseMac() fills a uint64_t little-endian: byte 0 is the first MAC
+  // octet. The base MAC's last three octets are bits 24..47.
+  uint64_t mac = ESP.getEfuseMac();
+  snprintf(out, outLen, "%02X%02X%02X",
+           (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
 }
 
 static const char *relayLibraryVersion() { return FW_VERSION; }
-static bool relayNeverPushing() { return false; } // no OTA state machine here
-static void relayNoText(const String &) {}         // control frames unused
+static bool relayLibraryPushing() {
+  return relayPushActiveCallback != nullptr && relayPushActiveCallback();
+}
+
+// relayLibraryText delivers the complete control frame, then optionally the
+// kind as a convenience. An OTA receiver needs the whole frame: push_start's
+// size and md5 are in the JSON body, not in the kind. OTA state itself is the
+// sketch's job (this is a transport, not an Update implementation);
+// RelayDevice.ino is the reference receiver.
+static void relayLibraryText(const String &t) {
+  if (relayTextCallback != nullptr) relayTextCallback(t);
+  if (relayCommandCallback == nullptr) return;
+  StaticJsonDocument<128> d;
+  if (deserializeJson(d, t) != DeserializationError::Ok) return;
+  const char *kind = d["kind"] | "";
+  if (kind[0] != '\0') relayCommandCallback(kind);
+}
 
 // relayLibraryFrame feeds the pushed bytes to the sketch.
 static void relayLibraryFrame(WebsocketsMessage &msg) {
   const uint8_t *p = (const uint8_t *)msg.c_str();
+  if (relayFrameCallback != nullptr) {
+    relayFrameCallback((uint8_t *)p, msg.length());
+    return;
+  }
   extern void companionRelayDispatchFrame(uint8_t *data, size_t n);
   companionRelayDispatchFrame((uint8_t *)p, msg.length());
 }
@@ -193,7 +243,7 @@ __attribute__((weak)) void companionRelayDispatchFrame(uint8_t *data, size_t n) 
 static bool relaySendText(const String &s) { return relayWs.send(s); }
 
 static bool relaySendBinary(const void *p, size_t len) {
-  return relayWs.sendBinary((const uint8_t *)p, len);
+  return relayWs.sendBinary((const char *)p, len);
 }
 
 static void relaySendStatus(const char *msg) {
@@ -246,7 +296,7 @@ static void relayLoadOrCreateSecret() {
 //
 // This exists because of a real outage: a build assembled from a config.local.h
 // that only set one flag booted with NO WiFi and NO hub, and then dialled
-// `ws://YOUR_HUB_LAN_IP:8931/device?token=YOUR_DEVICE_TOKEN` every 5 seconds,
+// `ws://YOUR_HUB_LAN_IP:8931/device` (Authorization: Bearer token) every 5 seconds,
 // forever. From the outside that looks identical to "the hub is down" — the
 // board is simply never there. Placeholders are the compiler's fault for being
 // helpful: they let a sketch build before it is configured, so the firmware
@@ -272,11 +322,22 @@ static void relayLoadOrCreateSecret() {
 static const char *relayConfigProblem() {
   const char *host  = relayHostOverride[0]  ? relayHostOverride  : RELAY_HOST;
   const char *token = relayTokenOverride[0] ? relayTokenOverride : DEVICE_TOKEN;
+  int port = relayPortOverride > 0 ? relayPortOverride : RELAY_PORT;
+  bool tls = relayTLSOverride >= 0 ? (relayTLSOverride == 1) : (bool)RELAY_TLS;
   if (host[0] == '\0' || strncmp(host, "YOUR_", 5) == 0) {
     return "RELAY_HOST is not configured (still the placeholder) — copy config.example.h to config.local.h and set your hub";
   }
+  if (port <= 0 || port > 65535) {
+    return "RELAY_PORT must be 1..65535";
+  }
   if (token[0] == '\0' || strncmp(token, "YOUR_", 5) == 0) {
     return "DEVICE_TOKEN is not configured (still the placeholder) — it must equal COMPANION_RELAY_DEVICES_TOKEN on the hub";
+  }
+  if (tls) {
+    const char *ca = relayCAOverride[0] ? relayCAOverride : RELAY_CA_CERT;
+    if (ca[0] == '\0' || strncmp(ca, "YOUR_", 5) == 0) {
+      return "RELAY_TLS is enabled but RELAY_CA_CERT is empty — refusing to dial an unverified wss:// hub";
+    }
   }
   return nullptr; // no problem — nullptr, NOT ""
 }
@@ -295,6 +356,13 @@ static bool relayDial() {
     }
     return false;
   }
+  if (relayDeviceSecret[0] == '\0') {
+    if (!relayConfigWarned) {
+      relayConfigWarned = true;
+      Serial.println("[relay] NOT DIALING — device secret was not provisioned (NVS unavailable)");
+    }
+    return false;
+  }
   relayConfigWarned = false;
   relayLastDialAttempt = millis();
   // A fresh link starts with no outstanding ping: without this reset a pong
@@ -306,10 +374,21 @@ static bool relayDial() {
   // the two first-party sketches get from config.local.h).
   const char *host  = relayHostOverride[0]  ? relayHostOverride  : RELAY_HOST;
   const char *token = relayTokenOverride[0] ? relayTokenOverride : DEVICE_TOKEN;
+  const char *ca    = relayCAOverride[0]    ? relayCAOverride    : RELAY_CA_CERT;
   int port  = relayPortOverride > 0 ? relayPortOverride : RELAY_PORT;
   bool tls  = relayTLSOverride >= 0 ? (relayTLSOverride == 1) : (bool)RELAY_TLS;
-  String url = String(tls ? "wss://" : "ws://") + host + ":" +
-               String(port) + "/device?token=" + token;
+  String url = String(tls ? "wss://" : "ws://") + host + ":" + String(port) + "/device";
+  // Never include the token in the URL: it ends up in serial output, proxy
+  // logs and tunnel dashboards. ArduinoWebsockets carries it as a header
+  // below. The header is added once because addHeader() appends.
+  if (!relayAuthHeaderSet) {
+    String auth = String("Bearer ") + token;
+    relayWs.addHeader("Authorization", auth);
+    relayAuthHeaderSet = true;
+  }
+  if (tls) {
+    relayWs.setCACert(ca);
+  }
   Serial.printf("[relay] dialing %s ...\n", url.c_str());
   if (!relayWs.connect(url)) {
     Serial.println("[relay] ws connect FAILED — retrying in 5s");
@@ -331,7 +410,12 @@ static bool relayDial() {
   // discovery cannot always supply across a routed network.
   hello["ip"] = WiFi.localIP().toString();
   String out; serializeJson(hello, out);
-  relaySendText(out);
+  if (!relaySendText(out)) {
+    Serial.println("[relay] device_hello write FAILED — closing and retrying");
+    relayWsConnected = false;
+    relayWs.close();
+    return false;
+  }
   relayWsConnected = true;
   Serial.printf("[relay] registered as %s — waiting for pushes\n", relayDeviceId);
   return true;
@@ -378,12 +462,12 @@ static void relayDispatch(WebsocketsMessage msg) {
 
 // relayBegin wires the callbacks, provisions the secret and dials. Call from
 // setup() after WiFi is up.
-static void relayBegin(const RelayLinkConfig &cfg) {
+static bool relayBegin(const RelayLinkConfig &cfg) {
   relayCfg = cfg;
   relayLoadOrCreateSecret();
   relayWs.onMessage(relayDispatch);
   relayWs.onEvent(relayOnEvt);
-  relayDial();
+  return relayDial();
 }
 
 // relayLinkLoop: call from loop() — poll, the zombie-link watchdog and the
@@ -428,20 +512,34 @@ static void relayLinkLoop() {
 
 // CompanionRelayConfig is what a sketch fills in. Every field is explicit so a
 // third-party sketch has no hidden magic; the zero value is safe because
-// begin() refuses to dial with an empty host or device id.
+// begin() refuses to dial without a host and token. An empty/placeholder
+// deviceId is derived from the MAC instead of accepting a colliding literal.
 struct CompanionRelayConfig {
-  const char *wifiSSID;
-  const char *wifiPassword;
-  const char *relayHost;
-  int         relayPort;
-  bool        relayTLS;
-  const char *deviceToken;
-  const char *deviceId;   // unique per board
-  // onFrame receives the pushed image in ArduinoOTA data-phase framing. It is
-  // REQUIRED: without it a push would be accepted and then dropped silently.
-  void (*onFrame)(uint8_t *data, size_t n);
-  // onCommand reports control frames ("start", "done"); optional.
-  void (*onCommand)(const char *kind);
+  const char *wifiSSID = nullptr;
+  const char *wifiPassword = nullptr;
+  const char *relayHost = nullptr;
+  int         relayPort = 0;
+  bool        relayTLS = false;
+  const char *caCert = nullptr; // PEM trust anchor; REQUIRED when relayTLS is true
+  const char *deviceToken = nullptr;
+  const char *deviceId = nullptr; // unique per board
+  // onFrame receives bytes from a BINARY relay frame (a pushed image or UART
+  // data). It is REQUIRED: without it a push would be accepted and dropped
+  // silently. This library is the transport only; the sketch owns Update and
+  // the ACK/OK replies. RelayDevice.ino is the complete OTA reference.
+  void (*onFrame)(uint8_t *data, size_t n) = nullptr;
+  // onCommand reports the `kind` of a TEXT control frame ("push_start",
+  // "push_done", "status"); optional convenience. It receives only the kind;
+  // use onText when the body matters (push_start carries size and md5).
+  void (*onCommand)(const char *kind) = nullptr;
+  // pushActive lets an OTA sketch tell the link watchdog to stand down while
+  // it is writing/flashing. Optional; without it the watchdog keeps pinging.
+  bool (*pushActive)() = nullptr;
+  // onText receives the complete TEXT control frame before onCommand parses
+  // its kind. Optional for link-only sketches; an OTA receiver needs it because
+  // push_start's size and md5 live in the JSON body. The heartbeat pong is
+  // consumed internally.
+  void (*onText)(const String &text) = nullptr;
 };
 
 // The namespace object the README and the example sketch use.
@@ -454,16 +552,46 @@ struct CompanionRelayAPI {
       Serial.println("[relay] cfg.onFrame is required — a push would be dropped");
       return false;
     }
+    if (cfg.wifiSSID == nullptr || cfg.wifiSSID[0] == '\0') {
+      Serial.println("[relay] cfg.wifiSSID is required");
+      return false;
+    }
+    if (cfg.relayHost == nullptr || cfg.relayHost[0] == '\0' || strncmp(cfg.relayHost, "YOUR_", 5) == 0) {
+      Serial.println("[relay] cfg.relayHost is required (set your hub host)");
+      return false;
+    }
+    if (cfg.relayPort <= 0 || cfg.relayPort > 65535) {
+      Serial.println("[relay] cfg.relayPort must be 1..65535");
+      return false;
+    }
+    if (cfg.deviceToken == nullptr || cfg.deviceToken[0] == '\0' || strncmp(cfg.deviceToken, "YOUR_", 5) == 0) {
+      Serial.println("[relay] cfg.deviceToken is required (COMPANION_RELAY_DEVICES_TOKEN)");
+      return false;
+    }
+    if (cfg.relayTLS && (cfg.caCert == nullptr || cfg.caCert[0] == '\0' || strncmp(cfg.caCert, "YOUR_", 5) == 0)) {
+      Serial.println("[relay] cfg.relayTLS is true but cfg.caCert is empty — refusing an unverified hub");
+      return false;
+    }
     // The header is a copy of relay_link.h, which reads the RELAY_* macros.
     // Rather than require a preprocessor dance on the user, map the struct
     // onto the macros the implementation already uses.
     relayWiFiSSID     = cfg.wifiSSID;
-    relayWiFiPassword = cfg.wifiPassword;
+    relayWiFiPassword = cfg.wifiPassword != nullptr ? cfg.wifiPassword : "";
     relayHostOverride = cfg.relayHost;
     relayPortOverride = cfg.relayPort;
     relayTLSOverride  = cfg.relayTLS ? 1 : 0;
+    relayCAOverride   = (cfg.caCert != nullptr && cfg.caCert[0] != '\0') ? cfg.caCert : "";
     relayTokenOverride = cfg.deviceToken;
-    if (cfg.deviceId != nullptr && cfg.deviceId[0] != '\0') {
+    relayFrameCallback = cfg.onFrame;
+    relayTextCallback = cfg.onText;
+    relayCommandCallback = cfg.onCommand;
+    relayPushActiveCallback = cfg.pushActive;
+    // An empty id, the example placeholder, or the header's default means
+    // "derive from the MAC". A literal copied to several boards would make
+    // them supersede each other on the hub.
+    if (cfg.deviceId != nullptr && cfg.deviceId[0] != '\0' &&
+        strncmp(cfg.deviceId, "YOUR_", 5) != 0 &&
+        strcmp(cfg.deviceId, "companion-board") != 0) {
       strlcpy(relayDeviceId, cfg.deviceId, sizeof(relayDeviceId));
     } else {
       relayDeviceId[0] = '\0'; // derived from the MAC below
@@ -492,9 +620,10 @@ struct CompanionRelayAPI {
       Serial.printf("[relay] device id (from MAC): %s\n", relayDeviceId);
     }
 
-    RelayLinkConfig link = {relayLibraryVersion, relayNeverPushing, relayNoText, relayLibraryFrame};
-    relayBegin(link);
-    return true;
+    RelayLinkConfig link = {relayLibraryVersion, relayLibraryPushing, relayLibraryText, relayLibraryFrame};
+    // relayBegin returns relayDial()'s result; the watchdog still retries if
+    // this first attempt loses the handshake.
+    return relayBegin(link);
   }
 
   // loop must be called from the sketch's loop(): it polls the socket, runs the

@@ -63,6 +63,10 @@ same safety checks. Nothing is reimplemented for the agent's benefit.
   `COMPANION_RELAY_AGENTS_TOKEN` and `COMPANION_RELAY_DEVICE_SECRET` from the
   environment. No tool schema has a "secret" parameter, so an agent cannot leak
   one by mishandling it.
+- **Arguments are argv, not a shell.** Tool inputs are never interpolated into a
+  command string. Flags are emitted before positional arguments, `--` terminates
+  option parsing, and a board, port or fleet selector that looks like a flag is
+  rejected instead of being passed through.
 - **Bounded.** Every call has a timeout, a panic in a tool is reported as a
   tool error rather than killing the server, and one tool runs at a time.
 - **Local by default.** The server runs whatever the invoking user can run —

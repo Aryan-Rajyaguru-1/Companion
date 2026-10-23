@@ -11,19 +11,23 @@
 
 const { spawn } = require('child_process');
 const http      = require('http');
+const fs        = require('fs');
 const os        = require('os');
+const path      = require('path');
 
 const STARTUP_TIMEOUT_MS = 12_000;
 const PING_TIMEOUT_MS    =  3_000;
 const PORT_RE            = /COMPANION_DAEMON_PORT=(\d+)/;
-const TOKEN_RE           = /COMPANION_DAEMON_TOKEN=(\S+)/;
+const TOKEN_FILE_ENV     = 'COMPANION_DAEMON_TOKEN_FILE';
 
 class DaemonManager {
   constructor(binaryPath) {
     this._binary       = binaryPath;
     this._proc         = null;
     this._port         = null;
-    this._token        = null; // bearer token from COMPANION_DAEMON_TOKEN
+    this._token        = null; // bearer token read from the private token file
+    this._tokenDir     = null;
+    this._tokenFile    = null;
     this._ready        = false;
     this._starting     = false;
     this._startPromise = null;
@@ -35,21 +39,35 @@ class DaemonManager {
 
   // ── Public lifecycle ──────────────────────────────────────────
 
-  async start(onOutput = null) {
-    if (this._ready && this._port) return this._port;
+  start(onOutput = null) {
+    if (this._ready && this._port) return Promise.resolve(this._port);
     if (this._starting) return this._startPromise;
-    this._starting    = true;
-    this._onOutput    = onOutput;
-    this._startPromise = this._doStart();
-    try {
-      this._port  = await this._startPromise;
-      this._ready = true;
-      return this._port;
-    } catch (err) {
-      this._ready = false; this._port = null;
-      throw err;
-    } finally {
+    this._starting = true;
+    this._onOutput = onOutput;
+    // Resolve this promise only after _ready is set. Returning the raw
+    // _doStart() promise let a concurrent caller observe a port while the
+    // first caller had not yet marked the manager ready.
+    this._startPromise = this._startOnce().finally(() => {
       this._starting = false;
+    });
+    return this._startPromise;
+  }
+
+  async _startOnce() {
+    try {
+      const port = await this._doStart();
+      if (!this._proc || this._proc.exitCode !== null) {
+        throw new Error('Daemon exited before it became ready');
+      }
+      this._port = port;
+      this._ready = true;
+      return port;
+    } catch (err) {
+      this._ready = false;
+      this._port = null;
+      this._token = null;
+      this._cleanupTokenFile();
+      throw err;
     }
   }
 
@@ -61,6 +79,8 @@ class DaemonManager {
     this._inFlightReqs.clear();
     if (this._proc) { try { this._proc.kill('SIGTERM'); } catch {} }
     this._proc = null; this._port = null; this._ready = false;
+    this._token = null;
+    this._cleanupTokenFile();
   }
 
   isDaemonRunning() { return this._ready && this._port != null; }
@@ -163,7 +183,11 @@ class DaemonManager {
       // BUG A: store req so cancelCompile() can destroy it
       this._inFlightReqs.set(callId, req);
 
-      req.on('timeout', () => { req.destroy(); reject(new Error('Stream compile timeout')); });
+      req.on('timeout', () => {
+        this._inFlightReqs.delete(callId);
+        req.destroy();
+        reject(new Error('Stream compile timeout'));
+      });
       req.on('error', err => {
         this._inFlightReqs.delete(callId);
         if (err.code === 'ECONNRESET' || err.message.includes('socket hang up')) {
@@ -185,7 +209,7 @@ class DaemonManager {
   /** Returns the callId of the last started streaming call */
   getLastStreamCallId() { return this._callSeq; }
 
-  /** Bearer token captured from daemon startup output. */
+  /** Bearer token read from the private token file written by the daemon. */
   _authHeaders() {
     return this._token ? { Authorization: `Bearer ${this._token}` } : {};
   }
@@ -205,34 +229,114 @@ class DaemonManager {
   _doStart() {
     return new Promise((resolve, reject) => {
       let proc;
+      let tokenDir;
+      let tokenFile;
+      try {
+        // A private 0700 directory keeps the token off stdout and away from
+        // other users. The daemon writes the file before announcing its port,
+        // so the IDE can read it as soon as the port line arrives.
+        tokenDir  = fs.mkdtempSync(path.join(os.tmpdir(), 'companion-daemon-'));
+        tokenFile = path.join(tokenDir, 'auth-token');
+      } catch (err) {
+        return reject(new Error(`Failed to create daemon token directory: ${err.message}`));
+      }
+      this._tokenDir  = tokenDir;
+      this._tokenFile = tokenFile;
+      this._token     = null;
+
       try {
         proc = spawn(this._binary, ['daemon', '--port', '0'], {
-          env: { ...process.env },
+          env: { ...process.env, [TOKEN_FILE_ENV]: tokenFile },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
-      } catch (err) { return reject(new Error(`Failed to spawn daemon: ${err.message}`)); }
+      } catch (err) {
+        this._cleanupTokenFile();
+        return reject(new Error(`Failed to spawn daemon: ${err.message}`));
+      }
 
       this._proc = proc;
-      const timer = setTimeout(() => { proc.kill(); reject(new Error('Daemon startup timed out')); }, STARTUP_TIMEOUT_MS);
-      let found = false;
+      let startupBuf = '';
+      let settled = false;
+
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this._token = null;
+        this._cleanupTokenFile();
+        reject(err);
+      };
+      const succeed = (port) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(port);
+      };
+
+      const timer = setTimeout(() => {
+        try { proc.kill(); } catch {}
+        fail(new Error('Daemon startup timed out'));
+      }, STARTUP_TIMEOUT_MS);
 
       proc.stdout.on('data', chunk => {
         const text = chunk.toString();
         this._onOutput?.(`[daemon] ${text}`);
-        if (!this._token) {
-          const tm = TOKEN_RE.exec(text);
-          if (tm) this._token = tm[1];
-        }
-        if (!found) {
-          const m = PORT_RE.exec(text);
-          if (m && this._token) { found = true; clearTimeout(timer); resolve(parseInt(m[1], 10)); }
+        // Port and token can arrive in separate chunks, so match against the
+        // accumulated buffer rather than this chunk alone.
+        startupBuf += text;
+        const m = PORT_RE.exec(startupBuf);
+        if (!m || this._token) return;
+
+        try {
+          const token = fs.readFileSync(tokenFile, 'utf8').trim();
+          if (!token) throw new Error('token file was empty');
+          this._token = token;
+          succeed(parseInt(m[1], 10));
+        } catch (err) {
+          try { proc.kill(); } catch {}
+          fail(new Error(
+            `Daemon reported a port but did not write ${tokenFile} (${err.message}). ` +
+            'Rebuild companion-cli so it supports COMPANION_DAEMON_TOKEN_FILE.'));
         }
       });
 
-      proc.stderr.on('data',   chunk => { this._onOutput?.(`[daemon] ${chunk.toString()}`); });
-      proc.on('error', err  => { clearTimeout(timer); this._ready = false; this._port = null; if (!found) reject(err); });
-      proc.on('close', code => { clearTimeout(timer); this._ready = false; this._port = null; this._proc = null; if (!found) reject(new Error(`Daemon exited (code ${code}) before reporting port`)); });
+      proc.stderr.on('data', chunk => { this._onOutput?.(`[daemon] ${chunk.toString()}`); });
+      proc.on('error', err => {
+        // A process from a previous start must not clear the state of the
+        // daemon that replaced it (stop() → start() can overlap the old
+        // process's exit event).
+        if (this._proc === proc) {
+          this._ready = false;
+          this._port = null;
+          this._proc = null;
+        }
+        fail(err);
+      });
+      proc.on('close', code => {
+        const current = this._proc === proc;
+        if (current) {
+          this._ready = false;
+          this._port = null;
+          this._proc = null;
+        }
+        if (!settled) {
+          fail(new Error(`Daemon exited (code ${code}) before reporting port`));
+        } else if (current) {
+          // A daemon that exits after startup is no longer usable.
+          this._token = null;
+          this._cleanupTokenFile();
+        }
+      });
     });
+  }
+
+  _cleanupTokenFile() {
+    const dir = this._tokenDir;
+    this._tokenDir = null;
+    this._tokenFile = null;
+    if (dir) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
   }
 
   _jsonRpc(id, port, method, params, timeoutMs) {
@@ -261,7 +365,11 @@ class DaemonManager {
       });
 
       this._inFlightReqs.set(id, req);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Daemon RPC timeout')); });
+      req.on('timeout', () => {
+        this._inFlightReqs.delete(id);
+        req.destroy();
+        reject(new Error('Daemon RPC timeout'));
+      });
       req.on('error', err => { this._inFlightReqs.delete(id); reject(err); });
       req.write(body); req.end();
     });

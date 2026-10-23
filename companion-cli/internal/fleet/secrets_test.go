@@ -207,6 +207,27 @@ func TestLegacyGCM1StillDecrypts(t *testing.T) {
 	}
 }
 
+// The key is trimmed when the registry is written; decryption must apply the
+// same normalization or every value encrypted with COMPANION_FLEET_SECRET_KEY
+// ending in a newline (common in .env files) becomes undecryptable.
+func TestPassphraseWhitespaceIsTrimmedConsistently(t *testing.T) {
+	t.Setenv("COMPANION_FLEET_SECRET_KEY", "  correct horse battery staple\n")
+	enc, err := protectSecret("device-secret")
+	if err != nil {
+		t.Fatalf("protectSecret: %v", err)
+	}
+	if !strings.HasPrefix(enc, encPrefixKDF) {
+		t.Fatalf("expected a PBKDF2 value, got %q", enc[:8])
+	}
+	got, err := unprotectSecret(enc)
+	if err != nil {
+		t.Fatalf("unprotectSecret with trailing whitespace: %v", err)
+	}
+	if got != "device-secret" {
+		t.Fatalf("round trip = %q, want device-secret", got)
+	}
+}
+
 // A 32-byte key supplied by the operator is used verbatim, and is marked as
 // such so a later read does not try to stretch something that is not a
 // passphrase.

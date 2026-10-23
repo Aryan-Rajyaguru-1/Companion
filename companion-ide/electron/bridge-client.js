@@ -110,14 +110,26 @@ class BridgeClient {
         settle({ success: true });
       });
 
-      sock.on('data', (chunk) => this._onSerialData?.(chunk.toString()));
+      sock.on('data', (chunk) => {
+        // A socket that was replaced by a newer connect must not feed the
+        // current monitor (or the new socket's callback).
+        if (this._serialSock === sock) onData?.(chunk.toString());
+      });
 
       sock.on('error', (err) => {
-        this._serialSock = null;
+        if (this._serialSock === sock) this._serialSock = null;
         settle({ success: false, error: err.message });
       });
 
-      sock.on('close', () => { this._serialSock = null; });
+      // Only the socket that is still current may clear the field. The old
+      // unconditional handler ran after a reconnect and nulled the NEW socket,
+      // leaving send() silently doing nothing.
+      sock.on('close', () => {
+        if (this._serialSock === sock) {
+          this._serialSock = null;
+          this._onSerialData = null;
+        }
+      });
     });
   }
 
@@ -129,6 +141,7 @@ class BridgeClient {
       this._serialSock.destroy();
       this._serialSock = null;
     }
+    this._onSerialData = null;
   }
 
   send(data) {

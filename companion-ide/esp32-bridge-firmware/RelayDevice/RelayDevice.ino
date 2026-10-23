@@ -10,9 +10,10 @@
  *   1. Board joins the lab WiFi (STA) so it can reach the hub on the LAN.
  *   2. Hub runs on this laptop: `relay-hub -listen :8931 -devices-token X`
  *      (or the httptest hub; same protocol).
- *   3. Board dials ws://<hub>/device?token=X, sends device_hello.
+ *   3. Board dials ws://<hub>/device (Authorization: Bearer X), sends device_hello.
  *   4. Agent pushes ANY image (even this same sketch) via PushDevice.
- *   5. Board ACKs bare counts + bare OK, verifies MD5, prints verdict.
+ *   5. Board ACKs bare counts + bare OK, verifies the ArduinoOTA-compatible
+ *      MD5 (a corruption check, not a signature), prints verdict.
  *
  * Edit RELAY_HOST / WIFI_* / tokens before flashing for a given run.
  * The WiFi/dial/heartbeat/reconnect block lives ONCE, in
@@ -20,6 +21,7 @@
  */
 
 #include <Arduino.h>
+#include <ctype.h>
 #include <ArduinoJson.h>
 #include <Update.h>
 #include <WiFi.h>
@@ -40,11 +42,24 @@
 // the board is mis-provisioned, the only way back was a USB cable. With this
 // on, the same board can be re-flashed over WiFi with
 //   companion ota upload <board-ip> --ota-mode local
-// Default OFF: it is one more unauthenticated network service (ArduinoOTA has
-// no per-device secret of its own), so it stays opt-in.
+// Default OFF: it is one more network service (ArduinoOTA has no per-device
+// secret of its own), and it refuses to start without a configured password.
 #ifndef RELAY_LAN_OTA
   #define RELAY_LAN_OTA 0
 #endif
+// LAN OTA is fail-closed: enabling it without a real password disables the
+// service instead of starting an unauthenticated reflash endpoint.
+#ifndef RELAY_LAN_OTA_PASSWORD
+  #define RELAY_LAN_OTA_PASSWORD ""
+#endif
+static bool lanOtaPasswordUsable(const char *v) {
+  if (v == nullptr || strlen(v) < 8) return false;
+  if (strncmp(v, "YOUR_", 5) == 0) return false;
+  if (strncmp(v, "CHANGE_ME", 9) == 0) return false;
+  if (strcmp(v, "flashme!") == 0) return false;
+  return true;
+}
+static bool lanOtaStarted = false;
 
 // Generic esp32 core variants don't define LED_BUILTIN; the DevKit v1's
 // on-board LED sits on GPIO 2 (active-high).
@@ -68,7 +83,7 @@
   #define DEVICE_TOKEN  "YOUR_DEVICE_TOKEN"  // COMPANION_RELAY_DEVICES_TOKEN on the hub
 #endif
 #ifndef DEVICE_ID
-  #define DEVICE_ID     "esp32-bridge-01"   // example id — override in config.local.h
+  #define DEVICE_ID     "esp32-bridge-01"   // placeholder; setup() derives a MAC-suffixed id
 #endif
 #ifndef RELAY_TLS
   #define RELAY_TLS     false  // true → wss:// (Cloudflare tunnel, port 443)
@@ -106,48 +121,60 @@ static bool relayPushActiveFn() { return pushActive; }
 
 // onRelayText: control frames (push_start JSON). The heartbeat pong is
 // consumed inside relay_link.h before this runs.
-static void onRelayText(const String &t) {
-  if (t.indexOf("push_start") >= 0) {
-    StaticJsonDocument<256> d;
-    if (deserializeJson(d, t)) { relaySendStatus("bad push_start"); return; }
-    imgSize = (size_t)(long)d["size"];
-    // A push_start with no md5 (or a non-string value) used to go straight
-    // into strlcpy as NULL, which crashes the board — so one malformed frame
-    // from any paired agent killed the link until a manual reflash. Treat it
-    // as the protocol error it is.
-    const char *md5 = d["md5"] | "";
-    if (md5[0] == '\0') {
-      Serial.println("[relay] push_start missing md5 — rejecting");
-      relaySendStatus("push_start missing md5");
-      return;
-    }
-    if (imgSize == 0) {
-      Serial.println("[relay] push_start with size 0 — rejecting");
-      relaySendStatus("push_start with size 0");
-      return;
-    }
-    strlcpy(imgMD5, md5, sizeof(imgMD5));
-    Serial.printf("[relay] push_start size=%u md5=%s\n",
-                  (unsigned)imgSize, imgMD5);
-    // A push killed mid-stream (agent deadline, tunnel drop) leaves the
-    // updater holding a half-open session; Update.begin() then refuses
-    // every future push with "begin failed". Abort any stale session
-    // before starting fresh — self-heals without a power cycle.
-    if (pushActive || (!Update.isFinished() && Update.size() > 0)) {
-      Update.abort();
-      pushActive = false;
-      Serial.println("[relay] cleared stale OTA session");
-    }
-    if (!Update.begin(imgSize)) {
-      Serial.printf("[relay] Update.begin FAILED: %s\n",
-                    Update.errorString());
-      relaySendBinary("ERROR begin failed", strlen("ERROR begin failed"));
-      return;
-    }
-    Update.setMD5(imgMD5);
-    pushActive = true; written = 0; headerSeen = false;
-    relaySendStatus("update begun");
+static bool isMD5Hex(const char *s) {
+  if (s == nullptr || strlen(s) != 32) return false;
+  for (size_t i = 0; i < 32; i++) {
+    if (!isxdigit((unsigned char)s[i])) return false;
   }
+  return true;
+}
+
+static void onRelayText(const String &t) {
+  StaticJsonDocument<256> d;
+  if (deserializeJson(d, t)) return;
+  const char *kind = d["kind"] | "";
+  if (strcmp(kind, "push_start") != 0) return;
+
+  long announced = d["size"] | 0L;
+  // A push_start with no md5 (or a non-string value) used to go straight
+  // into strlcpy as NULL, which crashes the board — so one malformed frame
+  // from any paired agent killed the link until a manual reflash. Treat it
+  // as the protocol error it is. Validate the digest's exact shape too:
+  // strlcpy() would silently truncate a malformed value and Update.setMD5()
+  // would then compare against a digest that can never match.
+  const char *md5 = d["md5"] | "";
+  if (announced <= 0) {
+    Serial.println("[relay] push_start with invalid size — rejecting");
+    relaySendStatus("push_start with invalid size");
+    return;
+  }
+  if (!isMD5Hex(md5)) {
+    Serial.println("[relay] push_start has invalid md5 — rejecting");
+    relaySendStatus("push_start has invalid md5");
+    return;
+  }
+  imgSize = (size_t)announced;
+  strlcpy(imgMD5, md5, sizeof(imgMD5));
+  Serial.printf("[relay] push_start size=%u md5=%s\n",
+                (unsigned)imgSize, imgMD5);
+  // A push killed mid-stream (agent deadline, tunnel drop) leaves the
+  // updater holding a half-open session; Update.begin() then refuses
+  // every future push with "begin failed". Abort any stale session
+  // before starting fresh — self-heals without a power cycle.
+  if (pushActive || (!Update.isFinished() && Update.size() > 0)) {
+    Update.abort();
+    pushActive = false;
+    Serial.println("[relay] cleared stale OTA session");
+  }
+  if (!Update.begin(imgSize)) {
+    Serial.printf("[relay] Update.begin FAILED: %s\n",
+                  Update.errorString());
+    relaySendBinary("ERROR begin failed", strlen("ERROR begin failed"));
+    return;
+  }
+  Update.setMD5(imgMD5);
+  pushActive = true; written = 0; headerSeen = false;
+  relaySendStatus("update begun");
 }
 
 // onRelayBinary: raw firmware bytes (maybe header-prefixed first). Strict
@@ -246,13 +273,15 @@ void setup() {
   // Recovery path. Runs beside the relay, never instead of it: a board can be
   // updated over the LAN while the hub is unreachable, and over the relay
   // while this is off. The relay link still comes up below either way.
-  {
+  if (!lanOtaPasswordUsable(RELAY_LAN_OTA_PASSWORD)) {
+    Serial.println("[lanota] DISABLED: set RELAY_LAN_OTA_PASSWORD (8+ chars) in config.local.h");
+  } else {
+    char suffix[7];
+    relayMacSuffix(suffix, sizeof(suffix));
     char host[40];
-    snprintf(host, sizeof(host), "companion-%s", WiFi.macAddress().c_str() + 9);
+    snprintf(host, sizeof(host), "companion-%s", suffix);
     ArduinoOTA.setHostname(host);
-    // No password by default: ArduinoOTA's own auth is a shared secret in
-    // cleartext on the LAN, so leaving it empty is the honest choice for a
-    // trusted network, and a deployment that needs it sets RELAY_LAN_OTA_PASSWORD.
+    ArduinoOTA.setPassword(RELAY_LAN_OTA_PASSWORD);
     ArduinoOTA.onStart([]() { Serial.println("[lanota] update starting — relay link unaffected"); });
     ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
       static int lastPct = -1;
@@ -265,10 +294,23 @@ void setup() {
     ArduinoOTA.onEnd([]() { Serial.println("[lanota] update done — rebooting"); });
     ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[lanota] error %u\n", e); });
     ArduinoOTA.begin();
+    lanOtaStarted = true;
     Serial.printf("[lanota] LAN recovery service UP (hostname %s, port 3232)\n", host);
     Serial.println("[lanota] recover with: companion ota upload <ip> --ota-mode local");
   }
 #endif
+
+  // A fixed DEVICE_ID from config.local.h always wins. The example default is
+  // only a placeholder: replace it with a MAC-derived suffix so two boards
+  // copied from the same example cannot collide (and evict each other) on the
+  // hub.
+  if (strcmp(DEVICE_ID, "esp32-bridge-01") == 0) {
+    char suffix[7];
+    relayMacSuffix(suffix, sizeof(suffix));
+    snprintf(relayDeviceId, sizeof(relayDeviceId), "relay-%s", suffix);
+  } else {
+    strlcpy(relayDeviceId, DEVICE_ID, sizeof(relayDeviceId));
+  }
 
   relayBegin(relayLink);   // secret + callbacks + dial
 }
@@ -276,7 +318,7 @@ void setup() {
 void loop() {
   relayLinkLoop();   // poll + zombie-watchdog + re-dial (shared)
 #if RELAY_LAN_OTA
-  ArduinoOTA.handle();   // LAN recovery path (RELAY_LAN_OTA)
+  if (lanOtaStarted) ArduinoOTA.handle();   // LAN recovery path (RELAY_LAN_OTA)
 #endif
 
   // Built-in LED heartbeat, driven from the alive-logger tick: slow 2 Hz

