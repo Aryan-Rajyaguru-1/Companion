@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 #
 #   1. Builds the CLI from source if Go >= 1.18 is available, otherwise
-#      downloads the matching prebuilt binary from the v0.1.0-alpha release
+#      downloads the matching prebuilt binary from the latest release
 #   2. Installs it into <IDE>\bin\companion.exe - a location the IDE
 #      auto-detects (no PATH changes needed)
 #   3. Runs `companion config init` and downloads the board package index
@@ -50,14 +50,15 @@ if (-not $Built) {
     # Resolve the newest tag rather than pinning one: a hardcoded tag gives
     # testers a stale binary (or a 404) as soon as a new release ships.
     # Query /releases (a LIST), not /releases/latest: the "latest" endpoint
-    # deliberately skips PRERELEASES and v0.1.0-alpha is one, so it 404s.
+    # deliberately skips PRERELEASES and these alpha tags are prereleases,
+    # so it 404s.
     $Tag = $null
     try {
         $rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/Aryan-Rajyaguru-1/Companion/releases' `
                   -UseBasicParsing -Headers @{ 'User-Agent' = 'companion-setup' }
         if ($rels) { $Tag = @($rels)[0].tag_name }
     } catch { }
-    if (-not $Tag) { $Tag = 'v0.1.0-alpha'; Warn "could not resolve the latest tag - falling back to $Tag" }
+    if (-not $Tag) { $Tag = 'v0.3.4-alpha'; Warn "could not resolve the latest tag - falling back to $Tag" }
 
     $Url = "$Repo/releases/download/$Tag/$Asset"
     Say "Downloading prebuilt CLI ($Tag): $Asset"

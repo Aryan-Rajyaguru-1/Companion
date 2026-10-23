@@ -22,7 +22,7 @@
 
 Grab the release for your OS — CLI binaries for Windows/Linux/macOS, plus a Linux `.deb` and `.AppImage` for the IDE:
 
-**→ [Latest release (v0.1.0-alpha)](https://github.com/Aryan-Rajyaguru-1/Companion/releases/latest)**
+**→ [Latest release](https://github.com/Aryan-Rajyaguru-1/Companion/releases/latest)**
 
 Then run the one-command setup below — it builds the CLI from source if you have Go, or fetches the right prebuilt binary automatically.
 

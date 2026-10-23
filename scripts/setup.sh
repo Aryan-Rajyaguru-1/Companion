@@ -6,7 +6,7 @@
 #
 # Does everything the manual quick-start does:
 #   1. Builds the CLI from source if Go >= 1.18 is available, otherwise
-#      downloads the matching prebuilt binary from the v0.1.0-alpha release
+#      downloads the matching prebuilt binary from the latest release
 #   2. Installs it into <IDE>/bin/companion — a location the IDE
 #      auto-detects (no PATH changes needed)
 #   3. Runs `companion config init` and downloads the board package index
@@ -69,11 +69,11 @@ if [ "$BUILT" -eq 0 ]; then
   # gives testers an old binary (or a 404) as soon as a new release ships.
   #
   # Use /releases (a list), NOT /releases/latest — the "latest" endpoint
-  # deliberately skips PRERELEASES, and v0.1.0-alpha is one, so it 404s.
-  # The list is already newest-first.
+  # deliberately skips PRERELEASES, and these alpha tags are prereleases,
+  # so it 404s. The list is already newest-first.
   TAG="$(curl -fsSL "https://api.github.com/repos/Aryan-Rajyaguru-1/Companion/releases" 2>/dev/null \
         | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n1)"
-  [ -n "$TAG" ] || { TAG=v0.1.0-alpha; warn "could not resolve the latest tag — falling back to $TAG"; }
+  [ -n "$TAG" ] || { TAG=v0.3.4-alpha; warn "could not resolve the latest tag — falling back to $TAG"; }
   ASSET="companion-${GOOS}-${GOARCH}"
   say "Downloading prebuilt CLI ($TAG): $ASSET"
   curl -fsSL --retry 2 -o "$BIN" "$REPO/releases/download/$TAG/$ASSET" \
