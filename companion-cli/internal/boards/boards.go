@@ -1341,12 +1341,13 @@ func extractArchiveOpts(archivePath, destDir string, stripTop bool) error {
 
 // toolSystem returns the arduino-cli system string for the current OS/arch.
 // The host strings must match what Espressif/Arduino use in their package indexes:
-//   linux_aarch64      — ARM64 Linux (Jetson, RPi 64-bit, Apple M1 cross, etc.)
-//   arm-linux-gnueabihf — ARM 32-bit Linux (RPi 32-bit)
-//   x86_64-linux-gnu   — 64-bit Linux
-//   arm64-apple-darwin — Apple Silicon macOS
-//   x86_64-apple-darwin — Intel macOS
-//   i686-mingw32       — Windows
+//
+//	linux_aarch64      — ARM64 Linux (Jetson, RPi 64-bit, Apple M1 cross, etc.)
+//	arm-linux-gnueabihf — ARM 32-bit Linux (RPi 32-bit)
+//	x86_64-linux-gnu   — 64-bit Linux
+//	arm64-apple-darwin — Apple Silicon macOS
+//	x86_64-apple-darwin — Intel macOS
+//	i686-mingw32       — Windows
 func toolSystem() string {
 	switch {
 	case isLinuxARM64():

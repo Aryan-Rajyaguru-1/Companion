@@ -8,10 +8,11 @@
 //   - Each plugin registers capabilities; the IDE queries them at runtime
 //
 // Plugin types:
-//   UploaderPlugin    — custom upload strategies (OTA, JTAG, etc.)
-//   CompilerPlugin    — pre/post-process hooks around compilation
-//   BoardPlugin       — provides additional board definitions
-//   DiagnosticPlugin  — custom lint rules on top of GCC output
+//
+//	UploaderPlugin    — custom upload strategies (OTA, JTAG, etc.)
+//	CompilerPlugin    — pre/post-process hooks around compilation
+//	BoardPlugin       — provides additional board definitions
+//	DiagnosticPlugin  — custom lint rules on top of GCC output
 //
 // Plugins are discovered from ~/.companion-cli/plugins/ (Go plugin .so files)
 // and from a built-in registry for first-party extensions.

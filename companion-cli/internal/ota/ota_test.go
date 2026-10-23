@@ -273,7 +273,7 @@ func TestProbeUnreachable(t *testing.T) {
 // is a bare hostname — the A record does NOT repeat the service
 // instance name, so IP attribution must follow the SRV target.
 //
-//   header: flags 8400, QD=0 AN=1 NS=0 AR=3
+//	header: flags 8400, QD=0 AN=1 NS=0 AR=3
 func TestParseMDNSArduinoOTAAnswer(t *testing.T) {
 	// Captured 2026-10-21 from 192.168.4.1 (ESP32 base MAC 88:57:21:2e:a7:f4)
 	// answering a _arduino._tcp.local PTR query (182 bytes).

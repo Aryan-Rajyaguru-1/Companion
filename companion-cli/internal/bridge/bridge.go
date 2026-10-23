@@ -1,13 +1,14 @@
 // Package bridge implements the TCP client for the ESP32 WiFi bridge.
 //
 // Control protocol (must match esp32_bridge.ino):
-//   Prefix: 0xEF 0xBE <cmd> [payload]
-//   0x01 — Enter bootloader
-//   0x02 — Reset target
-//   0x03 — Release pins
-//   0x10 BBBBB — Set baud (uint32 big-endian)
-//   0x11 P — Set MCU profile (0=generic 1=ESP32 2=AVR 3=STM32)
-//   0x20 — Query status
+//
+//	Prefix: 0xEF 0xBE <cmd> [payload]
+//	0x01 — Enter bootloader
+//	0x02 — Reset target
+//	0x03 — Release pins
+//	0x10 BBBBB — Set baud (uint32 big-endian)
+//	0x11 P — Set MCU profile (0=generic 1=ESP32 2=AVR 3=STM32)
+//	0x20 — Query status
 package bridge
 
 import (
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -64,7 +66,7 @@ func New(host string, port int) *Client {
 
 // Connect opens the TCP connection.
 func (c *Client) Connect() error {
-	addr := fmt.Sprintf("%s:%d", c.host, c.port)
+	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
 	conn, err := net.DialTimeout("tcp", addr, 8*time.Second)
 	if err != nil {
 		return fmt.Errorf("cannot connect to bridge at %s — %w\n"+
