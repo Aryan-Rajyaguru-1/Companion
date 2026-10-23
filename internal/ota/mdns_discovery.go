@@ -39,6 +39,7 @@ const (
 // ServiceRecord is one OTA advertisement seen on the network.
 type ServiceRecord struct {
 	Name string // instance name (e.g. "companion bridge OTA")
+	Host string // SRV target hostname (e.g. "companion-000000.local")
 	IP   string // resolved A record (device IP)
 	Port int    // OTA TCP port
 }
@@ -79,7 +80,10 @@ func (w *dnsWriter) ptr(name, target string, ttl uint32) {
 	w.u16(mdnsTypePTR)
 	w.u16(mdnsClassCacheFlush)
 	w.u32(ttl)
+	rdlen := len(w.buf)
+	w.u16(0) // rdlen — patched below
 	w.name(target)
+	binary.BigEndian.PutUint16(w.buf[rdlen:], uint16(len(w.buf)-rdlen-2))
 }
 
 // srv writes a SRV answer (priority/weight 0).
@@ -88,10 +92,13 @@ func (w *dnsWriter) srv(name, target string, port uint16, ttl uint32) {
 	w.u16(mdnsTypeSRV)
 	w.u16(mdnsClassCacheFlush)
 	w.u32(ttl)
+	rdlen := len(w.buf)
+	w.u16(0) // rdlen — patched below (priority/weight/port + target)
 	w.u16(0)
 	w.u16(0)
 	w.u16(port)
 	w.name(target)
+	binary.BigEndian.PutUint16(w.buf[rdlen:], uint16(len(w.buf)-rdlen-2))
 }
 
 // txt writes a TXT record from key=value pairs.
@@ -271,30 +278,126 @@ func parseMDNSResponses(pkt []byte, records map[string]*ServiceRecord) {
 				if port, ok := r.u16(); ok {
 					rec.Port = int(port)
 				}
-				r.name() // SRV target hostname
+				if target, ok := r.name(); ok {
+					rec.Host = target
+				}
 			}
 		case mdnsTypeA:
-			if rec := records[instanceFromService(nm)]; rec != nil && rdend-r.off >= 4 {
-				rec.IP = net.IP(r.buf[r.off : r.off+4]).String()
+			if rdend-r.off >= 4 {
+				ip := net.IP(r.buf[r.off : r.off+4]).String()
+				host := strings.TrimSuffix(nm, ".local")
+				matched := false
+				for _, rec := range records {
+					if rec.IP == "" && (instanceFromService(nm) == rec.Name ||
+						rec.Host == nm || rec.Host == host ||
+						rec.Host == nm+".local") {
+						rec.IP = ip
+						matched = true
+					}
+				}
+				if !matched {
+					// Orphan A record: no instance named yet in this batch.
+					// Park it in the "" bucket; the sweep after the loop
+					// hands it to the first IP-less record.
+					if records[""] == nil {
+						records[""] = &ServiceRecord{Name: ""}
+					}
+					if records[""].IP == "" {
+						records[""].IP = ip
+						records[""].Host = nm
+					}
+				}
 			}
 		}
 		if r.off < rdend { // safety: never desync on unknown rdata
 			r.off = rdend
 		}
 	}
+	// Residual A records carried in packets that named no instance yet
+	// (rare: answers without their own PTR in the same window) land in
+	// the bucket and are handed to the first IP-less record.
+	if bucket := records[""]; bucket != nil {
+		for key, rec := range records {
+			if key != "" && rec.IP == "" && bucket.IP != "" {
+				rec.IP = bucket.IP
+			}
+		}
+		delete(records, "")
+	}
 }
 
 // ── queryMDNS — one-shot discovery (query side) ──────────────────
 
-// queryMDNS broadcasts one PTR question for _arduino._tcp.local and collects
-// answers for the listen window. Best-effort: returns whatever resolved.
+// queryMDNS broadcasts one mDNS PTR question for _arduino._tcp.local on
+// every multicast-capable interface and collects answers for the listen
+// window. Best-effort: returns whatever resolved.
+//
+// A laptop often has several interfaces (ethernet, WiFi to the bridge's
+// own hotspot, VPN/container bridges). The OS routes multicast out a
+// single default route, so a query bound without an interface never
+// reaches devices on the others — e.g. an ESP32 bridge whose AP the
+// laptop itself is connected to. One socket per interface fixes that.
 func queryMDNS(ctx context.Context, timeout time.Duration) []ServiceRecord {
-	pc, err := net.ListenMulticastUDP("udp4", nil, mdnsGroup())
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-	defer pc.Close()
 
+	var conns []*net.UDPConn   // per-interface multicast listeners
+	var writers []*net.UDPConn // ephemeral sockets bound per interface
+	for i := range ifaces {
+		ifc := ifaces[i]
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || !ip4.IsPrivate() {
+				continue
+			}
+			pc, err := net.ListenMulticastUDP("udp4", &ifc, mdnsGroup())
+			if err != nil {
+				continue // driver may refuse multicast here — skip
+			}
+			// Ephemeral query socket bound to this interface's address:
+			// multicast egresses the right link, and the answers come
+			// straight back here without sharing 224.0.0.251:5353.
+			wc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip4, Port: 0})
+			if err != nil {
+				pc.Close()
+				continue
+			}
+			conns = append(conns, pc)
+			writers = append(writers, wc)
+			break // one socket pair per interface
+		}
+	}
+	if len(conns) == 0 {
+		return nil
+	}
+	defer func() {
+		for _, pc := range conns {
+			pc.Close()
+		}
+		for _, wc := range writers {
+			wc.Close()
+		}
+	}()
+
+	// One question, one send per interface, and the ephemeral socket
+	// doubles as that interface's dedicated answer collector.
 	var w dnsWriter
 	w.u16(0) // transaction ID (0 = mDNS convention)
 	w.u16(0) // flags: standard query
@@ -304,27 +407,39 @@ func queryMDNS(ctx context.Context, timeout time.Duration) []ServiceRecord {
 	w.u16(0)
 	w.question(mdnsService, mdnsTypePTR)
 
-	addr := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsQueryPort}
-	_, _ = pc.WriteToUDP(w.buf, addr)
-
-	if timeout <= 0 {
-		timeout = 3 * time.Second
+	group := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsQueryPort}
+	for _, wc := range writers {
+		_, _ = wc.WriteToUDP(w.buf, group)
 	}
+
+	// Collect on every socket until the overall deadline. Each socket's
+	// read deadline is the shared deadline, so a silent interface costs
+	// nothing extra — the wait ends when every socket has timed out.
 	deadline := time.Now().Add(timeout)
-
 	records := make(map[string]*ServiceRecord)
-	buf := make([]byte, 9000)
-	for {
-		pc.SetReadDeadline(deadline)
-		n, _, err := pc.ReadFromUDP(buf)
-		if err != nil {
-			break // timeout — done collecting
-		}
-		parseMDNSResponses(buf[:n], records)
-		if ctx.Err() != nil {
-			break
-		}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, pc := range append(append([]*net.UDPConn{}, conns...), writers...) {
+		wg.Add(1)
+		go func(pc *net.UDPConn) {
+			defer wg.Done()
+			buf := make([]byte, 9000)
+			for {
+				pc.SetReadDeadline(deadline)
+				n, _, err := pc.ReadFromUDP(buf)
+				if err != nil {
+					return // deadline exceeded
+				}
+				mu.Lock()
+				parseMDNSResponses(buf[:n], records)
+				mu.Unlock()
+				if ctx.Err() != nil {
+					return
+				}
+			}
+		}(pc)
 	}
+	wg.Wait()
 
 	out := make([]ServiceRecord, 0, len(records))
 	for _, rec := range records {
@@ -359,7 +474,7 @@ func Serve(ctx context.Context, port int) error {
 	buf := make([]byte, 9000)
 	for {
 		pc.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		n, _, err := pc.ReadFromUDP(buf)
+		n, from, err := pc.ReadFromUDP(buf)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -380,7 +495,16 @@ func Serve(ctx context.Context, port int) error {
 		w.ptr(mdnsService, svcInst, 120)
 		w.srv(svcInst, hostFQDN, uint16(port), 120)
 		w.a(hostFQDN, ip, 120)
-		_, _ = pc.WriteToUDP(w.buf, &net.UDPAddr{IP: net.IPv4bcast, Port: mdnsQueryPort})
+		// Send both: multicast so every listener (including true mDNS
+		// stacks) caches the answer, and unicast back to the requester
+		// because our querier listens on its own ephemeral socket rather
+		// than sharing 224.0.0.251:5353 — a multicast-only answer never
+		// reaches it there.
+		mcast := mdnsGroup()
+		_, _ = pc.WriteToUDP(w.buf, mcast)
+		if from != nil && (from.Port != mdnsQueryPort || !from.IP.Equal(mcast.IP)) {
+			_, _ = pc.WriteToUDP(w.buf, from)
+		}
 		mu.Unlock()
 	}
 }

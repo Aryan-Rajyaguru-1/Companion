@@ -62,7 +62,7 @@ Examples:
 			if err != nil {
 				printError(fmt.Sprintf("Bridge unreachable: %v", err))
 				printStep("Check that the ESP32 bridge is powered and on the same WiFi network.")
-				printStep(fmt.Sprintf("AP mode default: SSID=ESP32-OTA  IP=%s  Port=%d", host, port))
+				printStep(fmt.Sprintf("AP mode: join the AP_SSID/AP_PASS set in config.local.h, then use %s:%d", host, port))
 				return fmt.Errorf("ping failed")
 			}
 

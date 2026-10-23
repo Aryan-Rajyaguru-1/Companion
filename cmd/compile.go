@@ -111,6 +111,7 @@ func newCompileCmd() *cobra.Command {
 		jsonOut    bool // #9
 		profileNam string
 		exportCC   bool
+		mainIno    string
 	)
 
 	cmd := &cobra.Command{
@@ -205,6 +206,7 @@ Examples:
 				ExportBinary:           exportBin,
 				LibraryDirs:            profileLibDirs(rp),
 				CaptureCompileCommands: exportCC,
+				MainIno:                mainIno,
 			})
 
 			// #9 — emit structured JSON diagnostics after human-readable output.
@@ -244,6 +246,10 @@ Examples:
 	// compile_commands.json export (Arduino-cli #849 parity)
 	cmd.Flags().BoolVar(&exportCC, "export-compile-commands", false,
 		"Write clangd-compatible compile_commands.json into the build directory")
+	// Sketch selection: compile one .ino file when a folder holds several
+	// independent sketches (each with its own setup()/loop()).
+	cmd.Flags().StringVar(&mainIno, "main-ino", "",
+		"Compile only this .ino file (basename), skipping sibling .ino sketches")
 
 	return cmd
 }

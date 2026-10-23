@@ -8,10 +8,11 @@
 //   - Each plugin registers capabilities; the IDE queries them at runtime
 //
 // Plugin types:
-//   UploaderPlugin    — custom upload strategies (OTA, JTAG, etc.)
-//   CompilerPlugin    — pre/post-process hooks around compilation
-//   BoardPlugin       — provides additional board definitions
-//   DiagnosticPlugin  — custom lint rules on top of GCC output
+//
+//	UploaderPlugin    — custom upload strategies (OTA, JTAG, etc.)
+//	CompilerPlugin    — pre/post-process hooks around compilation
+//	BoardPlugin       — provides additional board definitions
+//	DiagnosticPlugin  — custom lint rules on top of GCC output
 //
 // Plugins are discovered from ~/.companion-cli/plugins/ (Go plugin .so files)
 // and from a built-in registry for first-party extensions.
@@ -173,6 +174,18 @@ func (r *Registry) RegisterDiagnostic(p DiagnosticPlugin) { r.diagnostics = appe
 func (r *Registry) UploaderFor(fqbn string) UploaderPlugin {
 	for _, u := range r.uploaders {
 		if u.SupportsFQBN(fqbn) {
+			return u
+		}
+	}
+	return nil
+}
+
+// UploaderByID returns the registered uploader with this plugin id, or nil.
+// Selection by id is how the relay uploader is opted into without shadowing the
+// default LAN/ArduinoOTA uploader.
+func (r *Registry) UploaderByID(id string) UploaderPlugin {
+	for _, u := range r.uploaders {
+		if u.ID() == id {
 			return u
 		}
 	}

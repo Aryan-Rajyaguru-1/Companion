@@ -2,10 +2,10 @@
 //
 // Design mirrors arduino-cli's approach of replacing bare string errors with
 // machine-parseable codes + actionable suggestions — so the IDE can:
-//   1. Display error codes in the console (searchable in docs)
-//   2. Generate auto-fix suggestions without fragile regex
-//   3. Translate messages to other languages via code lookup
-//   4. Route errors to the right UI panel automatically
+//  1. Display error codes in the console (searchable in docs)
+//  2. Generate auto-fix suggestions without fragile regex
+//  3. Translate messages to other languages via code lookup
+//  4. Route errors to the right UI panel automatically
 //
 // Pattern from: arduino-cli/rpc/cc/arduino/cli/commands/v1/commands.proto
 package errors

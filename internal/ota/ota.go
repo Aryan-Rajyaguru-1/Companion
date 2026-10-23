@@ -17,7 +17,6 @@
 package ota
 
 import (
-	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/md5"
@@ -91,18 +90,42 @@ func Discover(ctx context.Context, timeout time.Duration) []Device {
 	return out
 }
 
-// Probe checks whether a device is listening on the OTA port.
-// A pure TCP connect suffices — ArduinoOTA accepts and times out idle peers.
+// Probe checks whether a device is running the ArduinoOTA service.
+// ArduinoOTA listens on UDP only — the TCP connection in an OTA session is
+// dialed by the device back to the *host* — so a TCP connect to the OTA
+// port is always refused and must not be used as a liveness check. Instead
+// send a real (harmless) UDP invite: any reply at all ("OK", "AUTH <nonce>",
+// or an error string) proves the service is alive. The invite uses port 0
+// and size 0, so a live device fails its own dial-back immediately and
+// touches no flash.
 func Probe(host string, port int) error {
 	if port <= 0 {
 		port = 3232
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 3*time.Second)
-	if err != nil {
-		return fmt.Errorf("no OTA server at %s:%d — is the device running a sketch with ArduinoOTA.begin()?",
-			host, port)
+	raddr := &net.UDPAddr{IP: net.ParseIP(host), Port: port}
+	if raddr.IP == nil {
+		return fmt.Errorf("invalid OTA device address %q", host)
 	}
-	conn.Close()
+	conn, err := net.DialTimeout("udp4", raddr.String(), 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("no route to OTA device at %s:%d", host, port)
+	}
+	defer conn.Close()
+	// "<cmd> 0 0 <md5-of-empty>" — well-formed, flashes nothing.
+	msg := fmt.Sprintf("%d 0 0 %s\n", CmdFlash, strings.Repeat("0", 32))
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		return fmt.Errorf("OTA probe write to %s:%d: %w", host, port, err)
+	}
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 128)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return fmt.Errorf("no OTA server at %s:%d — is the device running a sketch with ArduinoOTA.begin()?", host, port)
+	}
+	if reply := strings.TrimSpace(string(buf[:n])); strings.HasPrefix(reply, "Authentication Failed") {
+		// Alive but locked; still proof the service runs.
+		return nil
+	}
 	return nil
 }
 
@@ -184,8 +207,8 @@ func Push(ctx context.Context, opts Options) error {
 	opts.log(fmt.Sprintf("» OTA target: %s:%d  image: %d bytes (md5 %s…)",
 		opts.DeviceIP, port, size, md5sum[:12]))
 
-	inv, err := invite(ctx, opts.DeviceIP, port, hostPort, size, md5sum, opts.Password)
-	if err != nil {
+	// size+md5 already rode out in the UDP invite — no in-stream header.
+	if _, err := invite(ctx, opts.DeviceIP, port, hostPort, size, md5sum, opts.Password); err != nil {
 		return err
 	}
 	opts.log("» Device accepted OTA invitation")
@@ -207,12 +230,16 @@ func Push(ctx context.Context, opts Options) error {
 
 	// Overall transfer timeout so a stalled device cannot hang Push forever.
 	// 10 minutes covers large images on slow links; ctx cancellation (user
-	// abort) still aborts promptly via streamImage's ctx checks plus the
-	// per-operation read deadlines set there.
+	// abort) still aborts promptly via PushStream's ctx checks plus the
+	// per-operation deadlines set there.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	return streamImage(ctx, conn, img, size, inv, opts)
+	// size+md5 already rode out in the UDP invite — no in-stream header.
+	return PushStream(ctx, conn, img, size, &StreamOptions{
+		OnProgress: opts.OnProgress,
+		OnMessage:  opts.OnMessage,
+	})
 }
 
 // openImage opens the image, returning the reader, its MD5 and size.
@@ -346,128 +373,6 @@ func udpExchange(ctx context.Context, udp *net.UDPConn, payload []byte, timeout 
 		return "", fmt.Errorf("no answer from device (%v) — is it powered and on this network?", err)
 	}
 	return string(buf[:n]), nil
-}
-
-// streamImage serves the image to the device over the dial-back connection.
-func streamImage(ctx context.Context, conn net.Conn, img io.Reader, size int64,
-	_ inviteResult, opts Options) error {
-
-	opts.log("» Device connected — streaming image…")
-	// Abort a blocked ACK read promptly on cancellation: closing the conn
-	// unblocks the in-flight Read, and streamImage's ctx checks surface
-	// ctx.Err(). (Double Close with Push's deferred Close is harmless.)
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-done:
-		}
-	}()
-	reader := bufio.NewReader(conn)
-	buf := make([]byte, chunkSize)
-	var sent int64
-
-	for sent < size {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		n, rerr := img.Read(buf)
-		if n > 0 {
-			if err := conn.SetWriteDeadline(time.Now().Add(60 * time.Second)); err != nil {
-				return fmt.Errorf("set write deadline: %w", err)
-			}
-			if _, werr := conn.Write(buf[:n]); werr != nil {
-				return fmt.Errorf("write to device: %w", werr)
-			}
-			// ArduinoOTA ACKs every chunk with the count of bytes written.
-			// Per-operation read deadline: a wedged device must not stall
-			// the transfer past the overall Push timeout, and ctx
-			// cancellation closes in via the conn deadline expiring.
-			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-				return fmt.Errorf("set ACK read deadline: %w", err)
-			}
-			line, aerr := readACKLine(reader)
-			if aerr != nil {
-				return fmt.Errorf("device stopped ACKing at %d/%d bytes: %w", sent, size, aerr)
-			}
-			acked, perr := strconv.ParseInt(strings.TrimSpace(line), 10, 64)
-			if perr != nil || acked <= 0 {
-				// A non-numeric reply here is the device's error output.
-				return fmt.Errorf("device rejected data at offset %d: %q", sent, strings.TrimSpace(line))
-			}
-			sent += int64(n)
-			opts.progress(sent, size)
-		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
-			return fmt.Errorf("read image: %w", rerr)
-		}
-	}
-
-	// Final verdict: "OK" on success, error text otherwise.
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	final, err := readFinal(reader)
-	if err != nil {
-		return fmt.Errorf("no final device response: %w", err)
-	}
-	final = strings.TrimSpace(final)
-	if !strings.Contains(final, "OK") {
-		return fmt.Errorf("device reported failure: %s", final)
-	}
-	opts.progress(size, size)
-	opts.log(fmt.Sprintf("✓ OTA transfer complete — %d bytes written, device rebooting", size))
-	return nil
-}
-
-// readACKLine reads one ASCII acknowledgement from the device. ACKs are
-// decimal byte counts, usually newline-terminated; "OK" can also arrive
-// mid-stream and is returned verbatim so the caller can surface it.
-func readACKLine(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err == nil {
-		return line, nil
-	}
-	// Partial line without newline (device may ACK without terminator).
-	if len(line) > 0 {
-		// Give the peer a short grace period for the rest of the line.
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			b, berr := r.ReadByte()
-			if berr != nil {
-				break
-			}
-			if b == '\n' {
-				return line + "\n", nil
-			}
-			line += string(b)
-		}
-		return line, nil
-	}
-	return "", err
-}
-
-// readFinal collects the device's final response line(s).
-func readFinal(r *bufio.Reader) (string, error) {
-	var sb strings.Builder
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		b, err := r.ReadByte()
-		if err != nil {
-			if sb.Len() > 0 {
-				return sb.String(), nil
-			}
-			return "", err
-		}
-		if b == '\n' && sb.Len() > 0 {
-			break
-		}
-		sb.WriteByte(b)
-	}
-	return sb.String(), nil
 }
 
 // ── Auth helpers ──────────────────────────────────────────────────

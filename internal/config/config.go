@@ -77,6 +77,17 @@ type CompilerConfig struct {
 type UploadConfig struct {
 	AutoVerify bool `yaml:"auto_verify"`
 	Verbose    bool `yaml:"verbose"`
+	// OTA mode: "remote" (relay hub over the internet) or "local" (LAN
+	// ArduinoOTA). Defaults to "local" — a wireless board is normally on your
+	// own network, and defaulting to remote made a plain `upload --ota` fail
+	// with "needs --relay-hub". Remote is opt-in.
+	OTAMode string `yaml:"ota_mode,omitempty"`
+	// Bridge mode has its OWN key on purpose: it used to read ota_mode, so
+	// setting remote for OTA silently redirected LAN bridge uploads (Uno/Nano/
+	// STM32 through the ESP32 bridge) at a relay hub that was never involved.
+	// Values: "local" (default — dial the bridge on the LAN) or "remote"
+	// (pair with a bridge through the hub; `upload --ota-mode remote`).
+	BridgeMode string `yaml:"bridge_mode,omitempty"`
 }
 
 type BridgeConfig struct {
@@ -189,7 +200,9 @@ func Save(cfg *Config, path string) error {
 	}
 
 	header := []byte("# Companion CLI configuration file\n# Edit manually or use: companion config set <key> <value>\n\n")
-	return os.WriteFile(path, append(header, data...), 0o644)
+	// Audit F006: 0600, not 0644. No secrets live here today, but a future
+	// field (API key, credential) must never inherit world-readable perms.
+	return os.WriteFile(path, append(header, data...), 0o600)
 }
 
 // Init writes a default config to disk if it doesn't exist yet.

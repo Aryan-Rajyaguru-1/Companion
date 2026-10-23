@@ -15,9 +15,14 @@ import (
 
 // builtins returns the first-party plugins shipped with Companion.
 func builtins() []Plugin {
+	// Order matters: UploaderFor() returns the FIRST uploader claiming an
+	// FQBN, and the OTA uploader is what most users want by default. The relay
+	// uploader claims every core (the transport is board-agnostic), so it must
+	// come last and be selected explicitly with --uploader.
 	return []Plugin{
 		&metaExporter{},
 		&otaUploader{},
+		&relayUploader{},
 	}
 }
 

@@ -6,6 +6,22 @@ import (
 	"testing"
 )
 
+// Audit F006: config must be owner-only — a future secret field must never
+// inherit world-readable permissions.
+func TestSaveIsOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Save(testConfig(), path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config perms = %o, want 600", perm)
+	}
+}
+
 func testConfig() *Config {
 	return &Config{
 		Bridge: BridgeConfig{Host: "192.168.4.1", Port: 3333, Baud: 115200, MCU: "avr"},

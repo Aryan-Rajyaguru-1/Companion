@@ -6,7 +6,7 @@
 #
 # Does everything the manual quick-start does:
 #   1. Builds the CLI from source if Go >= 1.18 is available, otherwise
-#      downloads the matching prebuilt binary from the v0.1.0-alpha release
+#      downloads the matching prebuilt binary from the latest release
 #   2. Installs it into <IDE>/bin/companion — a location the IDE
 #      auto-detects (no PATH changes needed)
 #   3. Runs `companion config init` and downloads the board package index
@@ -22,6 +22,13 @@ ok()   { printf '%s\n' "${GREEN} ok${OFF}  $*"; }
 warn() { printf '%s\n' "${YELLOW} !!${OFF}  $*"; }
 die()  { printf '%s\n' "${RED} xx${OFF}  $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# sha256_of prints the SHA-256 of a file using whichever tool exists.
+sha256_of() {
+  if have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum;  then shasum -a 256 "$1" | awk '{print $1}'
+  else echo "unavailable"; fi
+}
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -56,10 +63,49 @@ if [ -n "$CLI_DIR" ] && have go; then
   fi
 fi
 if [ "$BUILT" -eq 0 ]; then
-  REL="https://github.com/Aryan-Rajyaguru-1/Companion/releases/download/v0.1.0-alpha/companion-${GOOS}-${GOARCH}"
   have curl || die "curl is required to download the CLI (or install Go 1.18+ and re-run)"
-  say "Downloading prebuilt CLI: $REL"
-  curl -fsSL --retry 2 -o "$BIN" "$REL" || die "Download failed. Install Go 1.18+ and re-run, or build manually: cd companion-cli && go build -o companion ."
+  REPO="https://github.com/Aryan-Rajyaguru-1/Companion"
+  # Resolve the newest tag instead of pinning one: a hardcoded tag silently
+  # gives testers an old binary (or a 404) as soon as a new release ships.
+  #
+  # Use /releases (a list), NOT /releases/latest — the "latest" endpoint
+  # deliberately skips PRERELEASES, and these alpha tags are prereleases,
+  # so it 404s. The list is already newest-first.
+  TAG="$(curl -fsSL "https://api.github.com/repos/Aryan-Rajyaguru-1/Companion/releases" 2>/dev/null \
+        | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n1)"
+  [ -n "$TAG" ] || { TAG=v0.3.4-alpha; warn "could not resolve the latest tag — falling back to $TAG"; }
+  ASSET="companion-${GOOS}-${GOARCH}"
+  say "Downloading prebuilt CLI ($TAG): $ASSET"
+  curl -fsSL --retry 2 -o "$BIN" "$REPO/releases/download/$TAG/$ASSET" \
+    || die "Download failed ($ASSET). Install Go 1.18+ and re-run, or build manually: cd companion-cli && go build -o companion ."
+
+  # Verify against the release's SHA256SUMS.txt. An interrupted download
+  # (proxy, flaky wifi) otherwise surfaces later as a mysterious exec failure
+  # or a half-written flash. The CLI verifies board archives the same way, so
+  # its own installer should not be the weak link.
+  SUMS="$(mktemp)"
+  if curl -fsSL --retry 2 -o "$SUMS" "$REPO/releases/download/$TAG/SHA256SUMS.txt" 2>/dev/null; then
+    # Match the NAME as everything after the hash, not as $2: the IDE
+    # installers are named "Companion IDE Setup 0.3.1-alpha.exe", so a
+    # field-based match silently found nothing for exactly the assets a
+    # human downloads by hand.
+    WANT="$(awk -v a="$ASSET" '{h=$1; $1=""; sub(/^[[:space:]]+/,""); sub(/^[*]/,""); if ($0 == a) print h}' "$SUMS" | head -n1)"
+    if [ -n "$WANT" ]; then
+      GOT="$(sha256_of "$BIN")"
+      if [ "$GOT" = "$WANT" ]; then
+        ok "SHA-256 verified"
+      else
+        rm -f "$BIN" "$SUMS"
+        die "SHA-256 mismatch for $ASSET (expected ${WANT:0:12}…, got ${GOT:0:12}…) — the download is corrupt, re-run this script"
+      fi
+    else
+      warn "release $TAG publishes no checksum for $ASSET — skipping verification"
+    fi
+  else
+    warn "could not fetch SHA256SUMS.txt — skipping verification"
+  fi
+  rm -f "$SUMS"
+
   chmod +x "$BIN"
   ok "CLI installed -> $BIN"
 fi
@@ -71,7 +117,11 @@ say "Downloading board package index (one-time, may take a moment)"
 "$BIN" board update-index >/dev/null 2>&1 && ok "board index cached" || warn "board index download failed (run '$BIN board update-index' later)"
 # Pre-install the default AVR platform so a fresh clone compiles the Uno
 # example immediately (first-run wall reported by testers).
-if "$BIN" board list 2>/dev/null | grep -q "arduino:avr"; then
+# Capture first, then grep: `... | grep -q` exits on the first match, which
+# SIGPIPEs `board list`; under `set -o pipefail` that non-zero status made the
+# test fail every time and reinstall the platform on every run.
+board_list=$("$BIN" board list 2>/dev/null || true)
+if printf '%s' "$board_list" | grep -q "arduino:avr"; then
   ok "arduino:avr platform already installed"
 else
   say "Installing default platform arduino:avr (one-time download)"
@@ -90,9 +140,10 @@ if [ -f "$IDE_DIR/package.json" ]; then
        $IDE_DIR/esp32-bridge-firmware/esp32_bridge
   2. Start the IDE:
        cd $IDE_DIR && npm run dev
-  3. Connect to the bridge WiFi (SSID: ESP32-OTA, password: flashme!)
-     and hit Upload. Edit WiFi credentials in
-       $IDE_DIR/esp32-bridge-firmware/esp32_bridge/config.local.h"
+  3. Set a unique AP_PASS (8+ chars) and your AP_SSID in
+       $IDE_DIR/esp32-bridge-firmware/esp32_bridge/config.local.h
+     flash, join that WiFi, then hit Upload. There is no default AP password;
+     the sketch refuses an open or placeholder AP."
 else
   ok "No IDE checkout found — CLI-only setup complete"
   NEXT_STEPS="The IDE (Electron app) was not found next to this script.

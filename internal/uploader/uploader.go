@@ -5,10 +5,13 @@ package uploader
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -101,59 +104,72 @@ func usbFlashOffset(mcu, fqbn string) string {
 // Works with native UART adapters and with the ESP32-S3/C3 USB-Serial-JTAG
 // peripheral (esptool handles entering download mode automatically).
 func (u *Uploader) uploadESPSerial(opts Options) error {
-	chip := ""
-	switch strings.ToLower(opts.MCU) {
-	case "esp8266":
-		chip = "esp8266"
-	default:
-		// Let esptool auto-detect (esp32/s3/s2/c3/c6…): passing a wrong
-		// --chip value is worse than detecting.
-		if strings.Contains(strings.ToLower(opts.FQBN), "esp32s3") {
-			chip = "esp32s3"
-		} else if strings.Contains(strings.ToLower(opts.FQBN), "esp32c3") {
-			chip = "esp32c3"
-		} else if strings.Contains(strings.ToLower(opts.FQBN), "esp32s2") {
-			chip = "esp32s2"
-		} else if strings.Contains(strings.ToLower(opts.FQBN), "esp32c6") {
-			chip = "esp32c6"
-		}
+	chip := espChipFromFQBN(opts.MCU, opts.FQBN)
+
+	esptoolCmd, resetStyle, err := resolveEsptoolPrefix(u.cfg)
+	if err != nil {
+		return err
+	}
+	// esptool 5.x renamed the reset strategies (default_reset → default-reset);
+	// match whichever tool we resolved.
+	before, after := "default_reset", "hard_reset"
+	if resetStyle == "hyphen" {
+		before, after = "default-reset", "hard-reset"
 	}
 
-	python := "python3"
-	if _, err := exec.LookPath("python3"); err != nil {
-		python = "python"
-	}
-
-	args := []string{"-m", "esptool"}
+	args := append([]string{}, esptoolCmd...)
 	if chip != "" {
 		args = append(args, "--chip", chip)
 	}
 	args = append(args,
 		"--port", opts.SerialPort,
 		"--baud", fmt.Sprintf("%d", opts.Baud),
-		"--before", "default_reset",
-		"--after", "hard_reset",
+		"--before", before,
+		"--after", after,
 		"write_flash",
-		"--flash_mode", "dio",
-		"--flash_size", "detect",
-		usbFlashOffset(opts.MCU, opts.FQBN), opts.BinaryPath,
 	)
 
-	u.log("» Running esptool over USB…")
-	cmd := exec.Command(python, args...)
-	var outBuf syncBuffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
-	runErr := cmd.Run()
+	// Full image set (bootloader + partition table + OTA selector + app) when
+	// the build produced arduino-cli's flash_args file — that is what makes a
+	// blank chip bootable. Otherwise write the app alone: correct for a board
+	// that already boots, insufficient for a factory-fresh chip, so say so.
+	if images, ok := readFlashArgs(opts.BinaryPath); ok {
+		args = append(args, images...)
+		u.log("» Running esptool over USB — full image set (bootloader + partitions + app)…")
+	} else {
+		manifest := filepath.Join(filepath.Dir(opts.BinaryPath), "flash_args")
+		if _, err := os.Lstat(manifest); !os.IsNotExist(err) {
+			return fmt.Errorf("invalid or unreadable flash_args at %s — rebuild the full image set before uploading", manifest)
+		}
+		if strings.HasSuffix(strings.ToLower(opts.BinaryPath), ".merged.bin") {
+			return fmt.Errorf("merged images cannot be flashed at an application offset; select the application image and its flash_args")
+		}
+		// `keep` uses the flash mode/frequency/size already baked into the
+		// image header by elf2image (read from boards.txt). Forcing values
+		// here — as the old code did with dio/detect — could contradict that
+		// header and mis-configure modules with quad/OCT flash.
+		args = append(args,
+			"--flash_mode", "keep",
+			"--flash_freq", "keep",
+			"--flash_size", "keep",
+			usbFlashOffset(opts.MCU, opts.FQBN), opts.BinaryPath,
+		)
+		u.log("» Running esptool over USB…")
+		u.log("  Note: application image only — bootloader/partition table untouched")
+		u.log("        (a board that already boots is fine; a blank chip needs the full set)")
+	}
 
-	for _, line := range outBuf.allLines() {
+	out, runErr := u.runTool("esptool-usb", esptoolCmd[0], args[1:]...)
+
+	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "%") || strings.Contains(line, "Hash of data") ||
-			strings.Contains(line, "Leaving") || strings.Contains(line, "Connecting") {
+			strings.Contains(line, "Leaving") || strings.Contains(line, "Connecting") ||
+			strings.Contains(line, "Chip is") {
 			u.log("  " + strings.TrimSpace(line))
 		}
 	}
 	if runErr != nil {
-		return fmt.Errorf("esptool failed:\n%s\n\nIf the board did not enter download mode, hold BOOT while it resets.", outBuf.string())
+		return fmt.Errorf("esptool failed:\n%s\n\nIf the board did not enter download mode, hold BOOT while it resets.", out)
 	}
 	return nil
 }
@@ -187,13 +203,12 @@ func (u *Uploader) uploadAVRSerial(opts Options) error {
 	}
 
 	u.log("» Running avrdude over USB…")
-	cmd := exec.Command("avrdude", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := u.runTool("avrdude-usb", "avrdude", args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "executable file not found") {
-			return fmt.Errorf("avrdude not found\nInstall it with: sudo apt install avrdude")
+			return fmt.Errorf("avrdude not found\n" + toolInstallHint("avrdude"))
 		}
-		return fmt.Errorf("avrdude failed:\n%s", string(out))
+		return fmt.Errorf("avrdude failed:\n%s", out)
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
@@ -203,6 +218,90 @@ func (u *Uploader) uploadAVRSerial(opts Options) error {
 		}
 	}
 	return nil
+}
+
+// toolTimeouts bound external flashing tools. Without them a tool with no
+// reachable peer (avrdude over net:, esptool over socket://) retries forever
+// and wedges the upload state; the deadline converts that into a clear
+// error. Generous enough for slow links and large images.
+var toolTimeouts = map[string]time.Duration{
+	"esptool-usb":      5 * time.Minute,
+	"esptool-wireless": 5 * time.Minute,
+	"avrdude-usb":      3 * time.Minute,
+	"avrdude-wireless": 3 * time.Minute,
+}
+
+// runTool executes an external flashing tool under a hard deadline.
+// On timeout the whole process GROUP is killed (some tools spawn helpers
+// that would otherwise inherit the pipe and keep it open), and the error
+// explains which stage hung so users can tell a wiring problem from a
+// wedged transfer.
+func (u *Uploader) runTool(tool string, name string, args ...string) (string, error) {
+	timeout, ok := toolTimeouts[tool]
+	if !ok {
+		timeout = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	// Own process group: lets the timeout kill the tool AND any child it
+	// spawned (unix only; Windows has no process groups).
+	setPgid(cmd)
+
+	var outBuf syncBuffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	runErr := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return outBuf.string(), fmt.Errorf(
+			"%s timed out after %s — %s", name, timeout, toolTimeoutHint(tool))
+	}
+	return outBuf.string(), runErr
+}
+
+// toolInstallHint returns a platform-appropriate install command for an
+// external flashing tool. Windows testers were previously told to run
+// `sudo apt install avrdude` and `pip install esptool` — commands that do not
+// exist on their machine, which reads as "this tool is broken".
+func toolInstallHint(name string) string {
+	switch name {
+	case "avrdude":
+		switch runtime.GOOS {
+		case "windows":
+			return "install avrdude — it ships with the Arduino IDE, or use `winget install avrdude`"
+		case "darwin":
+			return "brew install avrdude"
+		default:
+			return "sudo apt install avrdude   (or your distro's package manager)"
+		}
+	case "esptool":
+		switch runtime.GOOS {
+		case "windows":
+			return "py -m pip install esptool   (use `py` if `python3` is not on PATH)"
+		default:
+			return "python3 -m pip install esptool"
+		}
+	}
+	return name
+}
+
+// toolTimeoutHint turns a timeout into actionable advice per tool/stage.
+func toolTimeoutHint(tool string) string {
+	switch tool {
+	case "avrdude-wireless":
+		return "no answer over the bridge — check the target is powered, " +
+			"its boot pins are wired, and the bridge is reachable"
+	case "esptool-wireless":
+		return "no answer over the bridge — check the target is powered and " +
+			"the bridge profile/boot pins are correct"
+	case "avrdude-usb":
+		return "no sync on the serial port — is an AVR board attached and is " +
+			"another program using the port?"
+	default:
+		return "no response from the board — check the cable/port and retry"
+	}
 }
 
 // syncBuffer captures subprocess output line-by-line for post-run reporting.
@@ -310,17 +409,33 @@ func (u *Uploader) uploadESP(opts Options) error {
 	}
 
 	u.log("» Running esptool.py…")
-	cmd := exec.Command(python, args...)
 
 	if opts.Verbose {
+		// Live-stream mode: keep pipes attached so users see progress as it
+		// happens — still under the same hard deadline.
+		timeout, ok := toolTimeouts["esptool-wireless"]
+		if !ok {
+			timeout = 3 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, python, args...)
+		setPgid(cmd)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		if err := cmd.Run(); err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("esptool timed out after %s — %s",
+					timeout, toolTimeoutHint("esptool-wireless"))
+			}
+			return err
+		}
+		return nil
 	}
 
-	out, err := cmd.CombinedOutput()
+	out, err := u.runTool("esptool-wireless", python, args...)
 	if err != nil {
-		return fmt.Errorf("esptool failed:\n%s\n\nMake sure esptool is installed: pip install esptool", string(out))
+		return fmt.Errorf("esptool failed:\n%s\n\n"+toolInstallHint("esptool"), out)
 	}
 	// Print key lines
 	for _, line := range strings.Split(string(out), "\n") {
@@ -581,13 +696,12 @@ func (u *Uploader) uploadAVR(opts Options) error {
 	}
 
 	u.log("» Running avrdude…")
-	cmd := exec.Command("avrdude", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := u.runTool("avrdude-wireless", "avrdude", args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "executable file not found") {
-			return fmt.Errorf("avrdude not found\nInstall it with: sudo apt install avrdude")
+			return fmt.Errorf("avrdude not found\n" + toolInstallHint("avrdude"))
 		}
-		return fmt.Errorf("avrdude failed:\n%s", string(out))
+		return fmt.Errorf("avrdude failed:\n%s", out)
 	}
 
 	if opts.Verbose {

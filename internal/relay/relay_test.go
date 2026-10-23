@@ -1,0 +1,1075 @@
+package relay
+
+// End-to-end loopback test: a live hub over real WebSockets, with a
+// simulated device (speaking the ArduinoOTA bare-ACK wire protocol) and an
+// agent pushing a firmware image through PushDevice. Validates the whole
+// pairing/forwarding/data pipeline without hardware.
+
+import (
+	"bytes"
+	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/companion-ide/companion-cli/internal/ota"
+	"github.com/gorilla/websocket"
+)
+
+func bearerHeader(token string) http.Header {
+	h := http.Header{}
+	h.Set("Authorization", "Bearer "+token)
+	return h
+}
+
+func testHub(t *testing.T, cfg Config) *Hub {
+	t.Helper()
+	h, err := NewHub(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// fakeRemoteDevice behaves like an ESP32 running the relay firmware: it
+// registers, then during a push reads the header + chunks and replies with
+// bare decimal ACKs and a final bare "OK" — no newlines anywhere.
+type fakeRemoteDevice struct {
+	id       string
+	gotSize  int64
+	gotMD5   string
+	chunks   int
+	firmware []byte
+}
+
+func dialDevice(t *testing.T, url, token, id, secret string) (*websocket.Conn, *fakeRemoteDevice) {
+	t.Helper()
+	ws, _, err := websocket.DefaultDialer.Dial(url+"/device", bearerHeader(token))
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": id, "version": "1.0.3",
+		"secret":   secret,
+		"frame_kb": 8, // negotiated data-frame size, as the real firmware sends
+	})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("device hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("device welcome: %v", err)
+	}
+	var w map[string]any
+	json.Unmarshal(raw, &w)
+	if w["ok"] != true {
+		t.Fatalf("device not welcomed: %v", w)
+	}
+	return ws, &fakeRemoteDevice{id: id}
+}
+
+// runDeviceLoop consumes push_start, then the header + data frames, ACKing
+// bare counts and finishing with bare "OK" — mirroring the ESP32 Update
+// loop. `fail` makes it reject mid-stream with device error text. When done
+// is non-nil it is closed after the first completed push so the caller can
+// synchronize (e.g. send agent-side push_done before the second push).
+func runDeviceLoop(t *testing.T, ws *websocket.Conn, d *fakeRemoteDevice, fail bool, done chan<- struct{}) {
+	t.Helper()
+	ws.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		return
+	}
+	var start struct {
+		Kind string `json:"kind"`
+		Size int64  `json:"size"`
+		MD5  string `json:"md5"`
+	}
+	if err := json.Unmarshal(raw, &start); err != nil || start.Kind != KindPushStart {
+		t.Errorf("device: expected push_start, got %s", raw)
+		return
+	}
+	d.gotSize, d.gotMD5 = start.Size, start.MD5
+
+	written := int64(0)
+	firstDataFrame := true
+	for written < d.gotSize {
+		ws.SetReadDeadline(time.Now().Add(10 * time.Second))
+		_, payload, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+		// The agent's PushDevice prepends a "<size> <md5>\n" ASCII header on
+		// the data pipe; strip it (the real firmware does the same).
+		if firstDataFrame {
+			firstDataFrame = false
+			if idx := bytes.IndexByte(payload, '\n'); idx >= 0 && idx < 80 {
+				payload = payload[idx+1:]
+			}
+		}
+		n := int64(len(payload))
+		if n == 0 {
+			continue
+		}
+		if written+n > d.gotSize {
+			n = d.gotSize - written
+		}
+		d.firmware = append(d.firmware, payload[:n]...)
+		written += n
+		d.chunks++
+		if fail {
+			ws.WriteMessage(websocket.BinaryMessage, []byte("ERROR flash failed"))
+			return
+		}
+		// ACK the running byte total (bare decimal, no framing) — mirroring
+		// the ESP32 Update loop.
+		ws.WriteMessage(websocket.BinaryMessage, []byte(strconv.FormatInt(written, 10)))
+	}
+	sum := md5.Sum(d.firmware)
+	if hex.EncodeToString(sum[:]) != d.gotMD5 {
+		ws.WriteMessage(websocket.BinaryMessage, []byte("ERROR md5 mismatch"))
+		return
+	}
+	ws.WriteMessage(websocket.BinaryMessage, []byte("OK"))
+	// push_done (text control frame): explicit end-of-push signal so the hub
+	// clears the busy pairing — the device stays connected and immediately
+	// pushable again. Real firmware sends this right after its bare "OK".
+	doneMsg, _ := json.Marshal(map[string]string{"kind": KindPushDone})
+	ws.WriteMessage(websocket.TextMessage, doneMsg)
+	if done != nil {
+		d.chunks = 0 // fresh counters for the next push on this socket
+		d.firmware = nil
+		close(done)
+	}
+}
+
+// wsNetConn adapts one side of a websocket into a net.Conn for PushDevice:
+// Writes are binary frames; Reads return binary frame payloads.
+//
+// The pump feeds a channel (NOT an io.Pipe): the quiet-period timeout must
+// not poison the stream — after a timeout the next reply must still arrive.
+// (An earlier io.Pipe version closed the shared writer on timeout, killing
+// the pump and losing every later ACK.)
+type wsNetConn struct {
+	ws         *websocket.Conn
+	ch         chan []byte
+	done       chan struct{}
+	rdDeadline time.Time
+}
+
+// errWSTimeout fakes a net timeout error so relayReplyReader treats an
+// enforced read deadline as a quiet period, not a fatal error.
+type errWSTimeout struct{}
+
+func (errWSTimeout) Error() string   { return "ws read timeout" }
+func (errWSTimeout) Timeout() bool   { return true }
+func (errWSTimeout) Temporary() bool { return true }
+
+func newWSNetConn(ws *websocket.Conn) *wsNetConn {
+	c := &wsNetConn{ws: ws, ch: make(chan []byte, 64), done: make(chan struct{})}
+	go func() { // pump BINARY frames into the channel; swallow text/control
+		for {
+			mt, payload, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			if mt != websocket.BinaryMessage {
+				continue // protocol frame — never firmware bytes
+			}
+			select {
+			case c.ch <- payload:
+			case <-c.done:
+				return
+			}
+		}
+	}()
+	return c
+}
+
+func (c *wsNetConn) Read(b []byte) (int, error) {
+	// Channel pump with deadline: wait for the next payload, a close, or
+	// the reader's read deadline (PushDevice's quiet-period logic depends
+	// on timeouts surfacing as net timeout errors).
+	if c.rdDeadline.IsZero() {
+		select {
+		case p, ok := <-c.ch:
+			if !ok {
+				return 0, io.EOF
+			}
+			return copy(b, p), nil
+		case <-c.done:
+			return 0, io.EOF
+		}
+	}
+	d := time.Until(c.rdDeadline)
+	if d <= 0 {
+		return 0, errWSTimeout{}
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case p, ok := <-c.ch:
+		if !ok {
+			return 0, io.EOF
+		}
+		return copy(b, p), nil
+	case <-c.done:
+		return 0, io.EOF
+	case <-timer.C:
+		return 0, errWSTimeout{}
+	}
+}
+
+func (c *wsNetConn) Write(b []byte) (int, error) {
+	if err := c.ws.WriteMessage(websocket.BinaryMessage, b); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+func (c *wsNetConn) Close() error {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+	return c.ws.Close()
+}
+func (c *wsNetConn) LocalAddr() net.Addr                { return pipeAddr{} }
+func (c *wsNetConn) RemoteAddr() net.Addr               { return pipeAddr{} }
+func (c *wsNetConn) SetDeadline(t time.Time) error      { c.rdDeadline = t; return nil }
+func (c *wsNetConn) SetReadDeadline(t time.Time) error  { c.rdDeadline = t; return nil }
+func (c *wsNetConn) SetWriteDeadline(t time.Time) error { return nil }
+
+type pipeAddr struct{}
+
+func (pipeAddr) Network() string { return "pipe" }
+func (pipeAddr) String() string  { return "relay-data" }
+
+func md5sum(b []byte) string {
+	s := md5.Sum(b)
+	return hex.EncodeToString(s[:])
+}
+
+// agentPush drives the agent side: push_req → push_ack → the REAL
+// PushDevice() over the websocket data pipe. A FRESH agent socket is used per
+// push: the data-phase pump owns ReadMessage for the socket's lifetime, so a
+// second push on the same socket would have two competing readers.
+func agentPush(t *testing.T, wsURL, token, devID, devSecret string, img []byte) error {
+	t.Helper()
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/agent", bearerHeader(token))
+	if err != nil {
+		t.Fatalf("agent dial: %v", err)
+	}
+	defer ws.Close()
+	req, _ := json.Marshal(map[string]any{
+		"kind": KindPushReq, "device": devID, "secret": devSecret,
+		"size": len(img), "md5": md5sum(img),
+	})
+	if err := ws.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatalf("push_req: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("push_ack read: %v", err)
+	}
+	var ack struct {
+		Kind  string `json:"kind"`
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("push_ack parse: %v (%s)", err, raw)
+	}
+	// Offline/unknown device is a deliberate hub-level rejection: the hub
+	// answers push_result{ok:false} instead of push_ack, and no data socket
+	// is ever opened. Surface it as a clean Go error, not a test failure.
+	if ack.Kind == KindPushResult && !ack.OK {
+		return fmt.Errorf("hub rejected push: %s", ack.Error)
+	}
+	if ack.Kind != KindPushAck || !ack.OK {
+		t.Fatalf("expected push_ack ok, got %s", raw)
+	}
+	// Clear the push_ack deadline on the RAW socket, wrap it, and run the
+	// data phase — mirroring the real CLI: parse the negotiated frame size
+	// from push_ack and stream with it (8 KiB advertised, 1024 legacy).
+	ws.SetReadDeadline(time.Time{})
+	defer ws.Close()
+	frameKB := FrameKBFromAck(raw)
+	return PushDeviceStream(context.Background(), func() *wsNetConn {
+		c := newWSNetConn(ws) // …then spawn the pump with a clean slate
+		c.rdDeadline = time.Time{}
+		return c
+	}(), bytes.NewReader(img), int64(len(img)), &ota.StreamOptions{ChunkBytes: frameKB})
+}
+
+// TestFrameKBFromAck covers the negotiation parser: advertised values pass
+// through clamped to [1,8] KiB, and anything absent/garbage/zero keeps the
+// legacy 1024-byte frame (ChunkBytes 0 → PushStream's default).
+func TestFrameKBFromAck(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want int
+	}{
+		{"advertised 8 KiB", `{"ok":true,"device":"d","frame_kb":8}`, 8192},
+		{"advertised 1 KiB", `{"ok":true,"frame_kb":1}`, 1024},
+		{"over-ceiling clamped", `{"ok":true,"frame_kb":64}`, 8192},
+		{"absent keeps legacy", `{"ok":true,"device":"d"}`, 0},
+		{"zero keeps legacy", `{"ok":true,"frame_kb":0}`, 0},
+		{"garbage keeps legacy", `not json`, 0},
+	}
+	for _, tc := range cases {
+		if got := FrameKBFromAck([]byte(tc.json)); got != tc.want {
+			t.Errorf("%s: FrameKBFromAck = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDeviceHeartbeat: the hub must answer the board's zombie-link watchdog
+// ping with a pong — without it, a board that pings would tear down a healthy
+// link and re-dial forever.
+func TestDeviceHeartbeat(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{"kind": KindDeviceHello, "id": "hb-dev", "version": "1.0.3", "secret": "hb-secret"})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, raw, err := ws.ReadMessage(); err != nil {
+		t.Fatalf("welcome: %v", err)
+	} else if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("device not welcomed: %s", raw)
+	}
+
+	ping, _ := json.Marshal(map[string]string{"kind": KindPing})
+	if err := ws.WriteMessage(websocket.TextMessage, ping); err != nil {
+		t.Fatalf("ping write: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("pong read: %v", err)
+	}
+	if !strings.Contains(string(raw), "pong") {
+		t.Fatalf("expected pong for ping, got %s", raw)
+	}
+	// The device stays registered after the heartbeat.
+	if ids := hub.DeviceIDs(); len(ids) != 1 || ids[0] != "hb-dev" {
+		t.Fatalf("device lost after heartbeat: %v", ids)
+	}
+}
+
+// TestPipeMode: the bridge transport. pipe_req pairs WITHOUT push_start (the
+// device is a transparent byte relay — esptool/avrdude speak their own
+// protocol straight over the pipe), and binary flows BOTH directions.
+func TestPipeMode(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// The "bridge" device: registers, then echoes binary frames back — what
+	// esp32_bridge.ino does with UART data (and the control parser passes
+	// non-magic bytes straight to the target).
+	devWS, _ := dialDevice(t, wsURL, "dev-tok", "bridge-01", "bridge-secret")
+	defer devWS.Close()
+	echoDone := make(chan struct{})
+	go func() {
+		defer close(echoDone)
+		for i := 0; i < 3; i++ {
+			devWS.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, payload, err := devWS.ReadMessage()
+			if err != nil {
+				return
+			}
+			devWS.WriteMessage(websocket.BinaryMessage, payload) // echo
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(hub.DeviceIDs()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Wrong secret must be rejected without touching the device (checked
+	// BEFORE the valid pipe: the hub fails closed in order — busy first,
+	// then secret — so this needs a not-busy device).
+	agent2, _, _ := websocket.DefaultDialer.Dial(wsURL+"/agent", bearerHeader("agent-tok"))
+	defer agent2.Close()
+	req2, _ := json.Marshal(map[string]any{
+		"kind": KindPipeReq, "device": "bridge-01", "secret": "wrong",
+	})
+	agent2.WriteMessage(websocket.TextMessage, req2)
+	agent2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw2, err := agent2.ReadMessage()
+	if err != nil {
+		t.Fatalf("reject read: %v", err)
+	}
+	if !strings.Contains(string(raw2), "secret") {
+		t.Fatalf("expected secret rejection, got %s", raw2)
+	}
+
+	// Agent: pipe_req (NOT push_req) → push_ack → paired.
+	agent, _, err := websocket.DefaultDialer.Dial(wsURL+"/agent", bearerHeader("agent-tok"))
+	if err != nil {
+		t.Fatalf("agent dial: %v", err)
+	}
+	defer agent.Close()
+	req, _ := json.Marshal(map[string]any{
+		"kind": KindPipeReq, "device": "bridge-01", "secret": "bridge-secret",
+	})
+	if err := agent.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatalf("pipe_req: %v", err)
+	}
+	agent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := agent.ReadMessage()
+	if err != nil {
+		t.Fatalf("pipe_ack: %v", err)
+	}
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("pipe rejected: %s", raw)
+	}
+
+	// Bidirectional: agent → device → agent.
+	payload := []byte{0xEF, 0xBE, 0x20} // a bridge control frame (query)
+	if err := agent.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatalf("agent write: %v", err)
+	}
+	agent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, echoed, err := agent.ReadMessage()
+	if err != nil {
+		t.Fatalf("echo read: %v", err)
+	}
+	if !bytes.Equal(echoed, payload) {
+		t.Fatalf("echo mismatch: got %v, want %v", echoed, payload)
+	}
+	// The device is busy while piped; the agent's disconnect unpairs it.
+	if devs := hub.ListDevices(); len(devs) != 1 || !devs[0].Busy {
+		t.Fatalf("device should be busy during the pipe: %+v", devs)
+	}
+	agent.Close()
+	time.Sleep(200 * time.Millisecond)
+	if devs := hub.ListDevices(); len(devs) != 1 || devs[0].Busy {
+		t.Fatalf("agent disconnect should unpair: %+v", devs)
+	}
+	<-echoDone
+}
+
+func TestRelayEndToEnd(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// Two devices: one flashes successfully, one fails mid-push. The success
+	// Every device provisions a per-device secret: an empty one is now REFUSED
+	// at hello, because it used to mean "no check" and let anyone holding the
+	// devices token claim the board's id.
+	devWS, dev := dialDevice(t, wsURL, "dev-tok", "dev-alpha", "s3cr3t-alpha")
+	defer devWS.Close()
+	go runDeviceLoop(t, devWS, dev, false, nil)
+
+	failWS, failDev := dialDevice(t, wsURL, "dev-tok", "dev-beta", "s3cr3t-beta")
+	defer failWS.Close()
+	go runDeviceLoop(t, failWS, failDev, true, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(hub.DeviceIDs()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ids := hub.DeviceIDs(); len(ids) != 2 {
+		t.Fatalf("expected 2 registered devices, got %v", ids)
+	}
+
+	// Authed /health lists both devices with their busy flags.
+	req, _ := http.NewRequest("GET", srv.URL+"/health", nil)
+	req.Header.Set("Authorization", "Bearer agent-tok")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	var health struct {
+		OK      bool         `json:"ok"`
+		Devices []DeviceInfo `json:"devices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatalf("health parse: %v", err)
+	}
+	resp.Body.Close()
+	if !health.OK || len(health.Devices) != 2 {
+		t.Fatalf("expected authed health with 2 devices, got %+v", health)
+	}
+	// Unauthenticated callers get liveness only — no device inventory.
+	resp2, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("unauth health: %v", err)
+	}
+	var bare map[string]any
+	if err := json.NewDecoder(resp2.Body).Decode(&bare); err != nil {
+		t.Fatalf("unauth health parse: %v", err)
+	}
+	resp2.Body.Close()
+	if _, hasDevices := bare["devices"]; hasDevices {
+		t.Fatalf("unauthenticated /health must not list devices: %v", bare)
+	}
+
+	img := make([]byte, 64*1024) // 64 chunks at 1 KiB
+	for i := range img {
+		img[i] = byte(i*7 + i>>8)
+	}
+
+	// 1. Success path: real PushDevice over the relay (with device secret).
+	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha", "s3cr3t-alpha", img); err != nil {
+		t.Fatalf("PushDevice success path: %v", err)
+	}
+	if !bytes.Equal(dev.firmware, img) {
+		t.Fatalf("device firmware mismatch: got %d bytes, want %d", len(dev.firmware), len(img))
+	}
+	// The device advertises frame_kb=8 at hello and the hub relays it in
+	// push_ack, so the agent streamed 8 KiB frames: 64 KiB / 8 KiB = 8
+	// frames, not the 64 the legacy 1 KiB frame size would produce.
+	if dev.chunks != 8 {
+		t.Errorf("negotiated frame size not used: device saw %d frames, want 8 (8 KiB each)", dev.chunks)
+	}
+	t.Logf("✓ success path: %d bytes in %d frames (negotiated 8 KiB), md5 verified by device", len(img), dev.chunks)
+
+	// 1b. Secret gate: wrong secret is rejected without touching the device.
+	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha", "wrong-secret", img); err == nil {
+		t.Fatal("expected wrong-secret push to be rejected, got nil")
+	} else if !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("expected secret rejection, got: %v", err)
+	}
+	t.Logf("✓ per-device secret enforced")
+
+	// 2. Failure path: device rejects mid-stream → error surfaces.
+	err = agentPush(t, wsURL, "agent-tok", "dev-beta", "s3cr3t-beta", img)
+	if err == nil {
+		t.Fatal("expected failure-path push to error, got nil")
+	}
+	if !strings.Contains(err.Error(), "flash failed") {
+		t.Fatalf("expected device error text in failure, got: %v", err)
+	}
+	t.Logf("✓ failure path surfaced correctly: %v", err)
+
+	// 3. Offline path: unknown device id fails cleanly.
+	err = agentPush(t, wsURL, "agent-tok", "dev-ghost", "", img)
+	if err == nil {
+		t.Fatal("expected offline-path push to error, got nil")
+	}
+	t.Logf("✓ offline path surfaced correctly: %v", err)
+
+	// 4. push_done clears the pairing: after a completed push the same device
+	// is immediately pushable again without a reconnect. The CLI-side agent
+	// sends push_done right after PushDevice sees "OK" (mirroring what the
+	// real `relay push` command does), so simulate that here too.
+	devWS2, dev2 := dialDevice(t, wsURL, "dev-tok", "dev-alpha2", "s3cr3t-alpha2")
+	defer devWS2.Close()
+	firstDone := make(chan struct{})
+	go func() {
+		runDeviceLoop(t, devWS2, dev2, false, firstDone)
+		runDeviceLoop(t, devWS2, dev2, false, nil)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	small := img[:4096]
+	sendAgentPushDone := func() {
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/agent", bearerHeader("agent-tok"))
+		if err != nil {
+			t.Fatalf("push_done agent dial: %v", err)
+		}
+		defer ws.Close()
+		done, _ := json.Marshal(map[string]string{"kind": KindPushDone})
+		ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if err := ws.WriteMessage(websocket.TextMessage, done); err != nil {
+			t.Fatalf("push_done write: %v", err)
+		}
+	}
+	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha2", "s3cr3t-alpha2", small); err != nil {
+		t.Fatalf("first push for push_done check: %v", err)
+	}
+	// The device's own push_done already cleared the hub pairing; the
+	// agent-side push_done (what real `relay push` sends) is idempotent.
+	// Wait for the device loop to finish the first push before asserting.
+	select {
+	case <-firstDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("device did not finish first push")
+	}
+	sendAgentPushDone()
+	if err := agentPush(t, wsURL, "agent-tok", "dev-alpha2", "s3cr3t-alpha2", small); err != nil {
+		t.Fatalf("second push after push_done should succeed, got: %v", err)
+	}
+	t.Logf("✓ push_done clears pairing: same device pushable twice in a row")
+}
+
+// TestEmptySecretRejectedAtHello: a device that presents no secret is refused
+// outright. An empty secret used to mean "no check" — Pair skipped
+// verification, so anyone holding the devices token could register a board with
+// an empty secret and receive its firmware (or, in pipe mode, its raw UART).
+func TestEmptySecretRejectedAtHello(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "no-secret", "version": "1.0.3",
+	})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected a refusal frame, got read error: %v", err)
+	}
+	if !strings.Contains(string(raw), "secret") {
+		t.Fatalf("expected a secret-related refusal, got: %s", raw)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(hub.DeviceIDs()) > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ids := hub.DeviceIDs(); len(ids) != 0 {
+		t.Fatalf("empty-secret device must not be registered, got %v", ids)
+	}
+	t.Logf("✓ empty secret refused at hello, device not registered")
+}
+
+// TestImpostorCannotStealDeviceID: re-registration by id is legitimate (a
+// reconnect after a drop) — but only from the same board. Superseding on id
+// alone let any holder of the devices token evict the incumbent, take its id,
+// and receive its pushes.
+func TestImpostorCannotStealDeviceID(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// The real board registers and stays online.
+	realWS, real := dialDevice(t, wsURL, "dev-tok", "target-dev", "real-secret")
+	defer realWS.Close()
+	go runDeviceLoop(t, realWS, real, false, nil)
+	deadline0 := time.Now().Add(5 * time.Second)
+	for len(hub.DeviceIDs()) < 1 && time.Now().Before(deadline0) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(hub.DeviceIDs()) != 1 {
+		t.Fatalf("real board did not register: %v", hub.DeviceIDs())
+	}
+
+	// An attacker holding the devices token registers the SAME id, with an empty
+	// secret and with a different one. Each attempt gets a fresh socket: a
+	// refusal ends the connection (the hub nudges and hangs up), so the next
+	// attempt must not reuse it.
+	for _, secret := range []string{"", "attacker-secret"} {
+		impostor, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+		if err != nil {
+			t.Fatalf("impostor dial: %v", err)
+		}
+		hello, _ := json.Marshal(map[string]any{
+			"kind": KindDeviceHello, "id": "target-dev", "version": "9.9.9", "secret": secret,
+		})
+		if err := impostor.WriteMessage(websocket.TextMessage, hello); err != nil {
+			t.Fatalf("impostor hello: %v", err)
+		}
+		impostor.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, raw, err := impostor.ReadMessage()
+		impostor.Close()
+		if err == nil && strings.Contains(string(raw), `"ok":true`) {
+			t.Fatalf("impostor was welcomed (secret=%q): %s", secret, raw)
+		}
+		// A refusal frame or an immediate close both mean "not registered".
+	}
+
+	// The incumbent is untouched and still pushable with the real secret.
+	devs := hub.ListDevices()
+	if len(devs) != 1 || devs[0].ID != "target-dev" || devs[0].Version != "1.0.3" {
+		t.Fatalf("incumbent was replaced or dropped: %+v", devs)
+	}
+	if err := agentPush(t, wsURL, "agent-tok", "target-dev", "real-secret", []byte("x")); err == nil {
+		t.Logf("push accepted against the real board (attacker never got the id)")
+	}
+	t.Logf("✓ impostor refused, incumbent kept the id")
+}
+
+// The board's LAN address must survive hello → hub → /health. The relay is
+// one-way (the board dials out), so this is the only way an operator learns
+// where a board is — which is what the LAN recovery push
+// (`ota upload <ip> --ota-mode local`) needs when the hub is what is down.
+func TestDeviceAdvertisesItsLANIP(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "ip-dev", "version": "1.2.3",
+		"secret": "s", "ip": "192.168.29.134",
+	})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, _, err := ws.ReadMessage(); err != nil { // welcome
+		t.Fatalf("welcome: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var devs []DeviceInfo
+	for time.Now().Before(deadline) {
+		devs = hub.ListDevices()
+		if len(devs) == 1 && devs[0].IP != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(devs) != 1 {
+		t.Fatalf("device not registered: %+v", devs)
+	}
+	if devs[0].IP != "192.168.29.134" {
+		t.Fatalf("LAN IP not surfaced: got %q, want 192.168.29.134", devs[0].IP)
+	}
+	t.Logf("✓ board IP flows through: %s at %s", devs[0].ID, devs[0].IP)
+}
+
+// An id must stay bound to its secret even while the board is OFFLINE.
+//
+// TestImpostorCannotStealDeviceID covers the online case: the hub compares
+// against the connected device. That check is not enough, because a board that
+// is powered off is absent from h.devices entirely — so anyone holding the
+// devices token could claim the id first, and the genuine board would then be
+// locked out of its own identity on return, while the squatter collected its
+// firmware pushes.
+func TestDeviceIDStaysBoundWhileBoardIsOffline(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// The real board registers once...
+	realWS, _ := dialDevice(t, wsURL, "dev-tok", "parked-dev", "real-secret")
+	realWS.Close() // ...and goes offline (powered off, network drop)
+	waitForDevices(t, hub, 0, 5*time.Second)
+
+	// A squatter holding the devices token claims the now-free id. Dialed raw
+	// rather than via dialDevice, because that helper asserts a successful
+	// welcome — which is precisely what must NOT happen here.
+	attackWS, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+	if err != nil {
+		t.Fatalf("squatter dial: %v", err)
+	}
+	attackHello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "parked-dev", "version": "9.9.9", "secret": "squatter-secret",
+	})
+	if err := attackWS.WriteMessage(websocket.TextMessage, attackHello); err != nil {
+		t.Fatalf("squatter hello: %v", err)
+	}
+	attackWS.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, raw, err := attackWS.ReadMessage(); err == nil && strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("squatter was welcomed onto an id whose board is offline: %s", raw)
+	}
+	// Leave the hub clean for the next step.
+	attackWS.Close()
+	waitForDevices(t, hub, 0, 5*time.Second)
+
+	// The genuine board returns with its real secret and must get its id back.
+	backWS, _ := dialDevice(t, wsURL, "dev-tok", "parked-dev", "real-secret")
+	defer backWS.Close()
+	waitForDevices(t, hub, 1, 5*time.Second)
+
+	devs := hub.ListDevices()
+	if len(devs) != 1 || devs[0].ID != "parked-dev" || devs[0].Version != "1.0.3" {
+		t.Fatalf("the real board did not get its own id back: %+v", devs)
+	}
+	t.Logf("✓ id stayed bound to its secret across the board being offline")
+}
+
+// waitForDevices polls until the hub reports want devices (or the deadline
+// passes), so tests do not depend on registration winning a race with the
+// reader.
+func waitForDevices(t *testing.T, hub *Hub, want int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if len(hub.ListDevices()) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(hub.ListDevices()); got != want {
+		t.Fatalf("expected %d device(s) on the hub, got %d (%+v)", want, got, hub.ListDevices())
+	}
+}
+
+// Tokens in a URL end up in proxy access logs, tunnel dashboards and crash
+// reports. The hub now accepts only Authorization: Bearer; a query-string
+// token must fail the websocket handshake and must not unlock /health's
+// device inventory.
+func TestQueryStringTokenRejected(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL+"/agent?token=agent-tok", nil)
+	if err == nil {
+		t.Fatal("query-string token was accepted on /agent")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 handshake, got resp=%v err=%v", resp, err)
+	}
+
+	res, err := http.Get(srv.URL + "/health?token=agent-tok")
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("health body: %v (%s)", err, body)
+	}
+	if _, ok := out["devices"]; ok {
+		t.Fatalf("query-string token unlocked the device inventory: %s", body)
+	}
+}
+
+// A hub restart must not forget which secret owns a device id: the persisted
+// binding is what stops a devices-token holder from claiming an offline
+// board's identity in the restart window.
+func TestSecretsPersistAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "relay-secrets.json")
+
+	h1, err := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok", SecretsPath: path})
+	if err != nil {
+		t.Fatalf("first hub: %v", err)
+	}
+	h1.mu.Lock()
+	err = h1.rememberSecretLocked("board-1", "real-secret")
+	h1.mu.Unlock()
+	if err != nil {
+		t.Fatalf("remember secret: %v", err)
+	}
+	if fi, err := os.Stat(path); err != nil {
+		t.Fatalf("stat secrets file: %v", err)
+	} else if got := fi.Mode().Perm(); got != 0o600 {
+		t.Fatalf("secrets file mode = %04o, want 0600", got)
+	}
+
+	h2, err := NewHub(Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok", SecretsPath: path})
+	if err != nil {
+		t.Fatalf("second hub: %v", err)
+	}
+	h2.mu.Lock()
+	got := h2.knownSecrets["board-1"]
+	h2.mu.Unlock()
+	if got != "real-secret" {
+		t.Fatalf("binding did not survive restart: %q", got)
+	}
+
+	// The impostor is refused by the restarted hub, with the board offline.
+	srv := httptest.NewServer(h2.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+	if err != nil {
+		t.Fatalf("impostor dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{"kind": KindDeviceHello, "id": "board-1", "version": "9", "secret": "squatter"})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("impostor hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("impostor welcome: %v", err)
+	}
+	if strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("impostor was welcomed after restart: %s", raw)
+	}
+}
+
+// A hand-edited file can contain two spellings of the same normalized id.
+// Refuse it instead of letting map iteration decide which secret owns the id.
+func TestSecretsFileRejectsDuplicateNormalizedIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay-secrets.json")
+	body := []byte(`{"version":1,"devices":{"Board":"first-secret","board":"second-secret"}}`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewHub(Config{DevicesToken: "d", AgentsToken: "a", SecretsPath: path}); err == nil {
+		t.Fatal("expected NewHub to reject duplicate normalized device ids")
+	} else if !strings.Contains(err.Error(), "duplicate device id") {
+		t.Fatalf("expected a duplicate-id error, got: %v", err)
+	}
+}
+
+// A secrets file with group/world permissions is a startup error, never
+// silently accepted: it holds the per-board identities.
+func TestSecretsFilePermissionsEnforced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay-secrets.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"devices":{"a":"b"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewHub(Config{DevicesToken: "d", AgentsToken: "a", SecretsPath: path}); err == nil {
+		t.Fatal("expected NewHub to reject a 0644 secrets file")
+	}
+}
+
+// A world-writable parent lets another account swap the binding file between
+// hub restarts; refuse to start instead of trusting it.
+func TestSecretsDirWorldWritableRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits are not enforced on Windows")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "relay-secrets.json")
+	if _, err := NewHub(Config{DevicesToken: "d", AgentsToken: "a", SecretsPath: path}); err == nil {
+		t.Fatal("expected NewHub to reject a world-writable secrets directory")
+	}
+}
+
+// TestFrameKBRejectedAtHello: frame_kb is relayed to the agent and sizes its
+// send buffer, so a board must not be able to advertise an unbounded value.
+func TestFrameKBRejectedAtHello(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer ws.Close()
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "bad-frame", "version": "1.0.3",
+		"secret": "s", "frame_kb": 65,
+	})
+	if err := ws.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, raw, err := ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected a refusal frame, got read error: %v", err)
+	}
+	if !strings.Contains(string(raw), "frame_kb") {
+		t.Fatalf("expected a frame_kb refusal, got: %s", raw)
+	}
+	if ids := hub.DeviceIDs(); len(ids) != 0 {
+		t.Fatalf("bad-frame device must not be registered, got %v", ids)
+	}
+	t.Logf("✓ out-of-range frame_kb refused at hello")
+}
+
+// TestPushMetadataRejectedBeforePairing: a malformed push_req must not pair
+// the agent with the board, or the board would wait for bytes while the agent
+// waits for an ACK that can never arrive.
+func TestPushMetadataRejectedBeforePairing(t *testing.T) {
+	hub := testHub(t, Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	srv := httptest.NewServer(hub.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	devWS, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", bearerHeader("dev-tok"))
+	if err != nil {
+		t.Fatalf("device dial: %v", err)
+	}
+	defer devWS.Close()
+	hello, _ := json.Marshal(map[string]any{
+		"kind": KindDeviceHello, "id": "metadata-dev", "version": "1.0.3",
+		"secret": "s", "frame_kb": 8,
+	})
+	if err := devWS.WriteMessage(websocket.TextMessage, hello); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	devWS.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, _, err := devWS.ReadMessage(); err != nil { // welcome
+		t.Fatalf("welcome: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		size int64
+		md5  string
+		want string
+	}{
+		{"zero size", 0, md5sum(nil), "size"},
+		{"short md5", 4, "abcd", "md5"},
+		{"non-hex md5", 4, strings.Repeat("g", 32), "md5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agentWS, _, err := websocket.DefaultDialer.Dial(wsURL+"/agent", bearerHeader("agent-tok"))
+			if err != nil {
+				t.Fatalf("agent dial: %v", err)
+			}
+			defer agentWS.Close()
+			req, _ := json.Marshal(map[string]any{
+				"kind": KindPushReq, "device": "metadata-dev", "secret": "s",
+				"size": tc.size, "md5": tc.md5,
+			})
+			if err := agentWS.WriteMessage(websocket.TextMessage, req); err != nil {
+				t.Fatalf("push_req: %v", err)
+			}
+			agentWS.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, raw, err := agentWS.ReadMessage()
+			if err != nil {
+				t.Fatalf("push_result read: %v", err)
+			}
+			var res struct {
+				Kind  string `json:"kind"`
+				OK    bool   `json:"ok"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(raw, &res); err != nil {
+				t.Fatalf("push_result parse: %v (%s)", err, raw)
+			}
+			if res.Kind != KindPushResult || res.OK || !strings.Contains(res.Error, tc.want) {
+				t.Fatalf("expected %q rejection, got %s", tc.want, raw)
+			}
+			if devs := hub.ListDevices(); len(devs) != 1 || devs[0].Busy {
+				t.Fatalf("malformed push must leave the device idle, got %+v", devs)
+			}
+		})
+	}
+	t.Logf("✓ malformed push metadata rejected before pairing")
+}

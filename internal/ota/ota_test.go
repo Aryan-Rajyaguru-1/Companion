@@ -92,8 +92,14 @@ func (d *fakeDevice) serveUDP(udp *net.UDPConn) {
 }
 
 // dialTCP performs the device's dial-back to the host port learned from the
-// invite, consumes exactly size bytes, ACKs each chunk with its length, and
-// sends the final verdict.
+// invite. It mirrors ArduinoOTA.cpp::_runUpdate on the wire:
+//   - each chunk is ACKed with a BARE decimal count — no newline
+//     (client.printf("%u", written));
+//   - if the host sends nothing more within ~1s, the device re-sends the
+//     same ACK up to 3 times before giving up (the starve-and-retry that
+//     the old newline-waiting client tripped over on real hardware);
+//   - the final verdict is a bare "OK" (no terminator), sent after
+//     Update.end(), and may be COALESCED with the last ACK ("512OK").
 func (d *fakeDevice) dialTCP(fail bool) {
 	deadline := time.Now().Add(10 * time.Second)
 	var conn net.Conn
@@ -118,18 +124,31 @@ func (d *fakeDevice) dialTCP(fail bool) {
 			want = remain
 		}
 		n, rerr := io.ReadFull(conn, buf[:want])
-		fmt.Fprintf(conn, "%d\n", n)
 		if rerr != nil {
 			return
 		}
 		got += int64(n)
 		d.gotChunks++
+		fmt.Fprintf(conn, "%d", n) // bare ACK — ArduinoOTA sends no newline
+		if rerr != nil || got >= d.gotSize {
+			break
+		}
+		// Starve-retry: if the next chunk doesn't arrive promptly, the real
+		// device re-ACKs up to 3 times at ~1s intervals. Emulate once so the
+		// client's quiet-period reader must tolerate duplicate ACKs.
+		ackN := n
+		go func() {
+			time.Sleep(1200 * time.Millisecond)
+			fmt.Fprintf(conn, "%d", ackN)
+		}()
 	}
 	if fail {
-		conn.Write([]byte("ERROR flash failed\n"))
+		conn.Write([]byte("ERROR flash failed"))
 		return
 	}
-	conn.Write([]byte("OK\n"))
+	// Final verdict, unframed, often coalesced with the last ACK in real
+	// captures — here it follows the last bare ACK with no separator.
+	conn.Write([]byte("OK"))
 }
 
 func pushTestImage(t *testing.T, size int) string {
@@ -246,4 +265,46 @@ func TestProbeUnreachable(t *testing.T) {
 	if err := Probe("127.0.0.1", 1); err == nil {
 		t.Error("Probe on closed port should fail")
 	}
+}
+
+// ── mDNS discovery parsing ──────────────────────────────────────
+// Regression test built from a verbatim captured ESP32 ArduinoOTA
+// answer (companion-2EA7F4, port 3232 → 192.168.4.1), whose SRV target
+// is a bare hostname — the A record does NOT repeat the service
+// instance name, so IP attribution must follow the SRV target.
+//
+//	header: flags 8400, QD=0 AN=1 NS=0 AR=3
+func TestParseMDNSArduinoOTAAnswer(t *testing.T) {
+	// Captured 2026-10-21 from 192.168.4.1 (ESP32 base MAC 88:57:21:2e:a7:f4)
+	// answering a _arduino._tcp.local PTR query (182 bytes).
+	pkt := mustHex(t, "000084000000000100000003085f61726475696e6f045f746370056c6f63616c00000c000100001194001310636f6d70616e696f6e2d324541374634c00cc02b00210001000000780019000000000ca010636f6d70616e696f6e2d324541374634c01ac02b001000010000119400370f617574685f75706c6f61643d7965730d7373685f75706c6f61643d6e6f0c7463705f636865636b3d6e6f0b626f6172643d6573703332c05000010001000000780004c0a80401")
+	records := map[string]*ServiceRecord{}
+	parseMDNSResponses(pkt, records)
+	rec, ok := records["companion-2EA7F4"]
+	if !ok {
+		t.Fatalf("instance record missing, got %v", records)
+	}
+	if rec.Port != 3232 {
+		t.Errorf("port = %d, want 3232", rec.Port)
+	}
+	if rec.Host != "companion-2EA7F4.local" {
+		t.Errorf("host = %q, want companion-2EA7F4.local", rec.Host)
+	}
+	if rec.IP != "192.168.4.1" {
+		t.Errorf("IP = %q, want 192.168.4.1 (A record follows SRV target, not instance)", rec.IP)
+	}
+}
+
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b := make([]byte, 0, len(s)/2)
+	for i := 0; i+1 < len(s); i += 2 {
+		hi := strings.IndexByte("0123456789abcdef", s[i])
+		lo := strings.IndexByte("0123456789abcdef", s[i+1])
+		if hi < 0 || lo < 0 {
+			t.Fatalf("bad hex at %d", i)
+		}
+		b = append(b, byte(hi<<4|lo))
+	}
+	return b
 }

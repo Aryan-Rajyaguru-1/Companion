@@ -31,12 +31,12 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/companion-ide/companion-cli/internal/boards"
 	"github.com/companion-ide/companion-cli/internal/config"
+	cerrors "github.com/companion-ide/companion-cli/internal/errors"
 	"github.com/companion-ide/companion-cli/internal/plugins"
 	version "github.com/companion-ide/companion-cli/internal/version"
 )
@@ -57,6 +57,13 @@ type Options struct {
 	// command and writes a clangd-compatible compile_commands.json into the
 	// build directory (closes the Arduino-cli #849 feature gap).
 	CaptureCompileCommands bool
+
+	// MainIno compiles exactly one .ino file (basename or path) instead of
+	// merging every .ino in SketchDir. Needed when a folder holds several
+	// independent sketches (each defining setup()/loop()), which cannot be
+	// merged into one translation unit. Empty = merge all .ino files, with
+	// an up-front error when they are mutually exclusive.
+	MainIno string
 }
 
 // Result is returned from Build().
@@ -281,7 +288,7 @@ func (c *Compiler) buildCustom(opts Options, start time.Time) (res *Result, err 
 
 	// ── Stage 3: Preprocess sketch ────────────────────────────
 	c.log("» Preprocessing sketch…")
-	sketchCPP, err := c.preprocessSketch(opts.SketchDir, sketchDir2)
+	sketchCPP, err := c.preprocessSketch(opts.SketchDir, sketchDir2, opts.MainIno)
 	if err != nil {
 		return nil, fmt.Errorf("preprocess: %w", err)
 	}
@@ -394,6 +401,14 @@ func (c *Compiler) buildCustom(opts Options, start time.Time) (res *Result, err 
 		return nil, fmt.Errorf("objcopy: %w", err)
 	}
 
+	artifacts := []string{binaryPath}
+	if rb.Architecture == "esp32" {
+		artifacts, err = c.generateESPFlashArtifacts(rb, bf.sdkPath, opts.SketchDir, buildDir, sketchName, binaryPath)
+		if err != nil {
+			return nil, fmt.Errorf("ESP32 flash artifacts: %w", err)
+		}
+	}
+
 	// ── Stage 9.5: Post-compile plugin hooks ──────────────────
 	c.runPostCompile(opts, buildDir, binaryPath)
 
@@ -401,21 +416,23 @@ func (c *Compiler) buildCustom(opts Options, start time.Time) (res *Result, err 
 	c.reportSize(rb, tc, elfPath)
 
 	if opts.ExportBinary {
-		exportPath := filepath.Join(opts.SketchDir, "build",
-			strings.ReplaceAll(opts.FQBN, ":", "."),
-			filepath.Base(binaryPath))
-		os.MkdirAll(filepath.Dir(exportPath), 0o755)
-		copyFile(binaryPath, exportPath)
+		exportDir := filepath.Join(opts.SketchDir, "build",
+			strings.ReplaceAll(opts.FQBN, ":", "."))
+		exportPath := filepath.Join(exportDir, filepath.Base(binaryPath))
+		if resultCCPath != "" {
+			artifacts = append(artifacts, resultCCPath)
+		}
+		if err := exportArtifacts(artifacts, exportDir); err != nil {
+			return nil, fmt.Errorf("export binaries: %w", err)
+		}
 		c.logf("» Binary exported: %s", exportPath)
 		binaryPath = exportPath
 
 		// Keep the IntelliSense database next to the exported binary so the
 		// path is stable (unlike temp build dirs).
 		if resultCCPath != "" {
-			ccCopy := filepath.Join(filepath.Dir(exportPath), "compile_commands.json")
-			if err := copyFile(resultCCPath, ccCopy); err == nil {
-				c.logf("» Compile commands: %s", ccCopy)
-			}
+			resultCCPath = filepath.Join(exportDir, "compile_commands.json")
+			c.logf("» Compile commands: %s", resultCCPath)
 		}
 	}
 
@@ -679,9 +696,15 @@ func (c *Compiler) generateSDKConfig(sdkRoot, buildDir, target string) error {
 }
 
 // ── Stage 2: Preprocess sketch ────────────────────────────────────
-// Merges all .ino files into a single .cpp — mirrors the Arduino
+// Merges the sketch's .ino files into a single .cpp — mirrors the Arduino
 // preprocessor that adds forward declarations and the #line markers.
-func (c *Compiler) preprocessSketch(sketchDir, outDir string) (string, error) {
+//
+// A folder may hold several .ino files (Arduino's multi-file sketch support,
+// e.g. a main sketch plus helpers). It may not hold several *complete*
+// sketches: each of those defines setup()/loop(), so merging them fails with
+// "redefinition of 'void setup()'". mainIno selects one file to compile;
+// without it such a folder is rejected up front with the real cause.
+func (c *Compiler) preprocessSketch(sketchDir, outDir, mainIno string) (string, error) {
 	entries, err := os.ReadDir(sketchDir)
 	if err != nil {
 		return "", err
@@ -696,6 +719,40 @@ func (c *Compiler) preprocessSketch(sketchDir, outDir string) (string, error) {
 
 	if len(inoFiles) == 0 {
 		return "", fmt.Errorf("no .ino files found in %s", sketchDir)
+	}
+
+	if mainIno != "" {
+		// Explicit main sketch: compile exactly this file. Sibling .ino files
+		// are deliberately skipped — they are separate sketches, not part of
+		// this one.
+		want := filepath.Join(sketchDir, filepath.Base(mainIno))
+		found := false
+		for _, f := range inoFiles {
+			if f == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", cerrors.Newf(cerrors.ErrNotFound,
+				"--main-ino %q: no such .ino file in %s (found: %s)",
+				mainIno, sketchDir, strings.Join(baseNames(inoFiles), ", ")).
+				WithSuggestion("Use one of the listed .ino files, or omit --main-ino to merge every .ino in the folder.")
+		}
+		if skipped := baseNamesExcept(inoFiles, want); len(skipped) > 0 {
+			c.logf("  Main sketch: %s (skipping %d other .ino file(s): %s)",
+				filepath.Base(want), len(skipped), strings.Join(skipped, ", "))
+		}
+		inoFiles = []string{want}
+	} else if offenders := completeSketchFiles(inoFiles); len(offenders) > 1 {
+		// Each of these defines setup()/loop(), so concatenating them into one
+		// translation unit cannot work. Report it here with the actual cause
+		// instead of letting the compiler emit a wall of
+		// "redefinition of 'void setup()'" errors with no hint of why.
+		return "", cerrors.Newf(cerrors.ErrCompile,
+			"%s contains %d complete sketches: %s",
+			sketchDir, len(offenders), strings.Join(offenders, ", ")).
+			WithSuggestion("Compile one of them with --main-ino <file>, or move each sketch into its own folder.")
 	}
 
 	sort.Strings(inoFiles)
@@ -734,6 +791,44 @@ func (c *Compiler) preprocessSketch(sketchDir, outDir string) (string, error) {
 	}
 
 	return outPath, nil
+}
+
+// baseNames returns the base names of the given paths (order preserved).
+func baseNames(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, filepath.Base(p))
+	}
+	return out
+}
+
+// baseNamesExcept is baseNames minus the skipped path (order preserved).
+func baseNamesExcept(paths []string, skip string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p != skip {
+			out = append(out, filepath.Base(p))
+		}
+	}
+	return out
+}
+
+// completeSketchFiles returns the base names of .ino files that define
+// setup() or loop() — i.e. files that are complete sketches on their own.
+// Two or more of these in one folder cannot be merged into a single TU.
+func completeSketchFiles(paths []string) []string {
+	re := regexp.MustCompile(`(?m)^[ \t]*(?:void|int|auto)[ \t]+(?:setup|loop)[ \t]*\(`)
+	var out []string
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if re.Match(data) {
+			out = append(out, filepath.Base(p))
+		}
+	}
+	return out
 }
 
 // extractForwardDeclarations generates forward declarations for functions
@@ -841,29 +936,33 @@ func (c *Compiler) resolveLibraries(sketchCPP, sketchDir string, extraDirs []str
 				libPaths = append(libPaths, libPath)
 				c.logf("  Library: %s → %s", headerName, filepath.Base(libPath))
 
-				// Scan this library's source files for transitive #include deps
+				// Scan this library's source tree for transitive #include deps.
+				// Recursive walk — headers may live in nested dirs (e.g.
+				// ArduinoWebsockets' tiny_websockets/**/esp32_tcp.hpp needs
+				// WiFiClientSecure.h from the core's NetworkClientSecure lib),
+				// which a flat ReadDir misses.
 				var transitiveHeaders []string
 				for _, srcDir := range []string{filepath.Join(libPath, "src"), libPath} {
-					entries, err := os.ReadDir(srcDir)
-					if err != nil {
+					if !dirExists(srcDir) {
 						continue
 					}
-					for _, e := range entries {
-						if e.IsDir() {
-							continue
+					_ = filepath.Walk(srcDir, func(p string, info os.FileInfo, werr error) error {
+						if werr != nil || info.IsDir() {
+							return nil
 						}
-						ext := strings.ToLower(filepath.Ext(e.Name()))
+						ext := strings.ToLower(filepath.Ext(p))
 						if ext != ".h" && ext != ".hpp" && ext != ".cpp" && ext != ".c" {
-							continue
+							return nil
 						}
-						hdata, err := os.ReadFile(filepath.Join(srcDir, e.Name()))
+						hdata, err := os.ReadFile(p)
 						if err != nil {
-							continue
+							return nil
 						}
 						for _, m := range includeRE.FindAllStringSubmatch(string(hdata), -1) {
 							transitiveHeaders = append(transitiveHeaders, m[1])
 						}
-					}
+						return nil
+					})
 					break // only scan first found src dir
 				}
 				scanHeaders(transitiveHeaders)
@@ -888,7 +987,10 @@ func (c *Compiler) findLibraryForHeader(header, searchPath string) string {
 		return ""
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		// DirEntry.IsDir() is false for symlinks-to-directories (it does not
+		// follow the link), so accept symlinks too — the os.Stat candidates
+		// below follow them and decide.
+		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
 			continue
 		}
 		libDir := filepath.Join(searchPath, e.Name())
@@ -921,20 +1023,29 @@ func (c *Compiler) buildLibraries(libPaths []string, tc *Toolchain, bf *BuildFla
 		}
 
 		for _, srcDir := range srcDirs {
-			entries, err := os.ReadDir(srcDir)
-			if err != nil {
+			if !dirExists(srcDir) {
 				continue
 			}
-			for _, e := range entries {
-				if e.IsDir() {
-					continue
+			// Recursive walk: libraries keep sources in nested subdirs
+			// (tiny_websockets/**, utility/, arch/…) and all of them must be
+			// compiled — a flat ReadDir silently dropped most of the library.
+			// Mirrors arduino-cli's recursive source discovery.
+			walkErr := filepath.Walk(srcDir, func(srcPath string, info os.FileInfo, werr error) error {
+				if werr != nil || info.IsDir() {
+					return nil
 				}
-				ext := strings.ToLower(filepath.Ext(e.Name()))
-				if ext != ".c" && ext != ".cpp" && ext != ".S" {
-					continue
+				ext := strings.ToLower(filepath.Ext(srcPath))
+				if ext != ".c" && ext != ".cpp" && ext != ".s" && ext != ".S" {
+					return nil
 				}
-				srcPath := filepath.Join(srcDir, e.Name())
-				objPath := filepath.Join(libOutDir, e.Name()+".o")
+				rel, rerr := filepath.Rel(srcDir, srcPath)
+				if rerr != nil {
+					rel = filepath.Base(srcPath)
+				}
+				objPath := filepath.Join(libOutDir, rel+".o")
+				if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
+					return err
+				}
 
 				args := bf.forFile(srcPath, "", false, tc)
 				// Add all resolved library src/ dirs so libraries can see each other's headers
@@ -947,12 +1058,18 @@ func (c *Compiler) buildLibraries(libPaths []string, tc *Toolchain, bf *BuildFla
 						}
 					}
 				}
-				args = append(args, "-I", srcDir, "-o", objPath, srcPath)
+				// The library's own root and the TU's directory (for relative
+				// includes like "internals/ws_common.hpp").
+				args = append(args, "-I", srcDir, "-I", filepath.Dir(srcPath), "-o", objPath, srcPath)
 
 				if err := c.runCC(tc, srcPath, args); err != nil {
-					return nil, err
+					return err
 				}
 				allObjs = append(allObjs, objPath)
+				return nil
+			})
+			if walkErr != nil {
+				return nil, walkErr
 			}
 			break // Only process first found src dir
 		}
@@ -1173,52 +1290,21 @@ func (c *Compiler) extractBinary(rb *boards.ResolvedBoard, tc *Toolchain, elfPat
 func (c *Compiler) extractESPImage(rb *boards.ResolvedBoard, elfPath, buildDir, name string) (string, error) {
 	binPath := filepath.Join(buildDir, name+".bin")
 
-	esptoolPy := latestFileUnder(filepath.Join(rb.ToolsDir, "esptool_py"), "esptool.py")
-
-	python := "python3"
-	if _, err := exec.LookPath("python3"); err != nil {
-		python = "python"
-	}
-
-	var base []string
-	if esptoolPy != "" {
-		base = append(base, esptoolPy)
-	} else if _, err := exec.LookPath(python); err == nil {
-		base = append(base, "-m", "esptool")
-	} else {
-		return "", fmt.Errorf("esptool not found (install with: pip install esptool)")
-	}
-
 	mode := rb.GetProp("build.flash_mode")
 	if mode == "" {
 		mode = "dio"
 	}
 	size := rb.GetProp("build.flash_size")
 	if size == "" {
-		size = "detect"
+		size = "4MB"
 	}
-	freq := "80m"
-	if ff := rb.GetProp("build.f_flash"); ff != "" {
-		f := strings.TrimSuffix(ff, "L")
-		if n, err := strconv.Atoi(f); err == nil && n > 0 {
-			freq = fmt.Sprintf("%dm", n/1000000)
-		}
+	args := []string{
+		"--chip", strings.ToLower(rb.GetProp("build.mcu")), "elf2image",
+		"--flash_mode", mode, "--flash_freq", espImageFreq(rb), "--flash_size", size,
+		"-o", binPath, elfPath,
 	}
-
-	args := append([]string{}, base...)
-	args = append(args,
-		"--chip", strings.ToLower(rb.GetProp("build.mcu")),
-		"elf2image",
-		"--flash_mode", mode,
-		"--flash_freq", freq,
-		"--flash_size", size,
-		elfPath,
-	)
-
-	cmd := exec.CommandContext(c.ctx, python, args...)
-	cmd.Dir = buildDir // esptool writes <elf basename>.bin here
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("elf2image failed:\n%s", out)
+	if err := c.runEsptool(rb, args); err != nil {
+		return "", fmt.Errorf("elf2image failed: %w", err)
 	}
 	if _, err := os.Stat(binPath); err != nil {
 		return "", fmt.Errorf("elf2image produced no output at %s", binPath)
@@ -1963,6 +2049,34 @@ func (bf *BuildFlags) forFile(path, extraIncDir string, isCore bool, tc *Toolcha
 			}
 		}
 
+		// Arduino-level platform defines: platform.txt's build.extra_flags
+		// carries -DESP32=ESP32, -DCORE_DEBUG_LEVEL=…, USB-mode flags and the
+		// board's own build.defines. Third-party libraries (ArduinoWebsockets,
+		// PubSubClient, …) key their platform typedefs off these macros, so a
+		// compile without them fails with undefined WSDefaultTcpClient etc.
+		// GetProp resolves {…} placeholders (build.defines,
+		// build.extra_flags.<mcu>, …) exactly like the official recipes do.
+		if extra := rb.GetProp("build.extra_flags"); extra != "" {
+			for _, tok := range expandPlatformFlags(extra, rb, bf.sdkPath) {
+				// Skip the empty runtime macros (GetProp cannot resolve
+				// {runtime.os}/{build.fqbn}) — re-added with real values below.
+				if tok == "-DARDUINO_HOST_OS=" || tok == "-DARDUINO_FQBN=" {
+					continue
+				}
+				args = append(args, tok)
+			}
+		}
+		// GetProp's {…} expansion resolves unknown runtime keys (runtime.os,
+		// build.fqbn) to empty strings, so the ARDUINO_HOST_OS / ARDUINO_FQBN
+		// macros above end up empty and chip-debug-report.cpp fails to
+		// compile. Re-add them with real values — GCC keeps the last -D, so
+		// these override the empty ones. The escaped quotes survive
+		// expandPlatformFlags's quote-stripping tokenizer.
+		args = append(args,
+			fmt.Sprintf(`-DARDUINO_HOST_OS="%s"`, arduinoOSName()),
+			fmt.Sprintf(`-DARDUINO_FQBN="%s"`, rb.FQBN),
+		)
+
 		incPrefix := filepath.Join(bf.sdkPath, "include") + string(filepath.Separator)
 		if data, err := os.ReadFile(filepath.Join(bf.sdkPath, "flags", "includes")); err == nil {
 			toks := strings.Fields(string(data))
@@ -2099,6 +2213,96 @@ func (bf *BuildFlags) forFile(path, extraIncDir string, isCore bool, tc *Toolcha
 	return args
 }
 
+// arduinoOSName returns the Arduino-style runtime.os identifier
+// (linux64/linuxarm64/linuxarm/macosx/windows) used to expand the
+// {runtime.os} placeholder from platform.txt recipes.
+func arduinoOSName() string {
+	switch runtime.GOOS {
+	case "linux":
+		switch runtime.GOARCH {
+		case "arm64":
+			return "linuxarm64"
+		case "arm":
+			return "linuxarm"
+		default:
+			return "linux64"
+		}
+	case "darwin":
+		return "macosx"
+	case "windows":
+		return "windows"
+	default:
+		return runtime.GOOS
+	}
+}
+
+// splitPlatformArgs splits a platform.txt flag string into arguments, honouring
+// single and double quotes.
+//
+// Backslash is NOT a shell escape here, and treating it as one is what broke
+// Windows. platform.txt on Windows is full of paths like
+//
+//	-iprefix "{build.path}/{build.sys}"
+//	  -> C:\Users\raghv\AppData\Local\arduino15\packages\...
+//
+// and the old scanner consumed every backslash as an escape character, handing
+// the compiler `C:Usersraghv.AppDataLocalarduino15packages...` — a path that
+// cannot exist, so core compilation failed with no hint that the mangling had
+// happened locally (issue #6).
+//
+// The only escapes platform.txt actually uses are a quote inside a quoted
+// string and a doubled backslash, so those are the only two honoured. Anything
+// else keeps its backslash verbatim, which is exactly right for a Windows path
+// separator and unchanged for POSIX, where these strings have no backslashes
+// to begin with.
+func splitPlatformArgs(input string) []string {
+	var res []string
+	var cur strings.Builder
+	inQuote := rune(0)
+	runes := []rune(input)
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		// An escape only when it actually escapes something. The escaped
+		// character is kept literally and does NOT toggle quote state, so
+		// "a\"b" is the single argument a"b rather than a truncated string.
+		if r == '\\' && i+1 < len(runes) {
+			switch next := runes[i+1]; next {
+			case '"', '\'', '\\':
+				cur.WriteRune(next)
+				i++
+				continue
+			}
+		}
+
+		if inQuote != 0 {
+			if r == inQuote {
+				inQuote = 0
+				continue
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		if r == '\'' || r == '"' {
+			inQuote = r
+			continue
+		}
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if cur.Len() > 0 {
+				res = append(res, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+		cur.WriteRune(r)
+	}
+	if cur.Len() > 0 {
+		res = append(res, cur.String())
+	}
+	return res
+}
+
 // expandPlatformFlags expands a platform.txt flag string into a []string,
 // substituting placeholders and stripping unresolved ones.
 func expandPlatformFlags(flags string, rb *boards.ResolvedBoard, sdkPath string) []string {
@@ -2110,6 +2314,11 @@ func expandPlatformFlags(flags string, rb *boards.ResolvedBoard, sdkPath string)
 	s = strings.ReplaceAll(s, "{build.opt.flags}", rb.GetProp("build.opt.flags"))
 	if rb != nil {
 		s = strings.ReplaceAll(s, "{runtime.platform.path}", rb.PlatformPath)
+		// runtime.os / build.fqbn appear in ESP32 core platform.txt's
+		// build.extra_flags (ARDUINO_HOST_OS / ARDUINO_FQBN macros used by
+		// chip-debug-report.cpp). Without them the core fails to compile.
+		s = strings.ReplaceAll(s, "{runtime.os}", arduinoOSName())
+		s = strings.ReplaceAll(s, "{build.fqbn}", rb.FQBN)
 	}
 
 	for strings.Contains(s, "{") {
@@ -2121,56 +2330,14 @@ func expandPlatformFlags(flags string, rb *boards.ResolvedBoard, sdkPath string)
 		s = s[:start] + s[start+end+1:]
 	}
 
-	splitArgs := func(input string) []string {
-		var res []string
-		var cur strings.Builder
-		inQuote := rune(0)
-		escaped := false
-		for _, r := range input {
-			if escaped {
-				cur.WriteRune(r)
-				escaped = false
-				continue
-			}
-			if r == '\\' {
-				escaped = true
-				continue
-			}
-			if inQuote != 0 {
-				if r == inQuote {
-					inQuote = 0
-					continue
-				}
-				cur.WriteRune(r)
-				continue
-			}
-			if r == '\'' || r == '"' {
-				inQuote = r
-				continue
-			}
-			if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-				if cur.Len() > 0 {
-					res = append(res, cur.String())
-					cur.Reset()
-				}
-				continue
-			}
-			cur.WriteRune(r)
-		}
-		if cur.Len() > 0 {
-			res = append(res, cur.String())
-		}
-		return res
-	}
-
 	var out []string
-	toks := splitArgs(s)
+	toks := splitPlatformArgs(s)
 	for i := 0; i < len(toks); i++ {
 		tok := toks[i]
 		if strings.HasPrefix(tok, "@") {
 			fpath := strings.TrimPrefix(tok, "@")
 			if data, err := os.ReadFile(fpath); err == nil {
-				sub := splitArgs(string(data))
+				sub := splitPlatformArgs(string(data))
 				newToks := make([]string, 0, len(toks)+len(sub))
 				newToks = append(newToks, toks[:i]...)
 				newToks = append(newToks, sub...)
@@ -2232,18 +2399,88 @@ func (c *Compiler) unitKey(srcPath string, args []string, compilerBin string) (s
 	volatile = append(volatile, buildDirFromArgs(args)...)
 
 	norm := NormalizeFlags(args, volatile...)
-	sorted := make([]string, len(norm))
-	copy(sorted, norm)
+
+	// -I order is SEMANTIC: the first match wins when the same header name
+	// exists in two directories, so include paths are hashed in order and only
+	// the remaining flags are sorted. Sorting everything (as this did) made
+	// "reorder the include paths" a free cache hit.
+	var orderedIncludes []string
+	var sorted []string
+	for i := 0; i < len(norm); i++ {
+		if norm[i] == "-I" && i+1 < len(norm) {
+			orderedIncludes = append(orderedIncludes, norm[i+1])
+			i++
+			continue
+		}
+		sorted = append(sorted, norm[i])
+	}
 	sort.Strings(sorted)
 
 	h := sha256.New()
 	fmt.Fprintf(h, "unit|v%d", BuildCacheSchemaVersion)
 	fmt.Fprintf(h, "|%s", fingerprint)
+	for _, inc := range orderedIncludes {
+		h.Write([]byte("|-I"))
+		h.Write([]byte(inc))
+	}
 	for _, a := range sorted {
 		h.Write([]byte("|"))
 		h.Write([]byte(a))
 	}
+	// Headers participate in the key. Without this, editing a .h (or a library
+	// header) left the cached .o in place and the build silently flashed the
+	// OLD code — the worst kind of bug, because everything reports success.
+	//
+	// The NORMALIZED include dirs are used, not the raw argv: the raw ones
+	// carry the per-build temp path, and hashing that would make every warm
+	// rebuild a cache miss (the exact regression the build-dir test guards).
+	appendIncludeFingerprint(h, srcPath, append([]string{filepath.Dir(srcPath)}, orderedIncludes...))
 	return hex.EncodeToString(h.Sum(nil))[:40], nil
+}
+
+// appendIncludeFingerprint hashes every project header the translation unit can
+// reach: the includes in the source, resolved against the -I paths in order
+// (plus the source's own directory), followed recursively through those
+// headers. SDK/core headers are already covered by the toolchain fingerprint,
+// so unresolved (system) includes are skipped rather than searched for.
+//
+// Depth is capped and each file visited once: a header cycle must not loop.
+func appendIncludeFingerprint(h io.Writer, srcPath string, includeDirs []string) {
+	seen := make(map[string]bool)
+	var walk func(path string, depth int)
+	walk = func(path string, depth int) {
+		if depth > 16 || seen[path] {
+			return
+		}
+		seen[path] = true
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		sum := sha256.Sum256(data)
+		fmt.Fprintf(h, "hdr|%s|%x|", path, sum)
+		for _, inc := range parseIncludes(data) {
+			for _, dir := range includeDirs {
+				cand := filepath.Join(dir, inc)
+				if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+					walk(cand, depth+1)
+					break
+				}
+			}
+		}
+	}
+	walk(srcPath, 0)
+}
+
+var includeLineRE = regexp.MustCompile(`(?m)^\s*#\s*include\s*[<"]([^>"]+)[>"]`)
+
+// parseIncludes returns the include targets in a source or header file.
+func parseIncludes(data []byte) []string {
+	var out []string
+	for _, m := range includeLineRE.FindAllStringSubmatch(string(data), -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 // buildDirFromArgs extracts the "-o <obj>" argument's parent directory from
