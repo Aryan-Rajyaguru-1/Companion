@@ -7,10 +7,10 @@
 // any network): devices and agents dial the hub, which is published through
 // a Cloudflare Tunnel (wss://…) or any reverse proxy terminating TLS.
 //
-//	               wss (outbound)                    wss (outbound)
-//	  ESP32 device ──────────────► RELAY HUB ◄────────────── IDE / CLI
-//	  (ArduinoOTA-style              (Jetson)                (push client)
-//	   Update loop)
+//	             wss (outbound)                    wss (outbound)
+//	ESP32 device ──────────────► RELAY HUB ◄────────────── IDE / CLI
+//	(ArduinoOTA-style              (Jetson)                (push client)
+//	 Update loop)
 //
 // Wire protocol (protocol.go): small JSON control frames on the control
 // side of each connection; firmware bytes flow over a dedicated paired

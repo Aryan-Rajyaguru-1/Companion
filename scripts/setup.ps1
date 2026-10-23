@@ -155,9 +155,10 @@ if ($HasIde) {
     Write-Host "       $IdeDir\esp32-bridge-firmware\esp32_bridge"
     Write-Host "  2. Start the IDE:"
     Write-Host "       cd $IdeDir; npm run dev"
-    Write-Host "  3. Connect to the bridge WiFi (SSID: ESP32-OTA, password: flashme!)"
-    Write-Host "     and hit Upload. Edit WiFi credentials in"
+    Write-Host "  3. Set a unique AP_PASS (8+ chars) and your AP_SSID in"
     Write-Host "       $IdeDir\esp32-bridge-firmware\esp32_bridge\config.local.h"
+    Write-Host "     flash, join that WiFi, then hit Upload. There is no default AP"
+    Write-Host "     password; the sketch refuses an open or placeholder AP."
 } else {
     Write-Host "  The IDE (Electron app) was not found next to this script."
     Write-Host "  Clone the full workspace or the 'ide' branch, then re-run."

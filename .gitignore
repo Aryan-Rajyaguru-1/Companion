@@ -16,6 +16,8 @@ companion-cli/companion.exe
 companion-cli/companion-cli.exe
 companion-ide/bin/companion
 companion-ide/bin/companion-cli
+companion-ide/resources/companion
+companion-ide/resources/companion.exe
 
 # IDE build/cache dirs (companion-ide/.gitignore also covers these)
 companion-ide/node_modules/

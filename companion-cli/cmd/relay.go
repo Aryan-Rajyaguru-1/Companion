@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -25,6 +26,7 @@ func newRelayCmd() *cobra.Command {
 		listen       string
 		devicesToken string
 		agentsToken  string
+		secretsFile  string
 	)
 	hubCmd := &cobra.Command{
 		Use:   "hub",
@@ -49,13 +51,28 @@ func newRelayCmd() *cobra.Command {
 			if devicesToken == "*" || agentsToken == "*" {
 				fmt.Println("⚠ auth DISABLED for one or both roles (\"*\" token) — lab/testing only, never expose this")
 			}
-			h := relay.NewHub(relay.Config{
+			if secretsFile == "" {
+				secretsFile = os.Getenv("COMPANION_RELAY_SECRETS_FILE")
+			}
+			if secretsFile == "" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("cannot locate a private relay identity file: %w (set --secrets-file)", err)
+				}
+				secretsFile = filepath.Join(home, ".companion-cli", "relay-secrets.json")
+			}
+			h, err := relay.NewHub(relay.Config{
 				DevicesToken: devicesToken,
 				AgentsToken:  agentsToken,
+				SecretsPath:  secretsFile,
 			})
+			if err != nil {
+				return fmt.Errorf("load relay device identities: %w", err)
+			}
 			fmt.Printf("relay hub listening on %s\n", listen)
-			fmt.Printf("devices: ws://<host>%s/device?token=...\n", listen)
-			fmt.Printf("agents:  ws://<host>%s/agent?token=...\n", listen)
+			fmt.Printf("device identities: %s (mode 0600; id→secret bindings persist across restarts)\n", secretsFile)
+			fmt.Printf("devices: ws://<host>%s/device  (Authorization: Bearer <devices token>)\n", listen)
+			fmt.Printf("agents:  ws://<host>%s/agent   (Authorization: Bearer <agents token>)\n", listen)
 			srv := &relayHTTPServer{addr: listen, h: h.Handler()}
 			return srv.serve()
 		},
@@ -63,6 +80,7 @@ func newRelayCmd() *cobra.Command {
 	hubCmd.Flags().StringVar(&listen, "listen", ":8931", "address to listen on")
 	hubCmd.Flags().StringVar(&devicesToken, "devices-token", "", "shared token devices must present (prefer COMPANION_RELAY_DEVICES_TOKEN; \"*\" disables auth — lab only)")
 	hubCmd.Flags().StringVar(&agentsToken, "agents-token", "", "shared token agents must present (prefer COMPANION_RELAY_AGENTS_TOKEN; \"*\" disables auth — lab only)")
+	hubCmd.Flags().StringVar(&secretsFile, "secrets-file", "", "private JSON file for id→secret bindings (default ~/.companion-cli/relay-secrets.json; COMPANION_RELAY_SECRETS_FILE)")
 	relayCmd.AddCommand(hubCmd)
 
 	// companion relay push --hub ws://host:8931 --token T --device ID \
@@ -142,12 +160,16 @@ func newRelayCmd() *cobra.Command {
 				u.Scheme = "https"
 			}
 			u.Path = "/health"
-			q := u.Query()
-			q.Set("token", token)
-			q.Set("format", "json")
-			u.RawQuery = q.Encode()
+			// Never put the token in the URL. Request headers are not copied
+			// into proxy access logs or terminal error messages.
+			u.RawQuery = ""
+			req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, u.String(), nil)
+			if err != nil {
+				return fmt.Errorf("hub health request: %w", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
 			hc := &http.Client{Timeout: 10 * time.Second}
-			resp, err := hc.Get(u.String())
+			resp, err := hc.Do(req)
 			if err != nil {
 				return fmt.Errorf("hub health: %w", err)
 			}
@@ -157,7 +179,12 @@ func newRelayCmd() *cobra.Command {
 				return fmt.Errorf("hub health: HTTP %d: %s", resp.StatusCode, body)
 			}
 			var health struct {
-				Devices []struct {
+				// Devices is a pointer so an authenticated empty list
+				// ([]) is distinguishable from the unauthenticated
+				// liveness-only body ({"ok":true}), which omits the field.
+				// Treating the latter as "no devices" made a rejected
+				// token look like an idle hub and exit 0.
+				Devices *[]struct {
 					ID      string `json:"id"`
 					IP      string `json:"ip"`
 					Version string `json:"version"`
@@ -167,11 +194,14 @@ func newRelayCmd() *cobra.Command {
 			if err := json.Unmarshal(body, &health); err != nil {
 				return fmt.Errorf("health parse: %w", err)
 			}
-			if len(health.Devices) == 0 {
+			if health.Devices == nil {
+				return fmt.Errorf("hub returned liveness only — the agent token was rejected (or the hub predates the device inventory)")
+			}
+			if len(*health.Devices) == 0 {
 				fmt.Println("no devices online")
 				return nil
 			}
-			for _, d := range health.Devices {
+			for _, d := range *health.Devices {
 				state := "idle"
 				if d.Busy {
 					state = "busy"

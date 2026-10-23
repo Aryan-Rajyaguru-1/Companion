@@ -9,7 +9,9 @@
  * and streams firmware bytes which are forwarded to the
  * target MCU over UART2.
  *
- * GitHub: https://github.com/arduino/arduino-cli  ← used by host IDE
+ * Build with `companion compile` — the Companion CLI owns the board core,
+ * toolchain, and library resolution, so no Arduino IDE or arduino-cli install
+ * is required.
  *
  * ── Quick wiring ──────────────────────────────────────────────
  *  ESP32 GPIO17 (TX2) → Target RX
@@ -31,12 +33,9 @@
 #include <ArduinoOTA.h>
 
 // ── WiFi configuration (overridable) ──────────────────────────
-// config.local.h (this folder) is tracked as a sanitized TEMPLATE with
-// placeholder values so testers can edit it directly. After putting in
-// personal credentials, run:
-//   git update-index --skip-worktree config.local.h
-// so they are never committed. If the file is absent, the safe AP-mode
-// defaults below are used.
+// config.local.h (this folder) is git-ignored. The tracked, sanitized
+// template is config.example.h; copy it and fill in personal credentials.
+// If the file is absent, the fail-closed defaults below are used.
 #if __has_include("config.local.h")
   #include "config.local.h"
 #endif
@@ -44,8 +43,9 @@
 // ── Defaults (only used when config.local.h is not present) ────
 // Set WIFI_AP_MODE to:
 //   true  → ESP32 hosts its own Access Point (no router needed)
-//           → IDE connects to "ESP32-OTA" WiFi network
+//           → IDE connects to the AP_SSID you configure
 //           → Then use IP: 192.168.4.1 in Bridge Settings
+//           → AP_PASS must be a unique 8+ character value; no default exists
 //   false → ESP32 joins your existing WiFi router (STA mode)
 //           → IDE finds ESP32 on same network via MDNS or by IP
 #ifndef WIFI_AP_MODE
@@ -57,7 +57,7 @@
   #define AP_SSID         "ESP32-OTA"
 #endif
 #ifndef AP_PASS
-  #define AP_PASS         "flashme!"
+  #define AP_PASS         ""   // MUST be set (8+ chars); the sketch refuses an open AP
 #endif
 
 // STA mode credentials (used when WIFI_AP_MODE = false)
@@ -80,11 +80,22 @@
   #define OTA_HOSTNAME_DEFAULT "companion-bridge"
 #endif
 #ifndef OTA_PASSWORD
-  #define OTA_PASSWORD    ""   // set in config.local.h to require auth
+  #define OTA_PASSWORD    ""   // MUST be set (8+ chars) to enable LAN OTA
 #endif
+// A credential is usable only when it is long enough and not a copied
+// placeholder. This deliberately recognizes the old public AP default
+// ("flashme!") too, so an unedited config cannot silently keep an open AP.
+static bool credentialConfigured(const char *v) {
+  if (v == nullptr || strlen(v) < 8) return false;
+  if (strncmp(v, "YOUR_", 5) == 0) return false;
+  if (strncmp(v, "CHANGE_ME", 9) == 0) return false;
+  if (strcmp(v, "flashme!") == 0) return false;
+  return true;
+}
+static bool localOtaStarted = false;
 // Resolved at runtime in setup(): stays OTA_HOSTNAME when the user
 // overrode it in config.local.h, otherwise becomes companion-XXXXXX
-// built from the last 3 bytes of WiFi.macAddress() so multiple
+// built from the last 3 bytes of the eFuse base MAC so multiple
 // bridges on one LAN get unique OTA/mDNS hostnames.
 char otaHostname[32] = OTA_HOSTNAME_DEFAULT;
 
@@ -113,6 +124,9 @@ char otaHostname[32] = OTA_HOSTNAME_DEFAULT;
 #endif
 #ifndef RELAY_TLS
   #define RELAY_TLS     false  // true → wss:// (through a TLS-terminating proxy)
+#endif
+#ifndef RELAY_CA_CERT
+  #define RELAY_CA_CERT "YOUR_HUB_CA_PEM"  // REQUIRED when RELAY_TLS is true
 #endif
 #ifndef DEVICE_TOKEN
   #define DEVICE_TOKEN  "YOUR_DEVICE_TOKEN"  // COMPANION_RELAY_DEVICES_TOKEN on the hub
@@ -166,16 +180,17 @@ static bool bridgeNeverPushing() { return false; } // the bridge is never an OTA
 // same id, and since re-registration supersedes the incumbent, they would
 // flip-flop forever — each side closing the other every 5s as its watchdog
 // re-dials.
-static void macSuffix(char *out, size_t outLen); // defined below, with the hostname logic
+#if RELAY_MODE_REMOTE
 static void resolveRelayDeviceId() {
   if (strcmp(DEVICE_ID, DEVICE_ID_DEFAULT) != 0) {
     strlcpy(relayDeviceId, DEVICE_ID, sizeof(relayDeviceId));
     return;
   }
   char suffix[7];
-  macSuffix(suffix, sizeof(suffix));
+  relayMacSuffix(suffix, sizeof(suffix)); // shared helper from CompanionRelay.h
   snprintf(relayDeviceId, sizeof(relayDeviceId), "%s-%s", DEVICE_ID_DEFAULT, suffix);
 }
+#endif
 
 static const RelayLinkConfig bridgeRelayLink = {
   bridgeFwVersion,
@@ -183,24 +198,6 @@ static const RelayLinkConfig bridgeRelayLink = {
   bridgeOnRelayText,
   bridgeOnRelayBinary,
 };
-// macSuffix fills out with six hex characters derived from the last 3 bytes of
-// the MAC ("AA:BB:CC:DD:EE:FF" → "DDEEFF"). Shared by every name the sketch
-// derives from hardware identity, so the OTA hostname and the relay device id
-// always agree about which board this is.
-static void macSuffix(char *out, size_t outLen) {
-  String mac = WiFi.macAddress();
-  const int pick[6] = { 9, 10, 12, 13, 15, 16 };
-  size_t n = 0;
-  for (int i = 0; i < 6 && n + 1 < outLen; i++) {
-    int idx = pick[i];
-    char c = (idx < (int)mac.length()) ? mac.charAt(idx) : '0';
-    if (c == ':') c = '0';
-    if (c >= 'a' && c <= 'f') c = (char)(c - 'a' + 'A');
-    out[n++] = c;
-  }
-  out[n] = '\0';
-}
-
 void resolveOtaHostname() {
   if (strcmp(OTA_HOSTNAME, OTA_HOSTNAME_DEFAULT) != 0) {
     strncpy(otaHostname, OTA_HOSTNAME, sizeof(otaHostname) - 1);
@@ -208,7 +205,7 @@ void resolveOtaHostname() {
     return;
   }
   char suffix[7];
-  macSuffix(suffix, sizeof(suffix));
+  relayMacSuffix(suffix, sizeof(suffix)); // shared helper from CompanionRelay.h
   snprintf(otaHostname, sizeof(otaHostname), "companion-%s", suffix);
 }
 
@@ -356,6 +353,12 @@ void setup() {
   }
   Serial.printf("\n  ✓ Connected! ip=%s\n", WiFi.localIP().toString().c_str());
 #elif WIFI_AP_MODE
+  if (!credentialConfigured(AP_PASS)) {
+    Serial.println("\n  ✗ REFUSING TO START AN OPEN ACCESS POINT");
+    Serial.println("    Set AP_PASS in config.local.h to a unique password of at least 8 characters.");
+    Serial.println("    The old public default (\"flashme!\") is not accepted.\n");
+    return; // no AP, no OTA, no bridge service
+  }
   WiFi.softAP(AP_SSID, AP_PASS);
   Serial.println("\n╔════════════════════════════════════════════════════╗");
   Serial.println("║         ESP32 ACCESS POINT MODE (AP)              ║");
@@ -397,6 +400,11 @@ void setup() {
   Serial.println("  → Copy the IP address above into Bridge Settings → Connection tab\n");
 #endif
 
+  // Unique OTA/mDNS hostname: companion-XXXXXX from MAC unless the user
+  // overrode OTA_HOSTNAME in config.local.h. Resolve it in BOTH modes: the LAN
+  // OTA recovery service is also available when the bridge dials the relay.
+  resolveOtaHostname();
+
 #if RELAY_MODE_REMOTE
   // Relay mode: dial the hub and pipe WS↔UART. No LAN TCP server, no mDNS —
   // the IDE reaches this bridge through `companion relay bridge`.
@@ -406,10 +414,6 @@ void setup() {
 #else
   tcpServer.begin();
   Serial.printf("  TCP server listening on port %d...\n\n", TCP_PORT);
-
-  // Unique OTA/mDNS hostname: companion-XXXXXX from MAC unless the
-  // user overrode OTA_HOSTNAME in config.local.h.
-  resolveOtaHostname();
 
   // Start mDNS — broadcast this ESP32 as "<hostname>.local" on the network
   if (!MDNS.begin(otaHostname)) {
@@ -421,48 +425,32 @@ void setup() {
   }
 #endif // RELAY_MODE_REMOTE / LAN server
 
-  // ── Security posture banner (audit F001/F005) ────────────────────
-  // OTA with no password accepts firmware from anyone on the network, and
-  // the AP-mode default password is public knowledge. Say so loudly on
-  // every boot so an open device is a conscious choice, never a surprise.
-  if (strlen(OTA_PASSWORD) == 0) {
-    Serial.println("  ┌──────────────────────────────────────────────┐");
-    Serial.println("  │ ⚠ SECURITY: OTA has NO password — anyone on  │");
-    Serial.println("  │ this network can reflash this device. Set    │");
-    Serial.println("  │ OTA_PASSWORD in config.local.h to require    │");
-    Serial.println("  │ authentication.                              │");
-    Serial.println("  └──────────────────────────────────────────────┘");
-  }
-#if WIFI_AP_MODE
-  if (strcmp(AP_PASS, "flashme!") == 0) {
-    Serial.println("  ┌──────────────────────────────────────────────┐");
-    Serial.println("  │ ⚠ SECURITY: using the DEFAULT AP password    │");
-    Serial.println("  │ (\"flashme!\"). Anyone in WiFi range can join  │");
-    Serial.println("  │ this hotspot. Change AP_PASS in              │");
-    Serial.println("  │ config.local.h for field deployments.        │");
-    Serial.println("  └──────────────────────────────────────────────┘");
-  }
-#endif
-
+  // OTA has no unauthenticated mode: an empty/placeholder/published default
+  // password disables the service. This is fail-closed by design — the old
+  // behavior started ArduinoOTA with no password and merely printed a warning,
+  // so anyone on the network could reflash the bridge.
 #if defined(ARDUINO_ARCH_ESP32)
-  // ── OTA server mode (bridge firmware can be updated over WiFi) ──
-  ArduinoOTA.setHostname(otaHostname);
-  // String literals can't be compared in #if — check at runtime.
-  if (strlen(OTA_PASSWORD) > 0) {
+  if (!credentialConfigured(OTA_PASSWORD)) {
+    Serial.println("  ⚠ LAN OTA disabled: set OTA_PASSWORD in config.local.h");
+    Serial.println("    to a unique password of at least 8 characters.\n");
+  } else {
+    // ── OTA server mode (bridge firmware can be updated over WiFi) ──
+    ArduinoOTA.setHostname(otaHostname);
     ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.onStart([]() {
+      Serial.println("\n  ➜ OTA update started — bridge reflashing...");
+    });
+    ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
+      Serial.printf("  OTA %u%%\r", p * 100 / t);
+    });
+    ArduinoOTA.onEnd([]() {
+      Serial.println("\n  ✓ OTA update complete — rebooting");
+    });
+    ArduinoOTA.begin();
+    localOtaStarted = true;
+    Serial.printf("  ✓ OTA server on port 3232 (hostname %s.local)\n", otaHostname);
+    Serial.printf("  → Re-flash this bridge with: companion ota upload <ip>\n\n");
   }
-  ArduinoOTA.onStart([]() {
-    Serial.println("\n  ➜ OTA update started — bridge reflashing...");
-  });
-  ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
-    Serial.printf("  OTA %u%%\r", p * 100 / t);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\n  ✓ OTA update complete — rebooting");
-  });
-  ArduinoOTA.begin();
-  Serial.printf("  ✓ OTA server on port 3232 (hostname %s.local)\n", otaHostname);
-  Serial.printf("  → Re-flash this bridge with: companion ota upload <ip>\n\n");
 #endif
 }
 
@@ -488,7 +476,7 @@ static void bridgeWriteToClient(const char *s) {
 
 void loop() {
 #if defined(ARDUINO_ARCH_ESP32)
-  ArduinoOTA.handle(); // keep the OTA server responsive
+  if (localOtaStarted) ArduinoOTA.handle(); // keep the OTA server responsive
 #endif
 
 #if RELAY_MODE_REMOTE
@@ -591,7 +579,7 @@ int handleControl(uint8_t* payload, int available) {
                          (uint32_t)payload[4];
         currentBaud = baud;
         Serial2.begin(baud, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
-        Serial.printf("[CTRL] Baud → %u\n", baud);
+        Serial.printf("[CTRL] Baud → %lu\n", (unsigned long)baud);
         return 5;
       }
       return 1;
@@ -611,9 +599,9 @@ int handleControl(uint8_t* payload, int available) {
     case CMD_QUERY: {
       char resp[160];
       snprintf(resp, sizeof(resp),
-               "%s profile=%d(%s) baud=%u EN=%d BOOT=%d ota=on(mdns=%s,port=3232)\r\n",
+               "%s profile=%d(%s) baud=%lu EN=%d BOOT=%d ota=on(mdns=%s,port=3232)\r\n",
                FW_VERSION, currentProfile, profiles[currentProfile].name,
-               currentBaud, PIN_TARGET_EN, PIN_TARGET_BOOT, otaHostname);
+               (unsigned long)currentBaud, PIN_TARGET_EN, PIN_TARGET_BOOT, otaHostname);
       bridgeWriteToClient(resp); // same transport as the client's own bytes
       return 1;
     }

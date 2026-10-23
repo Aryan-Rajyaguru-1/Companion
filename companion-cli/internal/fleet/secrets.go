@@ -233,7 +233,7 @@ func unprotectSecret(v string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("corrupt encrypted secret: bad salt: %w", err)
 		}
-		pass := os.Getenv("COMPANION_FLEET_SECRET_KEY")
+		pass := strings.TrimSpace(os.Getenv("COMPANION_FLEET_SECRET_KEY"))
 		if pass == "" {
 			return "", fmt.Errorf("this registry has ENCRYPTED device secrets but COMPANION_FLEET_SECRET_KEY is not set")
 		}

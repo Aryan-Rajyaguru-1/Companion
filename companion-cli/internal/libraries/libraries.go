@@ -16,14 +16,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/companion-ide/companion-cli/internal/atomicfile"
 	"github.com/companion-ide/companion-cli/internal/boards"
 	"github.com/companion-ide/companion-cli/internal/config"
+	"github.com/companion-ide/companion-cli/internal/safename"
 	semver "github.com/companion-ide/companion-cli/internal/version"
 )
 
 // ── Index types (mirrors library_index.json schema) ──────────────
 
-const LibraryIndexURL = "https://downloads.arduino.cc/libraries/library_index.json"
+const (
+	LibraryIndexURL = "https://downloads.arduino.cc/libraries/library_index.json"
+
+	// Index and archive bounds. Both are read from a remote endpoint; the
+	// previous code used io.ReadAll / unbounded writes, so a hostile or broken
+	// server could exhaust memory or fill the disk.
+	maxLibraryIndexBytes   int64 = 64 << 20  // 64 MiB
+	maxLibraryArchiveBytes int64 = 512 << 20 // 512 MiB
+)
 
 type LibraryIndex struct {
 	Libraries []LibraryRelease `json:"libraries"`
@@ -85,7 +95,7 @@ func (m *Manager) UpdateIndex(onProgress func(string)) error {
 		return fmt.Errorf("HTTP %d from library index", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := readAllLimit(resp.Body, maxLibraryIndexBytes)
 	if err != nil {
 		return fmt.Errorf("reading library index: %w", err)
 	}
@@ -106,7 +116,7 @@ func (m *Manager) loadIndex() (*LibraryIndex, error) {
 	}
 
 	indexPath := filepath.Join(m.cfg.IndexesDir(), "library_index.json")
-	data, err := os.ReadFile(indexPath)
+	data, err := readFileLimit(indexPath, maxLibraryIndexBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &LibraryIndex{}, nil
@@ -195,8 +205,14 @@ func (m *Manager) Install(name string, version string, onProgress func(string)) 
 
 	// Download
 	dlDir := m.cfg.Directories.Downloads
-	os.MkdirAll(dlDir, 0o755)
-	archivePath := filepath.Join(dlDir, found.ArchiveFileName)
+	if err := os.MkdirAll(dlDir, 0o755); err != nil {
+		return fmt.Errorf("create downloads directory: %w", err)
+	}
+	archiveName, err := safeArchiveSegment(found.ArchiveFileName)
+	if err != nil {
+		return fmt.Errorf("library index: invalid archive filename: %w", err)
+	}
+	archivePath := filepath.Join(dlDir, archiveName)
 
 	if err := downloadLibrary(found.URL, archivePath, onProgress); err != nil {
 		return fmt.Errorf("download: %w", err)
@@ -204,8 +220,16 @@ func (m *Manager) Install(name string, version string, onProgress func(string)) 
 
 	// Verify archive integrity (the index checksum was parsed but never
 	// checked). On mismatch, assume a corrupt cached archive, re-download
-	// once, and verify again before giving up.
-	if found.Checksum != "" {
+	// once, and verify again before giving up. A missing checksum is treated
+	// like a checksum-less board index: refuse unless the operator explicitly
+	// opted into a mirror they control.
+	if strings.TrimSpace(found.Checksum) == "" {
+		if os.Getenv("COMPANION_ALLOW_UNVERIFIED_INDEX") != "1" {
+			return fmt.Errorf("library index publishes no checksum for %s — refusing to install it "+
+				"(set COMPANION_ALLOW_UNVERIFIED_INDEX=1 only for a mirror you control)", found.ArchiveFileName)
+		}
+		onProgress("  ⚠ no checksum in index — verification SKIPPED by COMPANION_ALLOW_UNVERIFIED_INDEX=1")
+	} else {
 		if err := verifyFileChecksum(archivePath, found.Checksum); err != nil {
 			onProgress("Checksum mismatch — re-downloading…")
 			os.Remove(archivePath)
@@ -221,13 +245,14 @@ func (m *Manager) Install(name string, version string, onProgress func(string)) 
 
 	// Extract to a temporary directory first
 	// (boards.ExtractArchive strips top-level dir, which is what we want)
-	tempDir := filepath.Join(m.cfg.Directories.Downloads, ".extract")
-	os.RemoveAll(tempDir)
-	os.MkdirAll(tempDir, 0o755)
+	tempDir, err := os.MkdirTemp(dlDir, ".extract-")
+	if err != nil {
+		return fmt.Errorf("create extract directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
 
 	onProgress("Extracting…")
 	if err := boards.ExtractArchive(archivePath, tempDir); err != nil {
-		os.RemoveAll(tempDir)
 		return fmt.Errorf("extract: %w", err)
 	}
 
@@ -237,17 +262,20 @@ func (m *Manager) Install(name string, version string, onProgress func(string)) 
 	if _, err := os.Stat(filepath.Join(tempDir, "library.properties")); err == nil {
 		// Looks like a valid library, move it to the final location
 		libDir := m.cfg.LibrariesDir()
-		os.MkdirAll(libDir, 0o755)
+		if err := os.MkdirAll(libDir, 0o755); err != nil {
+			return fmt.Errorf("create libraries directory: %w", err)
+		}
 
-		libName := strings.ReplaceAll(found.Name, " ", "_")
+		libName, err := safeLibrarySegment(found.Name)
+		if err != nil {
+			return fmt.Errorf("library index: invalid library name: %w", err)
+		}
 		destPath := filepath.Join(libDir, libName)
 		os.RemoveAll(destPath)
 		if err := os.Rename(tempDir, destPath); err != nil {
-			os.RemoveAll(tempDir)
 			return fmt.Errorf("move: %w", err)
 		}
 	} else {
-		os.RemoveAll(tempDir)
 		return fmt.Errorf("invalid library archive: no library.properties found")
 	}
 
@@ -257,7 +285,11 @@ func (m *Manager) Install(name string, version string, onProgress func(string)) 
 
 // Uninstall removes an installed library.
 func (m *Manager) Uninstall(name string) error {
-	libPath := filepath.Join(m.cfg.LibrariesDir(), strings.ReplaceAll(name, " ", "_"))
+	libName, err := safeLibrarySegment(name)
+	if err != nil {
+		return fmt.Errorf("invalid library name: %w", err)
+	}
+	libPath := filepath.Join(m.cfg.LibrariesDir(), libName)
 	if _, err := os.Stat(libPath); os.IsNotExist(err) {
 		return fmt.Errorf("library %q is not installed", name)
 	}
@@ -320,10 +352,18 @@ func parseInstalledLibrary(dir string) *InstalledLibrary {
 	}
 }
 
-// downloadLibrary downloads a library archive.
+// downloadLibrary downloads a library archive to a temporary file and renames
+// it into place only after the complete body has been received. Writing
+// directly to dest left a truncated file that the next run treated as a cache
+// hit; capping the read prevents a hostile index from filling the disk.
 func downloadLibrary(url, dest string, onProgress func(string)) error {
-	if _, err := os.Stat(dest); err == nil {
-		return nil // already cached
+	if info, err := os.Stat(dest); err == nil {
+		if info.Size() > maxLibraryArchiveBytes {
+			return fmt.Errorf("cached archive %s is larger than the %d byte limit", dest, maxLibraryArchiveBytes)
+		}
+		if info.Size() > 0 {
+			return nil // already cached
+		}
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
@@ -333,39 +373,141 @@ func downloadLibrary(url, dest string, onProgress func(string)) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+	if resp.ContentLength > maxLibraryArchiveBytes {
+		return fmt.Errorf("archive is %d bytes, over the %d byte limit", resp.ContentLength, maxLibraryArchiveBytes)
+	}
 
-	f, err := os.Create(dest)
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".library-download-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
 
 	total := resp.ContentLength
 	var downloaded int64
 	buf := make([]byte, 32*1024)
 
 	for {
-		n, err := resp.Body.Read(buf)
+		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			f.Write(buf[:n])
 			downloaded += int64(n)
+			if downloaded > maxLibraryArchiveBytes {
+				tmp.Close()
+				return fmt.Errorf("download exceeded the %d byte limit — aborted", maxLibraryArchiveBytes)
+			}
+			if _, werr := tmp.Write(buf[:n]); werr != nil {
+				tmp.Close()
+				return werr
+			}
 			if total > 0 && downloaded%(64*1024) == 0 {
 				pct := downloaded * 100 / total
 				onProgress(fmt.Sprintf("\r  %d%% (%d/%d KB)", pct, downloaded/1024, total/1024))
 			}
 		}
-		if err == io.EOF {
+		if readErr == io.EOF {
 			break
 		}
-		if err != nil {
-			return err
+		if readErr != nil {
+			tmp.Close()
+			return readErr
 		}
 	}
-	fmt.Println()
+
+	if total > 0 && downloaded != total {
+		tmp.Close()
+		return fmt.Errorf("incomplete download: got %d/%d bytes", downloaded, total)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := atomicfile.Replace(tmpName, dest); err != nil {
+		return err
+	}
+	onProgress("")
 	return nil
+}
+
+// validateLibrarySegment rejects values that are path references or path
+// separators. Library and archive names come from a downloaded index, so they
+// cannot be trusted as filenames.
+func validateLibrarySegment(s, field string) (string, error) {
+	v := strings.TrimSpace(s)
+	if v == "" {
+		return "", fmt.Errorf("%s is empty", field)
+	}
+	if v == "." || v == ".." {
+		return "", fmt.Errorf("%s is a path reference (%q)", field, v)
+	}
+	if strings.ContainsAny(v, `/\`) || strings.ContainsRune(v, 0) || strings.ContainsAny(v, "\r\n") {
+		return "", fmt.Errorf("%s must be a plain name, got %q", field, v)
+	}
+	if strings.HasPrefix(v, "-") {
+		return "", fmt.Errorf("%s must not start with '-', got %q", field, v)
+	}
+	// Keep names portable. ':' is valid on Unix but on Windows opens an
+	// alternate data stream ("name:stream"), so a hostile index could write a
+	// file that is invisible to a normal directory listing. The same applies to
+	// the other Windows metacharacters. Other punctuation is left alone because
+	// legitimate registry names use it.
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`<>:"|?*`, r) {
+			return "", fmt.Errorf("%s contains an unsupported character %q in %q", field, r, v)
+		}
+	}
+	if strings.HasSuffix(v, ".") {
+		return "", fmt.Errorf("%s must not end with '.', got %q", field, v)
+	}
+	if safename.IsWindowsReservedName(v) {
+		return "", fmt.Errorf("%s is a reserved device name on Windows: %q", field, v)
+	}
+	return v, nil
+}
+
+func safeLibrarySegment(name string) (string, error) {
+	v, err := validateLibrarySegment(name, "library name")
+	if err != nil {
+		return "", err
+	}
+	return strings.ReplaceAll(v, " ", "_"), nil
+}
+
+func safeArchiveSegment(name string) (string, error) {
+	return validateLibrarySegment(name, "archive filename")
+}
+
+func readAllLimit(r io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("data is larger than the %d byte limit", max)
+	}
+	return data, nil
+}
+
+func readFileLimit(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.Size() > max {
+		return nil, fmt.Errorf("%s is larger than the %d byte limit", path, max)
+	}
+	return readAllLimit(f, max)
 }
 
 // verifyFileChecksum checks a downloaded file against an index checksum of

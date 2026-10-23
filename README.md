@@ -134,7 +134,8 @@ cd companion-cli && go mod tidy && go build -o companion .
 # 4. Run IDE
 cd ../companion-ide && npm install && npm run dev
 
-# 5. Connect to WiFi SSID=ESP32-OTA Password=flashme!, then Upload
+# 5. Set AP_SSID/AP_PASS in config.local.h and flash. Join that AP, then Upload.
+#    There is no default AP password: the sketch refuses an open or placeholder AP.
 ```
 
 ### Bridge → target wiring (step 3)

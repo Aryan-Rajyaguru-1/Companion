@@ -6,10 +6,11 @@
 // Format:  vendor:architecture:board[:menu_key=value,menu_key=value,...]
 //
 // Examples:
-//   arduino:avr:uno
-//   arduino:avr:mega:cpu=atmega2560
-//   esp32:esp32:esp32:freq=240,psram=enabled
-//   STMicroelectronics:stm32:Nucleo_64:pnum=NUCLEO_F103RB
+//
+//	arduino:avr:uno
+//	arduino:avr:mega:cpu=atmega2560
+//	esp32:esp32:esp32:freq=240,psram=enabled
+//	STMicroelectronics:stm32:Nucleo_64:pnum=NUCLEO_F103RB
 //
 // Benefits over ad-hoc string handling:
 //   - Validation catches typos early

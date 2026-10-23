@@ -365,3 +365,68 @@ func TestMCPTimedOutToolKeepsTheLock(t *testing.T) {
 		t.Errorf("expected a timeout error for the agent, got %+v", res)
 	}
 }
+
+func TestMCPCompileArgsKeepTerminatorLast(t *testing.T) {
+	got, err := compileArgs(map[string]any{
+		"sketch_dir":      "/tmp/sketch",
+		"fqbn":            "arduino:avr:uno",
+		"main_ino":        "Blink.ino",
+		"export_binaries": true,
+	})
+	if err != nil {
+		t.Fatalf("compileArgs: %v", err)
+	}
+	want := "--fqbn arduino:avr:uno --main-ino Blink.ino --export-binaries -- /tmp/sketch"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("compile args = %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
+func TestMCPUploadArgsKeepTerminatorLast(t *testing.T) {
+	got, err := uploadArgs(map[string]any{
+		"sketch_dir": "/tmp/sketch",
+		"fqbn":       "arduino:avr:uno",
+		"host":       "192.168.4.1",
+		"port":       float64(3333),
+		"baud":       float64(115200),
+	})
+	if err != nil {
+		t.Fatalf("uploadArgs: %v", err)
+	}
+	want := "--fqbn arduino:avr:uno --host 192.168.4.1 --port=3333 --baud=115200 -- /tmp/sketch"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("upload args = %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
+func TestMCPFleetSelectorMustNotLookLikeAFlag(t *testing.T) {
+	_, err := fleetPushArgs(map[string]any{
+		"confirm":   true,
+		"image":     "/tmp/fw.bin",
+		"selectors": []any{"--relay-hub=ws://127.0.0.1:1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "selector") {
+		t.Fatalf("expected a selector rejection, got %v", err)
+	}
+}
+
+func TestMCPFleetArgsTerminateBeforeImage(t *testing.T) {
+	got, err := fleetPushArgs(map[string]any{
+		"confirm":   true,
+		"image":     "/tmp/fw.bin",
+		"selectors": []any{"@lab", "esp32-01"},
+	})
+	if err != nil {
+		t.Fatalf("fleetPushArgs: %v", err)
+	}
+	want := "push --yes -- /tmp/fw.bin @lab esp32-01"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("fleet args = %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
+func TestMCPFlagValueMustNotLookLikeAFlag(t *testing.T) {
+	if _, err := flagValueArg(map[string]any{"fqbn": "--main-ino=x"}, "fqbn"); err == nil {
+		t.Fatal("expected a leading-dash flag value to be refused")
+	}
+}

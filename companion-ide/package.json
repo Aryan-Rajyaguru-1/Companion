@@ -8,7 +8,7 @@
   "homepage": "./",
   "scripts": {
     "dev": "concurrently -k -p \"[{name}]\" -n \"VITE,ELECTRON\" -c \"cyan,yellow\" \"vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
-    "build": "vite build && electron-builder",
+    "build": "node scripts/build-cli.js && vite build && electron-builder",
     "start": "electron .",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -23,8 +23,17 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "assets/**/*",
-      "bin/**/*"
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "companion",
+        "filter": [
+          "companion",
+          "companion.exe"
+        ]
+      }
     ],
     "win": {
       "target": "nsis"

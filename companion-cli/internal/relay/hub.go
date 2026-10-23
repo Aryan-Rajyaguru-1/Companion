@@ -18,6 +18,9 @@ type Config struct {
 	DevicesToken string        // shared token devices must present ("*" disables auth)
 	AgentsToken  string        // shared token agents must present ("*" disables auth)
 	ReadTimeout  time.Duration // per-control-frame deadline (0 → 30s)
+	// SecretsPath persists id→secret ownership across hub restarts. Empty
+	// disables persistence (tests only); the CLI always supplies a path.
+	SecretsPath string
 }
 
 // DeviceInfo is a status/health snapshot of one connected device.
@@ -39,7 +42,8 @@ type Hub struct {
 	agents  map[*agentConn]struct{}
 
 	// knownSecrets remembers the secret each device id has presented, and
-	// outlives the connection that presented it.
+	// outlives both the connection and the hub process. It is persisted to
+	// SecretsPath (mode 0600) before registration is acknowledged.
 	//
 	// Checking h.devices[id] is not enough, because that map holds only boards
 	// connected *right now*. A board that is powered off or has lost the network
@@ -48,12 +52,15 @@ type Hub struct {
 	// its real secret, would fail the same-secret check and be locked out of its
 	// own identity, while the squatter collected its pushes. An entry here is
 	// never removed and never overwritten, so the first secret to claim an id
-	// owns it for the lifetime of the hub process.
+	// owns it until an operator removes the file entry.
 	knownSecrets map[string]string
+	secretsPath  string
 }
 
-// NewHub builds a Hub with the given config.
-func NewHub(cfg Config) *Hub {
+// NewHub builds a Hub with the given config. When SecretsPath is set, its
+// bindings are loaded before the hub accepts any connection; a malformed,
+// insecure or unreadable file is a startup error, never silently ignored.
+func NewHub(cfg Config) (*Hub, error) {
 	if cfg.ReadTimeout <= 0 {
 		cfg.ReadTimeout = 30 * time.Second
 	}
@@ -71,12 +78,19 @@ func NewHub(cfg Config) *Hub {
 		log.Printf("*** WARNING: auth DISABLED for %s — a wildcard token accepts every client. "+
 			"Never run a deployed hub this way. ***", strings.Join(roles, " and "))
 	}
-	return &Hub{
+	h := &Hub{
 		cfg:          cfg,
 		devices:      make(map[string]*deviceConn),
 		agents:       make(map[*agentConn]struct{}),
 		knownSecrets: make(map[string]string),
+		secretsPath:  cfg.SecretsPath,
 	}
+	if h.secretsPath != "" {
+		if err := h.loadSecrets(); err != nil {
+			return nil, err
+		}
+	}
+	return h, nil
 }
 
 // conn is the shared websocket plumbing for both roles. Writes are

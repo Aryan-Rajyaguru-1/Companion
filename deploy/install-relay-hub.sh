@@ -126,7 +126,7 @@ echo "» unit active: $(systemctl is-active companion-relay-hub.service)"
 
 AGT=$(grep -E '^COMPANION_RELAY_AGENTS_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
 echo "» local /health:"
-curl -s --max-time 8 "http://127.0.0.1:$PORT/health?token=$AGT" || echo "  (no answer)"
+curl -s --max-time 8 -H "Authorization: Bearer $AGT" "http://127.0.0.1:$PORT/health" || echo "  (no answer)"
 echo
 echo "Next steps:"
 echo "  1. expose :$PORT over TLS and note the wss:// hostname (see setup-tunnel.sh),"

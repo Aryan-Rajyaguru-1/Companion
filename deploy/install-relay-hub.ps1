@@ -135,7 +135,7 @@ if ($InstallStartupTask) {
 
 # ── Verify ───────────────────────────────────────────────────────────────────
 try {
-    $h = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health?token=$($Tokens['COMPANION_RELAY_AGENTS_TOKEN'])" -TimeoutSec 8
+    $h = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -Headers @{ Authorization = "Bearer $($Tokens['COMPANION_RELAY_AGENTS_TOKEN'])" } -TimeoutSec 8
     if ($h.ok) {
         Ok "hub answering on 127.0.0.1:$Port"
         if ($h.devices) {

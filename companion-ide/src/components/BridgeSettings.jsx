@@ -99,7 +99,7 @@ export default function BridgeSettings({
                 spellCheck={false}
               />
               <div className="bs-hint">
-                Default: <code>192.168.4.1</code> when your laptop is on the bridge WiFi (<code>ESP32-OTA</code> / <code>flashme!</code>) — on a router, use the board IP or <code>companion-XXXXXX.local</code>
+                Default: <code>192.168.4.1</code> when your laptop is on the bridge's own AP (the <code>AP_SSID</code>/<code>AP_PASS</code> from <code>config.local.h</code>; there is no default password) — on a router, use the board IP or <code>companion-XXXXXX.local</code>
               </div>
             </div>
 

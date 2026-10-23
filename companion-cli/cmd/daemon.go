@@ -14,11 +14,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/companion-ide/companion-cli/internal/atomicfile"
 	"github.com/companion-ide/companion-cli/internal/boards"
 	"github.com/companion-ide/companion-cli/internal/compiler"
 	"github.com/companion-ide/companion-cli/internal/config"
@@ -85,9 +87,10 @@ type daemonServer struct {
 	tokenPath string
 	token     string
 
-	// Bug A: cancelCompile support
-	cancelMu   sync.Mutex
-	cancelFunc context.CancelFunc
+	// Bug A: cancelCompile support. The job pointer is the ownership token:
+	// an older compile must not clear a newer compile's cancellation slot.
+	cancelMu  sync.Mutex
+	cancelJob *compileJob
 
 	// Serial monitor hub: one bridge connection, many SSE subscribers.
 	serialMu      sync.Mutex
@@ -102,7 +105,45 @@ type serialFrame struct {
 	Closed bool   // connection dropped
 }
 
-func newDaemonServer(cfg *config.Config) (*daemonServer, error) {
+// compileJob identifies the single streaming compile allowed at a time.
+// Comparing pointers lets the finishing handler clear only its own slot, even
+// if compile.cancel released it and a second compile started in the meantime.
+type compileJob struct {
+	cancel context.CancelFunc
+}
+
+func (d *daemonServer) acquireCompileJob(cancel context.CancelFunc) *compileJob {
+	d.cancelMu.Lock()
+	defer d.cancelMu.Unlock()
+	if d.cancelJob != nil {
+		return nil
+	}
+	job := &compileJob{cancel: cancel}
+	d.cancelJob = job
+	return job
+}
+
+func (d *daemonServer) releaseCompileJob(job *compileJob) {
+	job.cancel()
+	d.cancelMu.Lock()
+	if d.cancelJob == job {
+		d.cancelJob = nil
+	}
+	d.cancelMu.Unlock()
+}
+
+func (d *daemonServer) cancelCompile() bool {
+	d.cancelMu.Lock()
+	defer d.cancelMu.Unlock()
+	if d.cancelJob == nil {
+		return false
+	}
+	d.cancelJob.cancel()
+	d.cancelJob = nil
+	return true
+}
+
+func newDaemonServer(cfg *config.Config, tokenPath string) (*daemonServer, error) {
 	bm := boards.NewManager(cfg)
 	cacheDir := compiler.DefaultCacheDir(cfg.Directories.Data)
 	cache, err := compiler.NewBuildCache(cacheDir)
@@ -115,14 +156,28 @@ func newDaemonServer(cfg *config.Config) (*daemonServer, error) {
 		return nil, fmt.Errorf("generate auth token: %w", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	daemonDir := filepath.Join(home, config.DirName, "daemon")
-	if err := os.MkdirAll(daemonDir, 0o700); err != nil {
+	if tokenPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("locate home directory for auth token: %w", err)
+		}
+		tokenPath = filepath.Join(home, config.DirName, "daemon", "auth-token")
+	}
+	tokenPath, err = filepath.Abs(tokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve auth token path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
 		return nil, fmt.Errorf("daemon state dir: %w", err)
 	}
-	tokenPath := filepath.Join(daemonDir, "auth-token")
-	// 0600: only the owning user may read the token.
-	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+	if err := checkTokenDir(filepath.Dir(tokenPath)); err != nil {
+		return nil, err
+	}
+	// 0600: only the owning user may read the token. The IDE points this at a
+	// private temp directory so it never has to print the credential to stdout
+	// (which is copied into the console pane and logs). Atomic replacement also
+	// means a pre-existing symlink at tokenPath is replaced, not followed.
+	if err := atomicfile.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
 		return nil, fmt.Errorf("write auth token: %w", err)
 	}
 
@@ -136,6 +191,30 @@ func newDaemonServer(cfg *config.Config) (*daemonServer, error) {
 		tokenPath:     tokenPath,
 		serialReaders: make(map[chan serialFrame]struct{}),
 	}, nil
+}
+
+// checkTokenDir refuses a world-writable token directory. The token file
+// itself is 0600, but in a world-writable directory another account could
+// replace it (or the whole path) and point clients at a token they control.
+// Existing 0755 application directories are fine: they are not writable by
+// anyone but their owner.
+func checkTokenDir(dir string) error {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("inspect auth token directory: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("auth token parent %s is not a directory", dir)
+	}
+	// Windows synthesizes modes instead of reporting Unix permission bits, so
+	// a normal file commonly appears as 0666/0777. The mode check is a Unix
+	// ownership control; Windows access is governed by ACLs.
+	if runtime.GOOS != "windows" {
+		if perm := fi.Mode().Perm(); perm&0o002 != 0 {
+			return fmt.Errorf("auth token directory %s is mode %04o; world-write access would let another user replace the token", dir, perm)
+		}
+	}
+	return nil
 }
 
 // generateToken returns 32 bytes of CSPRNG entropy, base64-encoded.
@@ -239,29 +318,16 @@ func (d *daemonServer) handleStreamCompile(w http.ResponseWriter, r *http.Reques
 	// Cancellation: client disconnect OR compile.cancel RPC kills the
 	// toolchain subprocesses through the compiler's exec.CommandContext.
 	ctx, cancel := context.WithCancel(context.Background())
-	// One streaming compile at a time. cancelFunc is a single slot, so two
-	// concurrent compiles silently overwrote each other: the second's defer
-	// cleared the slot while the first was still running, leaving
-	// compile.cancel cancelling nothing (or the wrong job).
-	d.cancelMu.Lock()
-	if d.cancelFunc != nil {
-		d.cancelMu.Unlock()
+	// One streaming compile at a time. The job pointer is an ownership token:
+	// after compile.cancel releases the slot and a second compile starts, the
+	// first compile's deferred cleanup must not clear the second's slot.
+	job := d.acquireCompileJob(cancel)
+	if job == nil {
 		cancel()
 		http.Error(w, "a compile is already running — cancel it before starting another", http.StatusConflict)
 		return
 	}
-	d.cancelFunc = cancel
-	d.cancelMu.Unlock()
-	defer func() {
-		cancel()
-		d.cancelMu.Lock()
-		// Only clear the slot if it is still OURS: a later compile may have
-		// taken it over after an early return.
-		if d.cancelFunc != nil {
-			d.cancelFunc = nil
-		}
-		d.cancelMu.Unlock()
-	}()
+	defer d.releaseCompileJob(job)
 
 	done := make(chan struct{})
 	defer close(done)
@@ -359,12 +425,7 @@ func (d *daemonServer) dispatch(ctx context.Context, method string, params json.
 
 	// Bug A: cancel the in-flight streaming compile
 	case "compile.cancel":
-		d.cancelMu.Lock()
-		if d.cancelFunc != nil {
-			d.cancelFunc()
-			d.cancelFunc = nil
-		}
-		d.cancelMu.Unlock()
+		d.cancelCompile()
 		return map[string]bool{"cancelled": true}, nil
 
 	case "board.list":
@@ -782,8 +843,9 @@ func (d *daemonServer) handleSerialStream(w http.ResponseWriter, r *http.Request
 
 func newDaemonCmd() *cobra.Command {
 	var (
-		port    int
-		pidFile string
+		port      int
+		pidFile   string
+		tokenFile = os.Getenv("COMPANION_DAEMON_TOKEN_FILE")
 	)
 
 	cmd := &cobra.Command{
@@ -796,8 +858,9 @@ is multiplexed over Server-Sent Events.
   companion daemon --port 44444
 
 Authentication: a bearer token is generated at startup and written to
-~/.companion-cli/daemon/auth-token (mode 0600). Every endpoint except
-GET /ping requires "Authorization: Bearer <token>".
+~/.companion-cli/daemon/auth-token (mode 0600), or to --token-file when set.
+Every endpoint except GET /ping requires "Authorization: Bearer <token>".
+Set COMPANION_DAEMON_TOKEN_FILE to choose the path without putting it in argv.
 
 Endpoints (also served under /api/v1/):
   POST /rpc              JSON-RPC 2.0 (boards, cache, cancel)
@@ -816,7 +879,7 @@ Endpoints (also served under /api/v1/):
 				return err
 			}
 
-			d, err := newDaemonServer(cfg)
+			d, err := newDaemonServer(cfg, tokenFile)
 			if err != nil {
 				return fmt.Errorf("daemon init: %w", err)
 			}
@@ -846,13 +909,10 @@ Endpoints (also served under /api/v1/):
 			}
 
 			fmt.Printf("COMPANION_DAEMON_PORT=%d\n", actualPort)
-			// The token is NOT printed: this stdout is piped into the IDE's
-			// console pane (and often a log file), which turned a bearer
-			// credential into something readable in a screenshot. It is
-			// written to a 0600 file instead; opt in explicitly for scripts.
-			if os.Getenv("COMPANION_DAEMON_PRINT_TOKEN") == "1" {
-				fmt.Printf("COMPANION_DAEMON_TOKEN=%s\n", d.token)
-			}
+			// The token is never printed: stdout is piped into the IDE's console
+			// pane (and often a log file), which turns a bearer credential into
+			// something readable in a screenshot. It is written to a 0600 file
+			// and read from there by clients.
 			os.Stdout.Sync()
 			printInfo(fmt.Sprintf("Daemon listening on port %d (PID %d)", actualPort, os.Getpid()))
 			printInfo(fmt.Sprintf("Auth token written to %s", d.tokenPath))
@@ -895,5 +955,7 @@ Endpoints (also served under /api/v1/):
 
 	cmd.Flags().IntVar(&port, "port", 0, "Port (0 = OS-assigned)")
 	cmd.Flags().StringVar(&pidFile, "pid-file", "", "Write PID to file (optional)")
+	cmd.Flags().StringVar(&tokenFile, "token-file", tokenFile,
+		"Write the bearer token to this file (default ~/.companion-cli/daemon/auth-token; env COMPANION_DAEMON_TOKEN_FILE)")
 	return cmd
 }

@@ -140,9 +140,10 @@ if [ -f "$IDE_DIR/package.json" ]; then
        $IDE_DIR/esp32-bridge-firmware/esp32_bridge
   2. Start the IDE:
        cd $IDE_DIR && npm run dev
-  3. Connect to the bridge WiFi (SSID: ESP32-OTA, password: flashme!)
-     and hit Upload. Edit WiFi credentials in
-       $IDE_DIR/esp32-bridge-firmware/esp32_bridge/config.local.h"
+  3. Set a unique AP_PASS (8+ chars) and your AP_SSID in
+       $IDE_DIR/esp32-bridge-firmware/esp32_bridge/config.local.h
+     flash, join that WiFi, then hit Upload. There is no default AP password;
+     the sketch refuses an open or placeholder AP."
 else
   ok "No IDE checkout found — CLI-only setup complete"
   NEXT_STEPS="The IDE (Electron app) was not found next to this script.

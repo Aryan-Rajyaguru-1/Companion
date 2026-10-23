@@ -10,13 +10,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/companion-ide/companion-cli/internal/atomicfile"
 	"github.com/companion-ide/companion-cli/internal/config"
+	"github.com/companion-ide/companion-cli/internal/safename"
 	"github.com/companion-ide/companion-cli/internal/version"
 )
 
@@ -91,6 +95,11 @@ func NewManager(cfg *config.Config) *Manager {
 	return &Manager{cfg: cfg}
 }
 
+// maxIndexBytes bounds a package index read from disk or downloaded from a
+// configured URL. Real Arduino indexes are a few MiB; an unbounded ReadAll let
+// a hostile mirror or a local corrupt file exhaust memory before JSON parsing.
+const maxIndexBytes = 64 << 20 // 64 MiB
+
 // UpdateIndex downloads all board package indexes from configured URLs.
 // Mirrors arduino-cli's core update-index command.
 func (m *Manager) UpdateIndex(onProgress func(string)) error {
@@ -106,32 +115,36 @@ func (m *Manager) UpdateIndex(onProgress func(string)) error {
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	for _, url := range urls {
-		// Derive filename from URL
-		parts := strings.Split(url, "/")
-		fname := parts[len(parts)-1]
-		if !strings.HasSuffix(fname, ".json") {
-			fname = "package_" + fname + "_index.json"
+	for _, rawURL := range urls {
+		// Derive a filename from the URL, but treat it as untrusted input: the
+		// URL is user-configured and a path like "/../../.bashrc" must never
+		// escape IndexesDir. safePathSegment also rejects control characters
+		// and option-looking names.
+		fname, err := indexFilename(rawURL)
+		if err != nil {
+			onProgress(fmt.Sprintf("  ⚠ Skip %s: %v", rawURL, err))
+			continue
 		}
 		destPath := filepath.Join(indexDir, fname)
 
 		onProgress(fmt.Sprintf("Downloading %s…", fname))
 
-		resp, err := client.Get(url)
+		resp, err := client.Get(rawURL)
 		if err != nil {
 			onProgress(fmt.Sprintf("  ⚠ Skip %s: %v", fname, err))
 			continue
 		}
 
-		data, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			onProgress(fmt.Sprintf("  ⚠ Read error %s: %v", fname, err))
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			onProgress(fmt.Sprintf("  ⚠ HTTP %d for %s", resp.StatusCode, rawURL))
 			continue
 		}
 
-		if resp.StatusCode != 200 {
-			onProgress(fmt.Sprintf("  ⚠ HTTP %d for %s", resp.StatusCode, url))
+		data, err := readAllLimit(resp.Body, maxIndexBytes)
+		resp.Body.Close()
+		if err != nil {
+			onProgress(fmt.Sprintf("  ⚠ Read error %s: %v", fname, err))
 			continue
 		}
 
@@ -144,6 +157,47 @@ func (m *Manager) UpdateIndex(onProgress func(string)) error {
 
 	m.indexes = nil // Invalidate cache
 	return nil
+}
+
+// indexFilename turns a configured index URL into a safe local filename. The
+// basename is untrusted: URL paths can contain "..", encoded separators, or
+// query strings that a naive string split would carry into filepath.Join.
+func indexFilename(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid index URL: %w", err)
+	}
+	fname := path.Base(strings.TrimSuffix(u.Path, "/"))
+	if fname == "." || fname == "/" || fname == "" {
+		fname = "package_index.json"
+	}
+	if !strings.HasSuffix(fname, ".json") {
+		fname = "package_" + fname + "_index.json"
+	}
+	return safePathSegment(fname, "index filename")
+}
+
+func readAllLimit(r io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("index is larger than the %d byte limit", max)
+	}
+	return data, nil
+}
+
+func readFileLimit(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.Size() > max {
+		return nil, fmt.Errorf("%s is larger than the %d byte limit", path, max)
+	}
+	return readAllLimit(f, max)
 }
 
 // loadIndexes parses all JSON index files from disk.
@@ -167,7 +221,7 @@ func (m *Manager) loadIndexes() ([]*PackageIndex, error) {
 			continue
 		}
 
-		data, err := os.ReadFile(filepath.Join(indexDir, e.Name()))
+		data, err := readFileLimit(filepath.Join(indexDir, e.Name()), maxIndexBytes)
 		if err != nil {
 			continue
 		}
@@ -434,7 +488,18 @@ func (m *Manager) ResolveFQBN(fqbn string) (*ResolvedBoard, error) {
 
 	// Vendor directories on disk are lowercased at install time
 	// (see Manager.Install), so resolve case-insensitively to match.
-	vendorDir := strings.ToLower(vendor)
+	vendorDir, err := safePathSegment(strings.ToLower(vendor), "FQBN vendor")
+	if err != nil {
+		return nil, err
+	}
+	arch, err = safePathSegment(arch, "FQBN architecture")
+	if err != nil {
+		return nil, err
+	}
+	boardID, err = safePathSegment(boardID, "FQBN board id")
+	if err != nil {
+		return nil, err
+	}
 
 	// Scan installed packages directory
 	pkgDir := m.cfg.PackagesDir()
@@ -483,7 +548,7 @@ func (m *Manager) ResolveFQBN(fqbn string) (*ResolvedBoard, error) {
 		PlatformPath:  platformPath,
 		BoardProps:    boardProps,
 		PlatformProps: platformProps,
-		ToolsDir:      filepath.Join(pkgDir, vendor, "tools"),
+		ToolsDir:      filepath.Join(pkgDir, vendorDir, "tools"),
 	}, nil
 }
 
@@ -653,6 +718,14 @@ func (m *Manager) Install(platformID string, onProgress func(string)) error {
 		)
 	}
 
+	// A package name is a directory name, not a path. Indexes are untrusted
+	// (especially additionalURLs), and ".." in a package name used to let the
+	// install write outside PackagesDir.
+	vendorName, err := packageDirName(foundPkg.Name)
+	if err != nil {
+		return err
+	}
+
 	onProgress(fmt.Sprintf("Installing %s:%s v%s…", foundPkg.Name, found.Architecture, found.Version))
 
 	// Download archive
@@ -685,7 +758,7 @@ func (m *Manager) Install(platformID string, onProgress func(string)) error {
 	}
 
 	// Extract to packages directory
-	destDir := filepath.Join(m.cfg.PackagesDir(), strings.ToLower(foundPkg.Name),
+	destDir := filepath.Join(m.cfg.PackagesDir(), vendorName,
 		"hardware", archName, verName)
 	os.MkdirAll(destDir, 0o755)
 
@@ -754,8 +827,20 @@ func (m *Manager) installTool(dep ToolDep, indexes []*PackageIndex, onProgress f
 				}
 
 				// Check if already installed — skip download if present and non-empty
-				destDir := filepath.Join(m.cfg.PackagesDir(), strings.ToLower(pkg.Name),
-					"tools", dep.Name, dep.Version)
+				depName, err := safePathSegment(dep.Name, "tool name")
+				if err != nil {
+					return err
+				}
+				toolVer, err := safePathSegment(dep.Version, "tool version")
+				if err != nil {
+					return err
+				}
+				vendorName, err := packageDirName(pkg.Name)
+				if err != nil {
+					return err
+				}
+				destDir := filepath.Join(m.cfg.PackagesDir(), vendorName,
+					"tools", depName, toolVer)
 				if info, err := os.Stat(destDir); err == nil && info.IsDir() {
 					entries, _ := os.ReadDir(destDir)
 					if len(entries) > 0 {
@@ -771,12 +856,8 @@ func (m *Manager) installTool(dep ToolDep, indexes []*PackageIndex, onProgress f
 				if err != nil {
 					return err
 				}
-				toolVer, err := safePathSegment(dep.Version, "tool version")
-				if err != nil {
-					return err
-				}
-				destDir = filepath.Join(m.cfg.PackagesDir(), strings.ToLower(pkg.Name),
-					"tools", dep.Name, toolVer)
+				destDir = filepath.Join(m.cfg.PackagesDir(), vendorName,
+					"tools", depName, toolVer)
 				archivePath := filepath.Join(m.cfg.Directories.Downloads, toolName)
 				if err := downloadFile(matched.URL, archivePath, indexSizeBytes(matched.Size), func(s string) {}); err != nil {
 					return fmt.Errorf("download tool %s: %w", dep.Name, err)
@@ -1036,7 +1117,27 @@ func safePathSegment(s, field string) (string, error) {
 			return "", fmt.Errorf("board index: %s contains an unsupported character %q in %q", field, r, trimmed)
 		}
 	}
+	// Windows silently strips a trailing dot, so "foo." and "foo" name the
+	// same file there; a hostile index could use that to collide with a real
+	// install. Windows also reserves CON/NUL/COM1/... as device names in every
+	// directory. Reject both regardless of host OS so an index accepted on
+	// Linux cannot create an ambiguous path when the cache is copied to Windows.
+	if strings.HasSuffix(trimmed, ".") {
+		return "", fmt.Errorf("board index: %s must not end with '.', got %q", field, trimmed)
+	}
+	if safename.IsWindowsReservedName(trimmed) {
+		return "", fmt.Errorf("board index: %s is a reserved device name on Windows: %q", field, trimmed)
+	}
 	return trimmed, nil
+}
+
+// packageDirName maps an index package name to the on-disk vendor directory.
+// SearchPackages already advertises the space-to-hyphen form, so install and
+// FQBN resolution must use the same normalization.
+func packageDirName(name string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(name))
+	v = strings.ReplaceAll(v, " ", "-")
+	return safePathSegment(v, "package name")
 }
 
 // removeIfInside deletes path, but only when it really is inside dir. Used on
@@ -1099,22 +1200,30 @@ func downloadFile(url, dest string, maxBytes int64, onProgress func(string)) err
 		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	f, err := os.Create(dest)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+"-*")
 	if err != nil {
 		return err
 	}
+	tmpName := f.Name()
+	defer os.Remove(tmpName)
 	defer f.Close()
 
 	total := resp.ContentLength
 	var downloaded int64
 	buf := make([]byte, 32*1024)
+	progress := func(s string) {
+		if onProgress != nil {
+			onProgress(s)
+		}
+	}
 
 	// Refuse an oversized download BEFORE writing, and stop the stream the
 	// moment it crosses the cap: Content-Length is attacker-controlled too, so
 	// trusting it (or not capping at all) lets a hostile mirror fill the disk.
 	if resp.ContentLength > maxBytes {
-		f.Close()
-		removeIfInside(filepath.Dir(dest), dest)
 		return fmt.Errorf("archive is %d bytes, over the %d byte limit", resp.ContentLength, maxBytes)
 	}
 	for {
@@ -1122,8 +1231,6 @@ func downloadFile(url, dest string, maxBytes int64, onProgress func(string)) err
 		if n > 0 {
 			downloaded += int64(n)
 			if downloaded > maxBytes {
-				f.Close()
-				removeIfInside(filepath.Dir(dest), dest)
 				return fmt.Errorf("download exceeded the %d byte limit — aborted", maxBytes)
 			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
@@ -1131,7 +1238,7 @@ func downloadFile(url, dest string, maxBytes int64, onProgress func(string)) err
 			}
 			if total > 0 {
 				pct := downloaded * 100 / total
-				onProgress(fmt.Sprintf("\r  %d%% (%d/%d KB)", pct, downloaded/1024, total/1024))
+				progress(fmt.Sprintf("\r  %d%% (%d/%d KB)", pct, downloaded/1024, total/1024))
 			}
 		}
 		if err == io.EOF {
@@ -1144,18 +1251,28 @@ func downloadFile(url, dest string, maxBytes int64, onProgress func(string)) err
 
 	// Verify we got all the bytes
 	if total > 0 && downloaded < total {
-		removeIfInside(filepath.Dir(dest), dest) // Clean up incomplete file
 		return fmt.Errorf("incomplete download: got %d/%d bytes", downloaded, total)
 	}
-
-	onProgress("")
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	// The destination is replaced only after the body is complete, so an
+	// interrupted download can never be mistaken for a cached archive.
+	if err := atomicfile.Replace(tmpName, dest); err != nil {
+		return err
+	}
+	progress("")
 	return nil
 }
 
 // verifyArchiveChecksum checks a downloaded archive against the published
 // "<ALGO>:<hex>" checksum from the package index. An empty expected checksum
-// (index omits it) logs a warning and passes — some mirrors don't publish
-// one. A mismatch is a hard error: the archive may be corrupted or tampered.
+// is refused unless COMPANION_ALLOW_UNVERIFIED_INDEX=1 explicitly allows a
+// controlled mirror. A mismatch is a hard error: the archive may be corrupted
+// or tampered.
 func verifyArchiveChecksum(path, expected string, onProgress func(string)) error {
 	if strings.TrimSpace(expected) == "" {
 		// An unverified archive is just an untrusted download. This used to
@@ -1224,12 +1341,13 @@ func extractArchiveOpts(archivePath, destDir string, stripTop bool) error {
 
 // toolSystem returns the arduino-cli system string for the current OS/arch.
 // The host strings must match what Espressif/Arduino use in their package indexes:
-//   linux_aarch64      — ARM64 Linux (Jetson, RPi 64-bit, Apple M1 cross, etc.)
-//   arm-linux-gnueabihf — ARM 32-bit Linux (RPi 32-bit)
-//   x86_64-linux-gnu   — 64-bit Linux
-//   arm64-apple-darwin — Apple Silicon macOS
-//   x86_64-apple-darwin — Intel macOS
-//   i686-mingw32       — Windows
+//
+//	linux_aarch64      — ARM64 Linux (Jetson, RPi 64-bit, Apple M1 cross, etc.)
+//	arm-linux-gnueabihf — ARM 32-bit Linux (RPi 32-bit)
+//	x86_64-linux-gnu   — 64-bit Linux
+//	arm64-apple-darwin — Apple Silicon macOS
+//	x86_64-apple-darwin — Intel macOS
+//	i686-mingw32       — Windows
 func toolSystem() string {
 	switch {
 	case isLinuxARM64():

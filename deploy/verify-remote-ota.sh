@@ -7,7 +7,7 @@
 #
 #   bash verify-remote-ota.sh --hub wss://ota.example.com
 #   bash verify-remote-ota.sh --hub wss://ota.example.com --env ~/.companion-relay/relay.env
-#   bash verify-remote-ota.sh --hub wss://ota.example.com --push ./build/firmware.bin --device esp32-bridge-01
+#   bash verify-remote-ota.sh --hub wss://ota.example.com --push ./build/firmware.bin --device <device-id>
 #
 # Tokens come from --env, or from the environment (COMPANION_RELAY_AGENTS_TOKEN
 # and COMPANION_RELAY_DEVICE_SECRET).
@@ -64,7 +64,7 @@ echo
 
 # ── 2. local hub ───────────────────────────────────────────────────
 echo "2. Hub on this machine (127.0.0.1:$LOCAL_PORT)"
-LOCAL=$(curl -s --max-time 6 "http://127.0.0.1:$LOCAL_PORT/health?token=${COMPANION_RELAY_AGENTS_TOKEN:-}" 2>/dev/null)
+LOCAL=$(curl -s --max-time 6 -H "Authorization: Bearer ${COMPANION_RELAY_AGENTS_TOKEN:-}" "http://127.0.0.1:$LOCAL_PORT/health" 2>/dev/null)
 if [[ $LOCAL == *'"ok":true'* ]]; then
   ok "hub answered"
   echo "        $(echo "$LOCAL" | head -c 200)"
@@ -91,7 +91,7 @@ else
     *)       BASE="https://$HUB" ;;
   esac
   BASE=${BASE%/}
-  PUB=$(curl -s --max-time 15 "$BASE/health?token=${COMPANION_RELAY_AGENTS_TOKEN:-}" 2>/dev/null)
+  PUB=$(curl -s --max-time 15 -H "Authorization: Bearer ${COMPANION_RELAY_AGENTS_TOKEN:-}" "$BASE/health" 2>/dev/null)
   if [[ $PUB == *'"ok":true'* ]]; then
     ok "$BASE reached the hub"
     echo "        $(echo "$PUB" | head -c 200)"

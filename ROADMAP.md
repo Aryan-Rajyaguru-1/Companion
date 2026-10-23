@@ -46,34 +46,35 @@ Grouped from top-reacted issues:
 | #10 Plotter | `SerialPlotter.jsx` with multi-series + CSV export |
 | IDE responsiveness | Daemon RPC with token auth, streaming compile, working cancel (`cmd/daemon.go`, `electron/companion-cli.js` BUG A fix) |
 | Size-report honesty | SysV section parsing excludes ESP-IDF dummy placeholders (fixed today, `compiler.go:1045+`) |
+| #1/#2 Build perf | Content-addressed `BuildCache` wired through CLI, daemon and upload (`Compiler.SetCache`, `internal/compiler/cache.go`); object and core archives are keyed by source/flags |
+| Download integrity | `verifyArchiveChecksum` (boards) and `verifyFileChecksum` (libraries) compare the index's SHA-256 before extraction; a missing published checksum is refused unless `COMPANION_ALLOW_UNVERIFIED_INDEX=1` explicitly allows a controlled mirror |
+| #3 compile_commands.json / LSP | `compile --export-compile-commands` emits clangd-compatible entries; `companion lsp` compiles then launches clangd |
+| #10 Tear-off monitor | `monitor:tear-off` opens a second window with the same serial stream (`electron/main.js`, `src/main.jsx`) |
+| #12 Portable mode | `--portable` / `COMPANION_PORTABLE=1` moves config, data, sketchbook and downloads beside the executable (`internal/config/config.go`) |
+| OTA | `companion ota discover|upload|status|enable|disable`, `upload --ota`, bridge ArduinoOTA server and the IDE toggle are implemented |
 
 ### ⚠️ Partial — architecture exists, not active
 
 | Pain | Status | Evidence |
 |------|--------|----------|
-| #1/#2 Build perf | **BuildCache is dead code.** Daemon creates it (`daemon.go:104-105`) but `compiler.go` has **0 references**; `Options` has no cache field. Fallback `coreIsCached` is a **24-hour ModTime heuristic** (`compiler.go:2024-2030`) → stale libcore.a misflashes after a core update, needless full rebuilds after 24h | `grep -c 'BuildCache' internal/compiler/compiler.go` → 0 |
-| #11 Extensibility | Plugin system fully specified (`internal/plugins/plugin.go`: Uploader/Compiler/Board/Diagnostic + `Registry`, `plugins.Global`) but **nothing registers or consumes it** — no `plugins.Global` reference anywhere in `cmd/` | dormant |
-| #10 Tear-off monitor | Monitor is docked-only; no pop-out window | `SerialMonitor.jsx` |
-| #12 Portable mode | Data dir resolved only from `homeDir()`; no `--data-dir`/env override | `config.go:348-356` |
+| #11 Extensibility | Plugin system is loaded from builtins plus `<data>/plugins` and listed by `companion plugins list`; third-party plugin authoring still needs an external SDK story | `internal/plugins/`, `cmd/plugins.go` |
 
 ### ❌ Genuine gaps (nothing in codebase)
 
-| Pain | Detail |
-|------|--------|
-| Download integrity | Index `Checksum` fields are parsed (`boards.go:41`, `libraries.go:44`) but **never verified** — no sha256 code anywhere in download paths |
-| #3 compile_commands.json | Top open Arduino CLI request; Companion compiles fully in-house (every TU's exact flags already resolved in `BuildFlags`) so it can emit this trivially |
-| OTA | Firmware v1.1 (MDNS `esp32-bridge.local`, `CMD_QUERY` status) is the platform; no `ota` command, no bridge-OTA server, no IDE toggle. Arduino's OTA is library-side only — this is Companion's differentiator |
-| Config polish | `SetValue`'s unknown-key help text omits `cache.*`/`daemon.*`/`library.*` keys that exist (`config.go:334-341`) |
+None from this audit as of 2026-10-19. Keep this section for the next audit
+rather than leaving resolved items here as if they were still open.
 
 ---
 
 ## Part 3 — Roadmap (ordered by impact ÷ effort)
 
-> **STATUS — ALL PHASES COMPLETE (2026-09-09).** Every item below is implemented,
-> tested (go test 11/11 packages, vitest 62/62, go vet clean) and verified live.
-> New CLI surface: `companion ota discover|upload|status|enable|disable`,
-> `companion plugins list`, `companion lsp`, `companion --portable`,
-> `upload --ota`, `compile --export-compile-commands`.
+> **STATUS — ALL PHASES COMPLETE (2026-09-09; status corrected 2026-10-19).**
+> Every item below is implemented. Exact test counts drift as suites change, so
+> they are not repeated here: run `go test ./...`, `go vet ./...` and the IDE's
+> `npm test` for the current result. New CLI surface:
+> `companion ota discover|upload|status|enable|disable`, `companion plugins list`,
+> `companion lsp`, `companion --portable`, `upload --ota`,
+> `compile --export-compile-commands`.
 
 ### Phase 4a — Build cache activation + correctness ✅
 1. ✅ `BuildCache` wired end-to-end: `Compiler.SetCache`, daemon + CLI + upload + OTA
@@ -92,8 +93,9 @@ Grouped from top-reacted issues:
 
 ### Phase 4b — Trust & toolchain integration ✅
 5. ✅ `verifyArchiveChecksum` in the boards/tool install path: SHA-256 compared
-   (constant-time) before extract, hard-fail on mismatch; graceful pass when the
-   index publishes no checksum. Libraries already verified.
+   (constant-time) before extract, hard-fail on mismatch or a missing checksum;
+   `COMPANION_ALLOW_UNVERIFIED_INDEX=1` is the explicit escape hatch for a
+   controlled mirror. Libraries use the same policy.
 6. ✅ `compile --export-compile-commands` writes clangd-compatible
    `compile_commands.json` (60 TUs captured on a real ESP32-S3 sketch — **proven**
    complete even on warm-core builds via per-core TU snapshot+merge).
@@ -108,7 +110,7 @@ Grouped from top-reacted issues:
 > Both fixed by adding the actual build dir to the volatile list (`buildDirFromArgs` for
 > unit keys, `bf.buildDir` for the core key). Final evidence: build9 compiled the
 > ESP32-S3 bridge firmware in **4.7s with zero compiles**, `.a` count stable across runs,
-> `go test ./...` 11 pkgs ok, vet clean.
+> full `go test ./...` suite and `go vet ./...` were green at that time.
 > ③ `hashGeneratedHeader` (new, cache.go): sdkconfig.h now folded into the core key by
 > sorted `CONFIG_*` macro CONTENT (comments/volatile path ignored), so a regenerated-but-
 > identical sdkconfig no longer mints a new archive; generator change still invalidates.
@@ -138,7 +140,7 @@ Grouped from top-reacted issues:
 11. ✅ Tear-off serial monitor: `monitor:tear-off` IPC opens a second BrowserWindow
     loading the same SerialMonitor component standalone; bridge data fans out to
     both windows; embedded panel closes on tear-off. (Electron + preload + main.jsx
-    + component; builds and 62 tests green.)
+    + component; the IDE suite is green.)
 12. ✅ Portable mode: `COMPANION_PORTABLE=1` env + `companion --portable` global flag
     move ALL state (data dir, config, sketchbook, downloads) next to the executable.
     Verified: `config get directories.data` resolves to the exe dir.

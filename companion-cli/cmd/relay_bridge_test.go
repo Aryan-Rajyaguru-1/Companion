@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ import (
 // straight back, which is what the UART path does with target bytes.
 func startEchoBridgeDevice(t *testing.T, wsURL, id, secret string) {
 	t.Helper()
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device?token=dev-tok", nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL+"/device", http.Header{"Authorization": []string{"Bearer dev-tok"}})
 	if err != nil {
 		t.Fatalf("bridge device dial: %v", err)
 	}
@@ -54,7 +55,10 @@ func startEchoBridgeDevice(t *testing.T, wsURL, id, secret string) {
 // client hung up, so the second client's frames could be swallowed by that
 // orphan — one pairing per client is what makes the second session work.
 func TestServeRelayBridgeClientsServesSequentialClients(t *testing.T) {
-	hub := relay.NewHub(relay.Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	hub, err := relay.NewHub(relay.Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := httptest.NewServer(hub.Handler())
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -97,7 +101,10 @@ func TestServeRelayBridgeClientsServesSequentialClients(t *testing.T) {
 // where the bridge's identity is checked, so a failed pairing has to fail the
 // client rather than leave a listener that accepts and then does nothing.
 func TestServeRelayBridgeClientsRejectsWrongSecret(t *testing.T) {
-	hub := relay.NewHub(relay.Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	hub, err := relay.NewHub(relay.Config{DevicesToken: "dev-tok", AgentsToken: "agent-tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := httptest.NewServer(hub.Handler())
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")

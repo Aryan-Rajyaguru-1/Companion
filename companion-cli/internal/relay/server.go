@@ -2,9 +2,11 @@ package relay
 
 import (
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -26,10 +28,12 @@ const maxWSMessage = 1 << 20
 
 // Handler returns the hub's HTTP routes:
 //
-//	GET /device?token=…  — a device registers (expects device_hello first)
-//	GET /agent?token=…   — an IDE/CLI agent connects (agent_hello first)
-//	GET /health          — liveness; with a valid role token, also the
-//	                       connected-device list (relay devices / fleet preflight)
+//	GET /device  — a device registers (Authorization: Bearer …; expects
+//	               device_hello first)
+//	GET /agent   — an IDE/CLI agent connects (Authorization: Bearer …;
+//	               agent_hello first)
+//	GET /health  — liveness; with a valid role token, also the connected-device
+//	               list (relay devices / fleet preflight)
 func (h *Hub) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/device", h.serveDeviceWS)
@@ -39,7 +43,7 @@ func (h *Hub) Handler() http.Handler {
 		// Unauthenticated callers (uptime monitors, tunnel probes) get a
 		// minimal liveness body — no device inventory. Token-holders get
 		// the full status surface.
-		tok := r.URL.Query().Get("token")
+		tok := bearerToken(r)
 		authed := h.authed(tok, h.cfg.AgentsToken) || h.authed(tok, h.cfg.DevicesToken)
 		if !authed {
 			json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -54,8 +58,20 @@ func (h *Hub) Handler() http.Handler {
 	return mux
 }
 
+// bearerToken extracts the role token from the standard Authorization header.
+// Tokens are deliberately NOT accepted from the query string: URLs are copied
+// into proxy logs, tunnel dashboards, browser history and crash reports. The
+// firmware and every bundled client send the header.
+func bearerToken(r *http.Request) string {
+	v := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(v) < 7 || !strings.EqualFold(v[:7], "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(v[7:])
+}
+
 func (h *Hub) serveDeviceWS(w http.ResponseWriter, r *http.Request) {
-	if !h.authed(r.URL.Query().Get("token"), h.cfg.DevicesToken) {
+	if !h.authed(bearerToken(r), h.cfg.DevicesToken) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -69,7 +85,7 @@ func (h *Hub) serveDeviceWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) serveAgentWS(w http.ResponseWriter, r *http.Request) {
-	if !h.authed(r.URL.Query().Get("token"), h.cfg.AgentsToken) {
+	if !h.authed(bearerToken(r), h.cfg.AgentsToken) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -100,9 +116,12 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		if cur := h.devices[d.id]; cur == d {
 			delete(h.devices, d.id)
 		}
+		// Read the pairing under the lock; d.agent is written by Pair and
+		// cleared by Unpair/finishPush from other goroutines.
+		a := d.agent
 		h.mu.Unlock()
-		if d.agent != nil {
-			h.pushResult(d.agent, d.id, "device disconnected mid-push")
+		if a != nil {
+			h.pushResult(a, d.id, "device disconnected mid-push")
 		}
 		h.finishPush(d)
 		d.close()
@@ -129,6 +148,13 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 	}
 	if err := json.Unmarshal(raw, &hello); err != nil || hello.Kind != KindDeviceHello {
 		h.nudge(d, "first frame must be device_hello")
+		return
+	}
+	// frame_kb is forwarded to the agent, which uses it to size its send
+	// buffer. A malicious or buggy board must not be able to make that agent
+	// allocate an arbitrary amount of memory.
+	if hello.FrameKB < 0 || hello.FrameKB > 64 {
+		h.nudge(d, "frame_kb must be between 0 and 64")
 		return
 	}
 	d.id = normalizeID(hello.ID)
@@ -168,7 +194,12 @@ func (h *Hub) deviceLoop(d *deviceConn) {
 		old.close() // same board, fresh connection — supersede it
 	}
 	if !seen {
-		h.knownSecrets[d.id] = d.secret
+		if err := h.rememberSecretLocked(d.id, d.secret); err != nil {
+			h.mu.Unlock()
+			log.Printf("[relay] rejected registration for %s: cannot persist identity: %v", d.id, err)
+			h.nudge(d, "hub could not persist the device identity; refusing registration")
+			return
+		}
 	}
 	h.devices[d.id] = d
 	h.mu.Unlock()
@@ -295,6 +326,17 @@ func (h *Hub) agentLoop(a *agentConn) {
 // device→hub→agent the same way, so the agent-side reader sees exactly the
 // byte stream a LAN ArduinoOTA device would emit.
 func (h *Hub) startPush(a *agentConn, devID, secret string, size int64, md5 string) {
+	// Reject malformed metadata before pairing: otherwise a bad request leaves
+	// the board busy waiting for bytes while the agent waits for a reply that
+	// cannot arrive.
+	if size <= 0 {
+		h.pushResult(a, devID, "push size must be positive")
+		return
+	}
+	if raw, err := hex.DecodeString(md5); err != nil || len(raw) != 16 {
+		h.pushResult(a, devID, "push md5 must be 32 hexadecimal characters")
+		return
+	}
 	err := h.Pair(a, PairRequest{DeviceID: devID, Secret: secret})
 	if err != nil {
 		h.pushResult(a, devID, err.Error())
@@ -308,7 +350,11 @@ func (h *Hub) startPush(a *agentConn, devID, secret string, size int64, md5 stri
 		return
 	}
 
-	h.send2(d, KindPushStart, map[string]any{"size": size, "md5": md5})
+	if err := h.send2(d, KindPushStart, map[string]any{"size": size, "md5": md5}); err != nil {
+		h.finishPush(d)
+		h.pushResult(a, devID, "device disconnected before push_start")
+		return
+	}
 	ackBody := map[string]any{"ok": true, "device": devID}
 	// Relay the device's negotiated frame size so the agent can amortize the
 	// per-ACK round trip (the stop-and-wait lever). Absent for legacy

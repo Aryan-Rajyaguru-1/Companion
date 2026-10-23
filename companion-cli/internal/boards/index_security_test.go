@@ -26,6 +26,11 @@ func TestSafePathSegmentRejectsTraversal(t *testing.T) {
 		{"file\x00.tar.gz", "NUL"},
 		{"file\nname.tar.gz", "newline"},
 		{"file;rm -rf /.tar.gz", "shell metachars"},
+		{"trailing.", "Windows strips a trailing dot"},
+		{"CON", "reserved device"},
+		{"con.txt", "reserved device with extension"},
+		{"COM1", "reserved serial device"},
+		{"lpt9.log", "reserved printer device"},
 	}
 	for _, tc := range bad {
 		if got, err := safePathSegment(tc.in, "archiveFileName"); err == nil {

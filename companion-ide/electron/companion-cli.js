@@ -15,6 +15,8 @@ const os    = require('os');
 const DaemonManager = require('./services/daemon-manager');
 
 const JSON_DIAG_RE = /^\{"type":"diagnostic",.+\}$/;
+const CONFIG_KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+const isConfigKey = (key) => CONFIG_KEY_RE.test(String(key || '')) && !String(key).startsWith('-');
 
 class CompanionCLI {
   constructor() {
@@ -67,10 +69,19 @@ class CompanionCLI {
   _findBinary() {
     const ext  = process.platform === 'win32' ? '.exe' : '';
     const name = `companion${ext}`;
+    // electron-builder copies the built CLI to resources/companion (see
+    // package.json#extraResources). The source-tree path keeps `npm run dev`
+    // working; the bare name is the last resort for an instalment where the
+    // binary is on PATH. Never silently fall back to a repo-relative path in a
+    // packaged app: that path does not exist there, so it must be found before
+    // startup rather than failing on the first compile.
+    const resources = process.resourcesPath ? path.join(process.resourcesPath, 'companion') : '';
     const candidates = [
+      resources ? path.join(resources, name) : '',
       path.join(__dirname, '..', '..', 'companion-cli', name),
-      path.join(__dirname, '..', 'bin', name), name,
-    ];
+      path.join(__dirname, '..', 'bin', name),
+      name,
+    ].filter(Boolean);
     for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch {} }
     return name;
   }
@@ -160,7 +171,7 @@ class CompanionCLI {
   // ── OTA (P4c): per-sketch over-the-air switch + status ─────────
   async otaToggle(enabled, sketchDir) {
     try {
-      await this._run(['ota', enabled ? 'enable' : 'disable', sketchDir || '.']);
+      await this._run(['ota', enabled ? 'enable' : 'disable', '--', sketchDir || '.']);
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -169,7 +180,7 @@ class CompanionCLI {
 
   async otaStatus(sketchDir) {
     try {
-      const { stdout } = await this._run(['ota', 'status', sketchDir || '.']);
+      const { stdout } = await this._run(['ota', 'status', '--', sketchDir || '.']);
       const enabled = /enabled/i.test(stdout);
       return { success: true, enabled, text: stdout.trim().split('\n').pop() };
     } catch (err) {
@@ -179,7 +190,7 @@ class CompanionCLI {
 
   // OTA upload: compiles the sketch (if needed) and pushes via ArduinoOTA.
   async otaUpload({ ip, sketchDir, port = 3232, password = '' }, onOutput) {
-    const args = ['ota', 'upload', ip, sketchDir || '.', '--port', String(port)];
+    const args = ['ota', 'upload', '--port', String(port), '--', ip, sketchDir || '.'];
     // The OTA password used to be passed as `--auth <password>`, which puts it
     // in `ps` output for every user on the machine and in shell history. The
     // CLI reads COMPANION_OTA_PASSWORD, so hand it over through the child's
@@ -252,20 +263,33 @@ class CompanionCLI {
       this._lastStreamCallId = null;
       const cancelled = err.message === 'Compile cancelled';
       if (cancelled) return { success: false, cancelled: true, error: 'Compile cancelled', diagnostics: [], fromDaemon: true };
-      // Daemon failure → fall back to subprocess
-      console.warn('[CLI] Daemon stream failed, falling back:', err.message);
+      // Do not silently rerun the compile through a subprocess. That masked
+      // daemon auth/startup failures and made a daemon compile look successful
+      // even when its result was discarded. Stop the broken daemon and surface
+      // the failure; the user can retry, which will use the subprocess path.
       this._daemon.stop();
-      return this._compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, true, mainIno);
+      return {
+        success: false,
+        cancelled: false,
+        error: `Daemon compile failed: ${err.message}`,
+        binaryPath: null,
+        diagnostics: [],
+        fromDaemon: true,
+      };
     }
   }
 
   async _compileSubprocess(sketchDir, fqbn, onOutput, exportBin, verbose, warnings, json = false, mainIno = '') {
     try {
-      const args = ['compile', sketchDir, '--fqbn', fqbn, '--warnings', warnings || 'default'];
+      // Flags first, then the positional path behind "--". Passing sketchDir
+      // before the flags let a directory name beginning with a dash be parsed
+      // as an option; the CLI-side MCP handlers now do the same ordering.
+      const args = ['compile', '--fqbn', fqbn, '--warnings', warnings || 'default'];
       if (exportBin) args.push('--export-binaries');
       if (verbose)   args.push('--verbose');
       if (json)      args.push('--json');
       if (mainIno)   args.push('--main-ino', mainIno);
+      args.push('--', sketchDir || '.');
       const diagnostics = [];
       await this._run(args, onOutput, d => diagnostics.push(d), 'compile');
       return { success: true, binaryPath: this._findExportedBinary(sketchDir, fqbn), diagnostics, fromDaemon: false };
@@ -296,7 +320,12 @@ class CompanionCLI {
         if (Array.isArray(r)) return r;
       } catch {}
     }
-    try { const { stdout } = await this._run(['board', 'search', '--all', ...(q ? [q] : [])]); return this._parseBoardSearch(stdout); }
+    try {
+      const args = ['board', 'search', '--all'];
+      if (q) args.push('--', q);
+      const { stdout } = await this._run(args);
+      return this._parseBoardSearch(stdout);
+    }
     catch { return []; }
   }
   async searchBoardPackages(q = '') {
@@ -320,7 +349,9 @@ class CompanionCLI {
     }
     // Fallback: CLI subprocess + text parsing
     try {
-      const { stdout } = await this._run(['board', 'packages', ...(q ? [q] : [])]);
+      const args = ['board', 'packages'];
+      if (q) args.push('--', q);
+      const { stdout } = await this._run(args);
       const parsed = this._parseBoardPackages(stdout);
       if (parsed.length > 0) return parsed;
       // If parsing returned nothing but there was output, log it for debugging
@@ -423,7 +454,7 @@ class CompanionCLI {
   }
 
   async installCore(platformId, onOutput) {
-    try { await this._run(['board', 'install', platformId], onOutput); return { success: true }; }
+    try { await this._run(['board', 'install', '--', platformId], onOutput); return { success: true }; }
     catch (err) { return { success: false, error: err.message }; }
   }
 
@@ -433,29 +464,47 @@ class CompanionCLI {
     catch (err) { return { success: false, error: err.message }; }
   }
   async searchLibraries(q) {
-    try { const { stdout } = await this._run(['lib', 'search', q, '--limit', '40']); return this._parseLibSearch(stdout); }
-    catch { return []; }
+    try {
+      const args = ['lib', 'search', '--limit', '40'];
+      if (q) args.push('--', q);
+      const { stdout } = await this._run(args);
+      return this._parseLibSearch(stdout);
+    } catch { return []; }
   }
   async listLibraries() {
     try { const { stdout } = await this._run(['lib', 'list']); return this._parseLibSearch(stdout); }
     catch { return []; }
   }
   async installLibrary(name, onOutput) {
-    try { await this._run(['lib', 'install', name], onOutput); return { success: true }; }
+    if (typeof name !== 'string' || !name.trim() || name.startsWith('-')) {
+      return { success: false, error: `invalid library name: ${name}` };
+    }
+    try { await this._run(['lib', 'install', '--', name], onOutput); return { success: true }; }
     catch (err) { return { success: false, error: err.message }; }
   }
   async uninstallLibrary(name) {
-    try { await this._run(['lib', 'uninstall', name]); return { success: true }; }
+    if (typeof name !== 'string' || !name.trim() || name.startsWith('-')) {
+      return { success: false, error: `invalid library name: ${name}` };
+    }
+    try { await this._run(['lib', 'uninstall', '--', name]); return { success: true }; }
     catch (err) { return { success: false, error: err.message }; }
   }
 
   // ── Config ────────────────────────────────────────────────────
   async getConfig(key) {
-    try { const { stdout } = await this._run(['config', 'get', key]); const p = stdout.trim().split('='); return p.length > 1 ? p.slice(1).join('=').trim() : stdout.trim(); }
+    if (!isConfigKey(key)) return null;
+    // "--" keeps a key from being parsed as a flag. The key is validated too:
+    // both values come from renderer IPC.
+    try { const { stdout } = await this._run(['config', 'get', '--', key]); const p = stdout.trim().split('='); return p.length > 1 ? p.slice(1).join('=').trim() : stdout.trim(); }
     catch { return null; }
   }
   async setConfig(key, value) {
-    try { await this._run(['config', 'set', key, value]); return { success: true }; }
+    if (!isConfigKey(key)) {
+      return { success: false, error: `invalid config key: ${key}` };
+    }
+    const v = String(value ?? '');
+    if (v.length > 4096) return { success: false, error: 'config value is too long' };
+    try { await this._run(['config', 'set', '--', key, v]); return { success: true }; }
     catch (err) { return { success: false, error: err.message }; }
   }
 
@@ -542,7 +591,15 @@ class CompanionCLI {
   // must never be handed to the flasher. Newest acceptable artifact wins.
   _findExportedBinary(sketchDir, fqbn) {
     const n = path.basename(sketchDir);
-    const d = path.join(sketchDir, 'build', fqbn.replace(/:/g, '.'));
+    // FQBN is renderer-controlled. Arduino's build directory uses dots for
+    // colons; anything else (including ".." segments) must not be able to
+    // escape sketchDir/build or make this read an arbitrary file.
+    const buildId = String(fqbn || '')
+      .split(':')
+      .map(seg => seg.replace(/[^A-Za-z0-9_.+-]/g, '_'))
+      .map(seg => (seg === '.' || seg === '..') ? '_' : seg)
+      .join('.');
+    const d = path.join(sketchDir, 'build', buildId);
     // Merged images include bootloader/partitions and must never use an app offset.
     const names = [`${n}.ino.bin`, `${n}.ino.hex`, `${n}.bin`, `${n}.hex`];
     const MAX_APP_BYTES = 64 * 1024 * 1024;   // largest supported flash size

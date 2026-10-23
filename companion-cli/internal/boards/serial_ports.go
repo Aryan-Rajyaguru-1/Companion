@@ -214,7 +214,7 @@ func (m *Manager) identifyFallback(info *SerialPortInfo) {
 
 // MatchConfidence grades how trustworthy a port's identification is:
 //   - "high"   — exact VID/PID (installed boards.txt table or built-in table)
-//                or a boot-ROM banner match
+//     or a boot-ROM banner match
 //   - "medium" — product/manufacturer string hit in the built-in heuristics
 //   - "low"    — fuzzy containment match against installed board names
 func MatchConfidence(p SerialPortInfo) string {
