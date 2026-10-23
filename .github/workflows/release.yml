@@ -108,6 +108,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with: { node-version: 20 }
+      # The IDE build embeds the CLI by compiling companion-cli/ (see
+      # companion-ide/scripts/build-cli.js). ubuntu-latest and windows-latest
+      # happen to ship a Go toolchain; macos-latest does not, so the v0.3.4
+      # macOS installer job failed with `spawnSync go ENOENT`. Install the same
+      # pinned setup-go used by the CLI jobs instead of relying on runner images.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: 'stable'
+          cache-dependency-path: companion-cli/go.sum
       - name: Build installers
         working-directory: companion-ide
         # bash on every runner: the version stamping below is POSIX shell, and
