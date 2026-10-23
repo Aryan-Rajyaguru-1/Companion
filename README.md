@@ -18,6 +18,22 @@
 - 🖥️ **CLI-first + full IDE** — scriptable `companion` binary *and* a GUI with tabs, plotter, error markers
 - ⚖️ **MIT-licensed** — no GPL obligations anywhere in the tree
 
+## 🗂️ Repository layout
+
+This repository is the workspace and source of truth. It contains two projects:
+
+- `companion-cli/` — the Go CLI
+- `companion-ide/` — the Electron IDE and bridge firmware
+
+They are also published as the standalone repositories
+[`Companion_cli`](https://github.com/Aryan-Rajyaguru-1/Companion_cli) and
+[`Companion_IDE`](https://github.com/Aryan-Rajyaguru-1/Companion_IDE). A
+manifest-driven workflow keeps those mirrors and the workspace `cli`/`ide`
+branches synchronized when enabled. Split-only files such as each repository's
+README and the sanitized firmware template are preserved. See
+[docs/SPLIT_REPOS.md](docs/SPLIT_REPOS.md) for the manifest, setup, and safety
+rules.
+
 ## 📥 Download prebuilt binaries
 
 Grab the release for your OS — CLI binaries for Windows/Linux/macOS, plus a Linux `.deb` and `.AppImage` for the IDE:

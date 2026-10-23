@@ -1,0 +1,91 @@
+# Synchronize the workspace projects into their standalone repositories.
+#
+# Companion is the source of truth. A push to main that touches a project, a
+# shared source (setup scripts or LICENSE), or the sync definition updates the
+# matching split repository and its workspace mirror branch.
+#
+# The sync job is intentionally inert until a maintainer configures:
+#   - secret   SYNC_TOKEN  (fine-grained PAT, Contents: read and write on
+#                           Companion_cli and Companion_IDE)
+#   - variable SYNC_ENABLED = true
+#
+# See docs/SPLIT_REPOS.md. Every action is pinned to a full commit SHA.
+name: Sync split repositories
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'companion-cli/**'
+      - 'companion-ide/**'
+      - 'scripts/setup.sh'
+      - 'scripts/setup.ps1'
+      - 'scripts/sync-split-repos.mjs'
+      - 'LICENSE'
+      - '.github/sync-projects.json'
+      - '.github/workflows/sync-split-repos.yml'
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Project name from .github/sync-projects.json, or all
+        required: true
+        default: all
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-split-repositories
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 20
+      - name: Build matrix
+        env:
+          PROJECT: ${{ github.event.inputs.project || 'all' }}
+        run: node scripts/sync-split-repos.mjs --plan --project "$PROJECT" >> "$GITHUB_OUTPUT"
+        id: plan
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+
+  sync:
+    name: Sync ${{ matrix.name }}
+    needs: plan
+    if: ${{ vars.SYNC_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # Full history is required to fast-forward the workspace mirror
+          # branch from a commit fetched out of the split repository.
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.branch }}
+          token: ${{ secrets.SYNC_TOKEN }}
+          path: target
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 20
+      - name: Sync, commit, and push
+        run: >-
+          node scripts/sync-split-repos.mjs
+          --project "${{ matrix.name }}"
+          --target target
+          --push

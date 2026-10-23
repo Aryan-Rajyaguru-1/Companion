@@ -1,0 +1,55 @@
+{
+  "projects": [
+    {
+      "name": "cli",
+      "source": "companion-cli",
+      "repo": "Aryan-Rajyaguru-1/Companion_cli",
+      "branch": "main",
+      "workspaceBranch": "cli",
+      "preserve": [
+        "README.md"
+      ],
+      "extraSources": [
+        {
+          "from": "scripts/setup.sh",
+          "to": "scripts/setup.sh"
+        },
+        {
+          "from": "scripts/setup.ps1",
+          "to": "scripts/setup.ps1"
+        },
+        {
+          "from": "LICENSE",
+          "to": "LICENSE"
+        }
+      ]
+    },
+    {
+      "name": "ide",
+      "source": "companion-ide",
+      "repo": "Aryan-Rajyaguru-1/Companion_IDE",
+      "branch": "main",
+      "workspaceBranch": "ide",
+      "preserve": [
+        "README.md",
+        "scripts/build-cli.js",
+        "esp32-bridge-firmware/esp32_bridge/config.local.h"
+      ],
+      "extraSources": [
+        {
+          "from": "scripts/setup.sh",
+          "to": "scripts/setup.sh"
+        },
+        {
+          "from": "scripts/setup.ps1",
+          "to": "scripts/setup.ps1"
+        },
+        {
+          "from": "LICENSE",
+          "to": "LICENSE"
+        }
+      ],
+      "transform": "ide-package"
+    }
+  ]
+}
