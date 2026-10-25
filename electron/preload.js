@@ -82,6 +82,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cliVersion: ()           => ipcRenderer.invoke('arduino:version'),
   cliPing:    (host, port) => ipcRenderer.invoke('arduino:ping', { host, port }),
 
+  // ── Software updates ─────────────────────────────────────────
+  // No URL is accepted from the renderer: main opens only the release assets
+  // it selected and validated during updates:check.
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  applyCliUpdate:  () => ipcRenderer.invoke('updates:apply-cli'),
+  openIdeInstaller:() => ipcRenderer.invoke('updates:open-ide'),
+  openReleasePage: () => ipcRenderer.invoke('updates:open-release'),
+
   // ── Config ───────────────────────────────────────────────────
   companionConfigGet: (key)        => ipcRenderer.invoke('companion:config-get', key),
   companionConfigSet: (key, value) => ipcRenderer.invoke('companion:config-set', { key, value }),

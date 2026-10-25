@@ -33,6 +33,7 @@ import SketchTemplates  from './components/SketchTemplates';
 import LibraryResolver  from './components/LibraryResolver';
 import BoardAutoDetect  from './components/BoardAutoDetect';
 import FlashUsageBar    from './components/FlashUsageBar';
+import UpdatePanel      from './components/UpdatePanel';
 
 import { prefs }                       from './utils/prefs';
 import { mcuFromFQBN, normalizeFQBN }  from './utils/fqbn';
@@ -69,6 +70,12 @@ const newTab = (name = 'sketch.ino', code = DEFAULT_SKETCH, path = null) => ({
   id: tabIdSeq++, name, code, path, modified: false,
 });
 
+const versionLabel = value => {
+  const text = String(value || '').trim();
+  if (!text) return 'the latest release';
+  return /^v/i.test(text) ? text : `v${text}`;
+};
+
 export default function App() {
   // ── Tabs ───────────────────────────────────────────────────
   const [tabs,         setTabs]         = useState([newTab()]);
@@ -96,6 +103,7 @@ export default function App() {
   const [showBoardDetect,  setShowBoardDetect]  = useState(false);
   const [showErrorList,    setShowErrorList]    = useState(false);
   const [showAbout,        setShowAbout]        = useState(false);
+  const [showUpdates,      setShowUpdates]      = useState(false);
   const [cliFound,         setCLIFound]         = useState(true);
 
   // ── Task state ─────────────────────────────────────────────
@@ -110,6 +118,16 @@ export default function App() {
   const [daemonRunning,  setDaemonRunning]  = useState(false);
   const [cacheStats,     setCacheStats]     = useState(null);
   const [lastCompileMs,  setLastCompileMs]  = useState(null);
+
+  // ── Software updates ───────────────────────────────────────
+  const [updateStatus,     setUpdateStatus]     = useState(null);
+  const [updateChecking,   setUpdateChecking]   = useState(false);
+  const [updateApplying,   setUpdateApplying]   = useState(false);
+  const [updateError,      setUpdateError]      = useState('');
+  const [updateMessage,    setUpdateMessage]    = useState('');
+  const [cliVersionRefresh, setCLIVersionRefresh] = useState(0);
+  const updateCheckSeqRef = useRef(0);
+  const updateActionRef   = useRef(false);
 
   // ── Cursor ─────────────────────────────────────────────────
   const [cursorLine, setCursorLine] = useState(1);
@@ -778,6 +796,106 @@ export default function App() {
     const r = await window.electronAPI?.evictCache?.(); await refreshCacheStats(); return r;
   }, [refreshCacheStats]);
 
+  const checkForUpdates = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api?.checkForUpdates) {
+      setUpdateError('Update checks are unavailable in this build.');
+      return null;
+    }
+
+    const seq = ++updateCheckSeqRef.current;
+    setUpdateChecking(true);
+    setUpdateError('');
+    try {
+      const result = await api.checkForUpdates();
+      if (seq !== updateCheckSeqRef.current) return null;
+      if (!result?.success) {
+        setUpdateStatus(null);
+        setUpdateError(result?.error || 'Unable to check for updates');
+        return null;
+      }
+      setUpdateStatus(result);
+      return result;
+    } catch (err) {
+      if (seq === updateCheckSeqRef.current) {
+        setUpdateStatus(null);
+        setUpdateError(err?.message || String(err));
+      }
+      return null;
+    } finally {
+      if (seq === updateCheckSeqRef.current) setUpdateChecking(false);
+    }
+  }, []);
+
+  const handleApplyCliUpdate = useCallback(async () => {
+    if (updateActionRef.current) return;
+    const api = window.electronAPI;
+    if (!api?.applyCliUpdate) {
+      setUpdateError('CLI updates are unavailable in this build.');
+      return;
+    }
+
+    updateActionRef.current = true;
+    setUpdateApplying(true);
+    setUpdateError('');
+    setUpdateMessage('');
+    try {
+      const result = await api.applyCliUpdate();
+      if (!result?.success) {
+        setUpdateError(result?.error || 'CLI update failed');
+        return;
+      }
+      if (result.updated) {
+        setCLIVersionRefresh(n => n + 1);
+        setUpdateMessage(
+          `Companion CLI updated to ${versionLabel(result.latestVersion)}` +
+          `${result.checksumVerified ? ' (SHA-256 verified)' : ''}` +
+          `${result.restartRequired ? '. Restart the IDE to finish.' : '.'}`,
+        );
+      } else {
+        setUpdateMessage('Companion CLI is already at the latest verified release.');
+      }
+      // Refresh both sides: the CLI version changed, and the IDE may also have
+      // been updated in the same release.
+      await checkForUpdates();
+    } catch (err) {
+      setUpdateError(err?.message || String(err));
+    } finally {
+      updateActionRef.current = false;
+      setUpdateApplying(false);
+    }
+  }, [checkForUpdates]);
+
+  const handleOpenIdeUpdate = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.openIdeInstaller?.();
+      if (!result?.success) {
+        setUpdateError(result?.error || 'Could not open the IDE installer');
+        return;
+      }
+      setUpdateError('');
+      setUpdateMessage(result.opened === 'installer'
+        ? `Opened ${result.assetName || 'the IDE installer'} in your browser.`
+        : 'Opened the release page in your browser.');
+    } catch (err) {
+      setUpdateError(err?.message || String(err));
+    }
+  }, []);
+
+  const handleOpenReleasePage = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.openReleasePage?.();
+      if (!result?.success) {
+        setUpdateError(result?.error || 'Could not open the release page');
+        return;
+      }
+      setUpdateError('');
+      setUpdateMessage('Opened the release page in your browser.');
+    } catch (err) {
+      setUpdateError(err?.message || String(err));
+    }
+  }, []);
+
   const loadInstalledPlatforms = useCallback(async () => {
     const boards = await window.electronAPI?.getBoards?.() || [];
     const platforms = boards.map(b => {
@@ -842,6 +960,9 @@ export default function App() {
 
   // ── Startup ────────────────────────────────────────────────
   useEffect(() => {
+    // Silent startup probe. Failures stay inside the update panel; they must
+    // not block normal IDE startup or replace the CLI setup prompt.
+    checkForUpdates();
     window.electronAPI?.cliVersion?.()
       .then(v => { const ok = v && !v.includes('not found'); setCLIFound(ok); if (!ok) setShowCLISetup(true); })
       .catch(() => { setCLIFound(false); setShowCLISetup(true); });
@@ -849,7 +970,7 @@ export default function App() {
       window.electronAPI?.startDaemon?.().then(r => { if (r?.success) { setDaemonRunning(true); refreshCacheStats(); } });
     }
     loadInstalledPlatforms();
-  }, [refreshCacheStats, loadInstalledPlatforms]);
+  }, [checkForUpdates, refreshCacheStats, loadInstalledPlatforms]);
 
   useEffect(() => {
     const id = setInterval(refreshCacheStats, 30_000);
@@ -882,6 +1003,7 @@ export default function App() {
       boardManager:   () => { setShowBoardMgr(true); loadInstalledPlatforms(); },
       libManager:     () => setShowLibMgr(true),
       prefs:          () => setShowPrefs(true),
+      updates:        () => { setShowUpdates(true); checkForUpdates(); },
       about:          () => setShowAbout(true),
       sidebar:        () => setShowSidebar(p => !p),
       pingBridge:     () => pingBridge(),
@@ -920,6 +1042,11 @@ export default function App() {
     Object.entries(volatile).forEach(([ev, fn]) => api.onMenu(ev, fn));
     return () => Object.keys(volatile).forEach(ev => api.offMenu(ev));
   }, [saveCurrentTab, updateActiveTab]); // minimal volatile deps
+
+  const updateLabel = [
+    updateStatus?.cli?.updateAvailable ? `CLI ${versionLabel(updateStatus.cli.latestVersion)}` : '',
+    updateStatus?.ide?.updateAvailable ? `IDE ${versionLabel(updateStatus.ide.latestVersion)}` : '',
+  ].filter(Boolean).join(' and ');
 
   const sketchDir   = activeTab?.path?.replace(/[/\\][^/\\]+$/, '') || null;
   const extraPanels = [showSerial, showPlotter].filter(Boolean).length;
@@ -1011,7 +1138,25 @@ export default function App() {
         compileSummary={compileSummary} daemonRunning={daemonRunning} cacheStats={cacheStats}
         lastCompileMs={lastCompileMs} cursorLine={cursorLine} cursorCol={cursorCol}
         onShowSketchFolder={activeTab?.path ? handleShowSketchFolder : null}
-        onExportBinary={handleExportBinary} />
+        onExportBinary={handleExportBinary}
+        updateAvailable={!!updateLabel}
+        updateLabel={updateLabel}
+        onShowUpdates={() => setShowUpdates(true)}
+        cliVersionRefresh={cliVersionRefresh} />
+
+      {showUpdates && (
+        <UpdatePanel
+          status={updateStatus}
+          checking={updateChecking}
+          applying={updateApplying}
+          error={updateError}
+          message={updateMessage}
+          onCheck={checkForUpdates}
+          onApplyCli={handleApplyCliUpdate}
+          onOpenIdeInstaller={handleOpenIdeUpdate}
+          onOpenRelease={handleOpenReleasePage}
+          onClose={() => setShowUpdates(false)} />
+      )}
 
       {showBridgeConfig && (
         <BridgeSettings host={bridgeHost} port={bridgePort} mcu={selectedMCU} baud={uploadBaud}

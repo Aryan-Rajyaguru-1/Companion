@@ -25,19 +25,30 @@ export default function StatusBar({
   cursorLine, cursorCol,        // from editor cursor event
   onShowSketchFolder,           // () => open folder in OS
   onExportBinary,               // () => run export compiled binary
+  updateAvailable,              // bool: CLI or IDE update published
+  updateLabel,                  // e.g. "CLI v0.3.5-alpha"
+  onShowUpdates,                // () => open Software Updates dialog
+  cliVersionRefresh,            // increment after a CLI update is installed
 }) {
   const [cliVersion, setCliVersion] = useState('');
   const [cliFound,   setCliFound]   = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
     window.electronAPI?.cliVersion?.()
       .then(v => {
+        if (cancelled) return;
         const found = v && !v.includes('not found');
         setCliVersion(found ? v.replace('Companion CLI ', 'CLI ') : '');
         setCliFound(found);
       })
-      .catch(() => setCliFound(false));
-  }, []);
+      .catch(() => {
+        if (cancelled) return;
+        setCliVersion('');
+        setCliFound(false);
+      });
+    return () => { cancelled = true; };
+  }, [cliVersionRefresh]);
 
   const taskText = isUploading ? '⬆ Uploading…' : isCompiling ? '⚙ Compiling…' : null;
   const boardLabel = friendlyName(board) || board?.split(':').pop() || board;
@@ -151,6 +162,18 @@ export default function StatusBar({
           </>
         )}
 
+        {/* Software update indicator */}
+        {updateAvailable && onShowUpdates && (
+          <>
+            <button className="sb-item sb-action sb-update"
+              title={updateLabel ? `${updateLabel} available` : 'Software update available'}
+              onClick={onShowUpdates}>
+              <UpdateIcon />Update
+            </button>
+            <div className="sb-sep" />
+          </>
+        )}
+
         {/* CLI version */}
         {cliVersion && (
           <span className={`sb-item sb-cli ${cliFound === false ? 'missing' : ''}`}
@@ -174,6 +197,7 @@ export default function StatusBar({
 }
 
 function FileIcon()   { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>; }
+function UpdateIcon() { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>; }
 function BoardIcon()  { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="2" width="20" height="20" rx="3"/><path d="M8 8h2M8 12h2M8 16h2M14 8h2M14 12h2M14 16h2"/></svg>; }
 function CacheIcon()  { return <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{marginRight:3,opacity:.7}}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>; }
 function ExportIcon() { return <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>; }

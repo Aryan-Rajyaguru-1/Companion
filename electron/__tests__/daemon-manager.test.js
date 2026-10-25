@@ -94,6 +94,25 @@ describe('DaemonManager token-file handshake', () => {
     expect(m._token).toBe('test-token');
   });
 
+  it('stopAndWait waits for the child process to exit', async () => {
+    const bin = fakeDaemon([
+      'umask 077',
+      'printf %s test-token > "$COMPANION_DAEMON_TOKEN_FILE"',
+      'echo "COMPANION_DAEMON_PORT=45682"',
+      'trap "exit 0" TERM INT',
+      'while true; do sleep 1; done',
+      '',
+    ].join('\n'));
+    const m = new DaemonManager(bin);
+    managers.push(m);
+
+    await m.start();
+    const proc = m._proc;
+    expect(await m.stopAndWait(2_000)).toBe(true);
+    expect(m.isDaemonRunning()).toBe(false);
+    expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
+  });
+
   it('clears the token and private directory when the daemon exits after startup', async () => {
     const bin = fakeDaemon([
       'umask 077',

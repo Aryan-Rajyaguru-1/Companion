@@ -66,6 +66,10 @@ describe('main <-> preload IPC wiring', () => {
       'monitorTearOff',
       'saveCompleted',
       'listSerialPorts',
+      'checkForUpdates',
+      'applyCliUpdate',
+      'openIdeInstaller',
+      'openReleasePage',
     ]) {
       expect(preloadSrc, `preload no longer exposes ${fn}()`).toMatch(
         new RegExp(`\\b${fn}\\s*:`),
