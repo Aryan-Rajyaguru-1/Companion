@@ -42,6 +42,15 @@ No cable needed. Supports ESP32, STM32, AVR and any UART-bootloadable device.`,
 
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// The root command is normally help. `companion --update` is the
+		// remembered convenience form; `companion self-update` is the
+		// discoverable equivalent registered below.
+		if rootUpdateFlag || rootUpdateOpts.Check {
+			return runSelfUpdate(cmd, rootUpdateOpts)
+		}
+		return cmd.Help()
+	},
 }
 
 // Execute is the entry point called from main.go.
@@ -70,6 +79,14 @@ func init() {
 		"Portable mode — store all state next to the executable (USB-stick workflow)",
 	)
 
+	// Root update convenience flags. They are local (not persistent) so
+	// `companion board upgrade` cannot accidentally be read as a CLI update.
+	rootCmd.Flags().BoolVar(
+		&rootUpdateFlag, "update", false,
+		"Update the Companion CLI from the latest GitHub release",
+	)
+	bindSelfUpdateFlags(rootCmd, &rootUpdateOpts)
+
 	// Portable mode must be in effect before any command loads config.
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		if globalFlags.Portable {
@@ -97,6 +114,7 @@ func init() {
 		newRelayCmd(),     // remote OTA over the internet via relay hub
 		newDoctorCmd(),    // environment/toolchain diagnosis
 		newMCPCmd(),       // Model Context Protocol server (stdio) for AI agents
+		newSelfUpdateCmd(),
 	)
 }
 
