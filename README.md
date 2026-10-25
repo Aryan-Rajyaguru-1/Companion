@@ -80,6 +80,37 @@ It prints what is missing and the exact fix for your OS, and exits non-zero
 when something required is absent — so a failure is explained here rather than
 halfway through an upload.
 
+## 🔄 Updating
+
+The CLI can update itself from the project's GitHub releases:
+
+```bash
+companion --update                       # check and install the newest CLI
+companion self-update                    # same command, discoverable in --help
+companion self-update --check            # report only, no download
+companion self-update --check --json     # machine-readable status (used by the IDE)
+```
+
+The updater selects the asset for your OS and architecture, verifies its
+SHA-256 against the release's `SHA256SUMS.txt`, and replaces the binary
+atomically. It is fail-closed: a release without the matching asset or checksum
+entry is not installed. Use `--target <path>` when the running binary is in a
+read-only location such as an AppImage or macOS app bundle, and `--force` to
+reinstall the selected release.
+
+In the IDE, choose **Help → Check for Updates…**. The panel reports both the
+CLI and IDE versions. A CLI update installs to `~/.companion-cli/bin/`, which
+the IDE prefers over its bundled copy on the next launch. An IDE update opens
+the published installer for this platform, or the release page when no
+compatible installer exists. The IDE does not silently replace its own
+installation — that requires signed installer/updater metadata.
+
+> Companion currently publishes alpha tags. The updater therefore considers the
+> newest published release, including prereleases. Every release includes the
+> six CLI binaries and `SHA256SUMS.txt`; IDE installers are optional for
+> platforms that are not built (Linux arm64 and macOS x64 currently fall back to
+> the release page).
+
 ## 🚀 Fleet OTA (batch flash)
 
 Register your boards once, then update many over WiFi in one command:

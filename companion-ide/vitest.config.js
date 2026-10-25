@@ -1,7 +1,12 @@
 /// <reference types="vitest" />
 import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
+// Keep the test transform aligned with vite.config.js. Without the React
+// plugin, component tests use the classic JSX runtime and fail with
+// "React is not defined" even though the packaged app builds correctly.
 export default defineConfig({
+  plugins: [react()],
   test: {
     environment: 'jsdom',
     globals:     true,

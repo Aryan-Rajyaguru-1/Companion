@@ -36,6 +36,28 @@ go build -o companion .
 
 ---
 
+## Updating
+
+```bash
+./companion --update                          # install the newest release
+./companion self-update --check               # report only
+./companion self-update --check --json        # machine-readable status
+./companion self-update --target ./companion  # install to a specific path
+```
+
+The updater selects the release asset for the current OS/architecture,
+downloads it, verifies it against the release's `SHA256SUMS.txt`, and writes it
+atomically. It is fail-closed: a release without the matching asset or checksum
+entry is not installed. The newest published release is used, including
+prereleases, because Companion currently ships alpha tags.
+
+When the IDE runs an update it installs to `~/.companion-cli/bin/`, and that
+path is preferred on later launches. Pass `--target` if the current binary is
+in a read-only location or you want a side-by-side install. `--force`
+reinstalls the selected release even when the version is unchanged.
+
+---
+
 ## Commands
 
 | Command | Description |
@@ -56,6 +78,7 @@ go build -o companion .
 | `config get <key>` | Get a config value |
 | `config set <key> <val>` | Set a config value |
 | `config dump` | Print full config |
+| `self-update` | Update the CLI from the latest GitHub release |
 | `version` | Print version info |
 | `version ping` | Ping the ESP32 bridge |
 

@@ -19,6 +19,9 @@ app.disableHardwareAcceleration();
 const CompanionCLI = require('./companion-cli');
 const BridgeClient = require('./bridge-client');
 const { createPathPolicy } = require('./path-policy');
+const { buildIdeUpdate, isTrustedReleaseUrl } = require('./update-policy');
+
+const UPDATE_REPO = 'Aryan-Rajyaguru-1/Companion';
 
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
@@ -27,6 +30,7 @@ let mainWindow;
 let monitorWindow = null; // P5 #11: tear-off serial-monitor window (single instance)
 const companionCLI = new CompanionCLI();
 const bridgeClient = new BridgeClient();
+let lastUpdateStatus = null;
 
 // Renderer navigation is not part of the app's feature set: the UI is a
 // single loaded page. Blocking navigation prevents an XSS or a hostile sketch
@@ -202,6 +206,7 @@ function buildMenu() {
         { label: 'Arduino Language Reference', click: () => shell.openExternal('https://docs.arduino.cc/language-reference/') },
         { label: 'Companion IDE on GitHub',    click: () => shell.openExternal('https://github.com/Aryan-Rajyaguru-1/Companion') },
         { type: 'separator' },
+        { label: 'Check for Updates…',          click: () => send('updates') },
         { label: 'About Companion IDE',        click: () => send('about') },
       ],
     },
@@ -222,6 +227,129 @@ async function openFileDialog() {
     const fp = result.filePaths[0];
     mainWindow?.webContents.send('file:opened', { path: fp, content: fs.readFileSync(fp, 'utf-8') });
   }
+}
+
+// ── Software updates ───────────────────────────────────────────
+// The CLI owns release lookup and checksum verification. The IDE uses the
+// same release metadata to decide whether a newer IDE exists, then selects an
+// installer for this exact platform/architecture. It never silently replaces
+// the running app: installers are downloaded/opened by the user.
+function normalizeCliUpdate(data) {
+  return {
+    currentVersion: String(data?.current_version || ''),
+    latestVersion: String(data?.latest_version || ''),
+    updateAvailable: !!data?.update_available,
+    releaseName: String(data?.release_name || ''),
+    releaseUrl: isTrustedReleaseUrl(data?.release_url, UPDATE_REPO, 'tag')
+      ? String(data.release_url) : '',
+    publishedAt: String(data?.published_at || ''),
+    prerelease: !!data?.prerelease,
+    assetName: String(data?.asset_name || ''),
+    assetSize: Number(data?.asset_size) || 0,
+    releaseNotes: String(data?.release_notes || ''),
+  };
+}
+
+async function checkForUpdates() {
+  const checkedAt = new Date().toISOString();
+  let result;
+  try {
+    result = await companionCLI.checkForUpdate();
+  } catch (err) {
+    result = { success: false, error: err?.message || String(err) };
+  }
+  if (!result?.success) {
+    lastUpdateStatus = {
+      success: false,
+      checkedAt,
+      error: result?.error || 'Unable to check for updates',
+      cli: null,
+      ide: null,
+      releaseUrl: '',
+    };
+    return lastUpdateStatus;
+  }
+
+  try {
+    const cli = normalizeCliUpdate(result);
+    const ide = buildIdeUpdate(result, app.getVersion(), process.platform, process.arch);
+    if (ide.installer && !isTrustedReleaseUrl(ide.installer.url, UPDATE_REPO, 'download')) {
+      // The selected asset is not a GitHub-hosted download for this project.
+      // Degrade to the release page instead of opening an unexpected URL.
+      ide.installer = null;
+    }
+    if (!isTrustedReleaseUrl(ide.releaseUrl, UPDATE_REPO, 'tag')) ide.releaseUrl = '';
+    const releaseUrl = cli.releaseUrl || ide.releaseUrl;
+    lastUpdateStatus = {
+      success: true,
+      checkedAt,
+      cli,
+      ide,
+      platform: process.platform,
+      architecture: process.arch,
+      releaseUrl,
+      releaseNotes: cli.releaseNotes || ide.releaseNotes,
+    };
+    return lastUpdateStatus;
+  } catch (err) {
+    lastUpdateStatus = {
+      success: false,
+      checkedAt,
+      error: err?.message || String(err),
+      cli: null,
+      ide: null,
+      releaseUrl: '',
+    };
+    return lastUpdateStatus;
+  }
+}
+
+async function applyCliUpdate() {
+  try {
+    const result = await companionCLI.applyUpdate();
+    if (!result?.success) {
+      return { success: false, error: result?.error || 'CLI update failed' };
+    }
+    return {
+      success: true,
+      updated: !!result.updated,
+      currentVersion: String(result.current_version || ''),
+      latestVersion: String(result.latest_version || ''),
+      installPath: String(result.install_path || ''),
+      checksumVerified: !!result.checksum_verified,
+      restartRequired: !!result.restart_required,
+    };
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+async function openReleasePage() {
+  const url = lastUpdateStatus?.releaseUrl || lastUpdateStatus?.ide?.releaseUrl || '';
+  if (!isTrustedReleaseUrl(url, UPDATE_REPO, 'tag')) {
+    return { success: false, error: 'No update information yet — check for updates first.' };
+  }
+  try {
+    await shell.openExternal(url);
+    return { success: true, opened: 'release' };
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+async function openIdeInstaller() {
+  const installer = lastUpdateStatus?.ide?.installer;
+  if (installer && isTrustedReleaseUrl(installer.url, UPDATE_REPO, 'download')) {
+    try {
+      await shell.openExternal(installer.url);
+      return { success: true, opened: 'installer', assetName: installer.name || '' };
+    } catch (err) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  }
+  // No installer for this platform/architecture (or the asset URL was not
+  // trusted): send the user to the release page so they can choose manually.
+  return openReleasePage();
 }
 
 // ── IPC ────────────────────────────────────────────────────────
@@ -466,6 +594,13 @@ function registerIPC() {
   ipcMain.handle('arduino:update-lib-index', async ()        => companionCLI.updateLibIndex(emit));
   ipcMain.handle('arduino:version',          async ()        => companionCLI.version());
   ipcMain.handle('arduino:ping',             async (_, { host, port }) => companionCLI.ping(host, port));
+
+  // Software updates. The renderer never supplies URLs: main caches the
+  // checked release status and opens only validated GitHub release links.
+  ipcMain.handle('updates:check',        () => checkForUpdates());
+  ipcMain.handle('updates:apply-cli',    () => applyCliUpdate());
+  ipcMain.handle('updates:open-ide',     () => openIdeInstaller());
+  ipcMain.handle('updates:open-release', () => openReleasePage());
 
   // Config
   ipcMain.handle('companion:config-get', async (_, key)            => companionCLI.getConfig(key));

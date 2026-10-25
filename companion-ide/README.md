@@ -24,6 +24,22 @@ cd companion-ide
 npm install && npm run dev
 ```
 
+## Updates
+
+Open **Help → Check for Updates…**. The IDE runs the bundled CLI's
+`self-update --check --json`, compares its own `app.getVersion()` with the
+release tag, and shows both CLI and IDE status. From the panel you can:
+
+- install a CLI update, which is written to `~/.companion-cli/bin/` and takes
+  precedence over the bundled copy on the next launch;
+- open the published IDE installer for this platform;
+- open the release page.
+
+The IDE never silently replaces its own installation. IDE updates open an
+installer (a manual step) until signed installer/updater metadata is
+configured. Releases may not contain an installer for every
+platform/architecture; in that case the panel opens the release page instead.
+
 ## Architecture
 - companion-cli.js  — wraps Companion CLI binary via spawn()
 - bridge-client.js  — direct TCP to ESP32 bridge

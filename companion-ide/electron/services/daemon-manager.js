@@ -83,6 +83,36 @@ class DaemonManager {
     this._cleanupTokenFile();
   }
 
+  /**
+   * Stop the daemon and wait for the child to exit. Windows cannot replace a
+   * binary that is still mapped, so a self-update must not race teardown of a
+   * daemon that is running the file being replaced. The timeout bounds the
+   * wait; callers still fail closed if the replacement itself cannot complete.
+   */
+  async stopAndWait(timeoutMs = 5000) {
+    const proc = this._proc;
+    this.stop();
+    if (!proc || proc.exitCode !== null) return true;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const finish = (exited) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        proc.removeListener('exit', onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      proc.once('exit', onExit);
+      timer = setTimeout(() => finish(false), timeoutMs);
+      // The child may have exited between the exitCode check and listener
+      // registration, in which case the exit event has already fired.
+      if (proc.exitCode !== null) finish(true);
+    });
+  }
+
   isDaemonRunning() { return this._ready && this._port != null; }
   getPort()         { return this._port; }
 

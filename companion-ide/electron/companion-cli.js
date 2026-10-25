@@ -20,6 +20,11 @@ const isConfigKey = (key) => CONFIG_KEY_RE.test(String(key || '')) && !String(ke
 
 class CompanionCLI {
   constructor() {
+    // A CLI installed by `companion self-update` lives in a writable per-user
+    // directory. It must win over the copy bundled with the IDE, otherwise the
+    // next IDE launch silently reverts to the old binary and the user is asked
+    // to update again.
+    this.managedBinaryPath = this._managedBinaryPath();
     this.binaryPath        = this._findBinary();
     this.configPath        = path.join(os.homedir(), '.companion-cli', 'config.yaml');
     this.dataDir           = path.join(os.homedir(), '.companion-cli', 'data');
@@ -39,6 +44,7 @@ class CompanionCLI {
     catch (err) { console.warn('[CLI] Daemon start failed:', err.message); return { success: false, error: err.message }; }
   }
   stopDaemon()      { this._daemon.stop(); }
+  stopDaemonAndWait() { return this._daemon.stopAndWait(); }
   isDaemonRunning() { return this._daemon.isDaemonRunning(); }
   getDaemonPort()   { return this._daemon.getPort(); }
   async pingDaemon(){ return this._daemon.ping(); }
@@ -66,6 +72,11 @@ class CompanionCLI {
   }
 
   // ── Binary resolution ────────────────────────────────────────
+  _managedBinaryPath() {
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    return path.join(os.homedir(), '.companion-cli', 'bin', `companion${ext}`);
+  }
+
   _findBinary() {
     const ext  = process.platform === 'win32' ? '.exe' : '';
     const name = `companion${ext}`;
@@ -76,14 +87,29 @@ class CompanionCLI {
     // packaged app: that path does not exist there, so it must be found before
     // startup rather than failing on the first compile.
     const resources = process.resourcesPath ? path.join(process.resourcesPath, 'companion') : '';
+    const managed = this.managedBinaryPath || this._managedBinaryPath();
     const candidates = [
+      managed,
       resources ? path.join(resources, name) : '',
       path.join(__dirname, '..', '..', 'companion-cli', name),
       path.join(__dirname, '..', 'bin', name),
       name,
     ].filter(Boolean);
-    for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch {} }
+    for (const c of candidates) {
+      try {
+        if (!fs.existsSync(c)) continue;
+        const st = fs.statSync(c);
+        if (st.isFile()) return c;
+      } catch {}
+    }
     return name;
+  }
+
+  _parseJsonResult(stdout) {
+    const text = String(stdout || '');
+    const start = text.indexOf('{');
+    if (start < 0) return null;
+    try { return JSON.parse(text.slice(start)); } catch { return null; }
   }
 
   _ensureDirs() {
@@ -511,6 +537,55 @@ class CompanionCLI {
   async version() {
     try { const { stdout } = await this._run(['version']); const m = stdout.match(/Version:\s+(\S+)/); return m ? `Companion CLI v${m[1]}` : stdout.trim().split('\n')[0]; }
     catch { return 'Companion CLI (not found)'; }
+  }
+
+  // ── Software updates ─────────────────────────────────────────
+  // The CLI is the single release-metadata source. `--check --json` performs
+  // the network lookup, verifies that the release has a checksum manifest, and
+  // emits the asset list the IDE uses to choose its own installer.
+  async checkForUpdate() {
+    try {
+      const { stdout } = await this._run(
+        ['self-update', '--check', '--json'], null, null, 'update');
+      const data = this._parseJsonResult(stdout);
+      if (!data) return { success: false, error: 'Companion CLI returned no update metadata' };
+      if (data.error) return { success: false, error: String(data.error), ...data };
+      return { success: true, ...data };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Install into the writable per-user location rather than trying to replace
+  // the IDE's bundled resource (which is read-only inside AppImage/macOS app
+  // bundles). The CLI stops the daemon first so no old process keeps running
+  // from the binary being replaced.
+  async applyUpdate() {
+    const target = this.managedBinaryPath || this._managedBinaryPath();
+    const wasRunning = this.isDaemonRunning();
+    if (wasRunning) await this.stopDaemonAndWait();
+
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      const { stdout } = await this._run(
+        ['self-update', '--json', '--target', target], null, null, 'update');
+      const data = this._parseJsonResult(stdout);
+      if (!data) throw new Error('Companion CLI returned no update result');
+      if (data.error) throw new Error(String(data.error));
+
+      if (data.updated) {
+        const installed = data.install_path || target;
+        this.binaryPath = installed;
+        this._daemon = new DaemonManager(installed);
+        if (wasRunning) await this.startDaemon();
+      }
+      return { success: true, ...data };
+    } catch (err) {
+      if (wasRunning) {
+        try { await this.startDaemon(); } catch {}
+      }
+      return { success: false, error: err.message };
+    }
   }
   async ping(host, port) {
     try { const { stdout } = await this._run(['version', 'ping', '--host', host, '--port', String(port)]); return { success: true, info: stdout.trim() }; }

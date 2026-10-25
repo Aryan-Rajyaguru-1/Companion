@@ -19,6 +19,8 @@
 .sb-err  { color: #ffa0a0; }
 .sb-warn { color: #ffd080; }
 .sb-ok   { color: #a0ffb0; }
+.sb-update { color: #ffd080; font-weight: 600; }
+.sb-update:hover { background: rgba(210,153,34,.22) !important; }
 .sb-cli  { opacity: .7; font-size: 10px; }
 .sb-cli.missing { color: #ffd080; opacity: 1; }
 .sb-bridge { gap: 5px; }
