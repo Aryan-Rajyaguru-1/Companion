@@ -17,6 +17,10 @@ const DaemonManager = require('./services/daemon-manager');
 const JSON_DIAG_RE = /^\{"type":"diagnostic",.+\}$/;
 const CONFIG_KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const isConfigKey = (key) => CONFIG_KEY_RE.test(String(key || '')) && !String(key).startsWith('-');
+// The CLI currently colorizes `config get`, including when stdout is a pipe.
+// Strip it at the process boundary so renderer status text compares the value,
+// not the escape sequence.
+const stripAnsi = (value) => String(value ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 
 class CompanionCLI {
   constructor() {
@@ -134,11 +138,17 @@ class CompanionCLI {
   // looked fine because each caller wraps this in try/catch and degrades to an
   // empty result, so the breakage was silent: no ports listed, no board
   // detected, config never initialised.
-  _run(args, onOutput = null, onDiag = null, kind = 'other', env = null) {
+  _run(args, onOutput = null, onDiag = null, kind = 'other', env = null, input = null) {
     const callId = ++this._procSeq;
     return new Promise((resolve, reject) => {
       const proc = spawn(this.binaryPath, args, { env: env || { ...process.env } });
       this._procs.set(callId, { proc, kind });
+      if (input != null) {
+        // Used for secret writes (config set --stdin), so the key never
+        // appears in the process list or shell history.
+        proc.stdin.on('error', () => {});
+        proc.stdin.end(String(input));
+      }
       let stdout = '', stderr = '';
       let diagBuf = ''; // Bug-14 fix: JSON lines split across chunks
 
@@ -521,16 +531,55 @@ class CompanionCLI {
     if (!isConfigKey(key)) return null;
     // "--" keeps a key from being parsed as a flag. The key is validated too:
     // both values come from renderer IPC.
-    try { const { stdout } = await this._run(['config', 'get', '--', key]); const p = stdout.trim().split('='); return p.length > 1 ? p.slice(1).join('=').trim() : stdout.trim(); }
-    catch { return null; }
+    try {
+      const { stdout } = await this._run(['config', 'get', '--', key]);
+      const clean = stripAnsi(stdout);
+      const p = clean.trim().split('=');
+      return p.length > 1 ? p.slice(1).join('=').trim() : clean.trim();
+    } catch { return null; }
   }
+  // Fetch the LAN bridge key for the native bridge client. The renderer never
+  // sees this value: it only writes the key through IPC and reads <set>/<unset>.
+  // COMPANION_BRIDGE_KEY wins, matching the CLI's runtime override.
+  async getBridgeKey() {
+    const envKey = String(process.env.COMPANION_BRIDGE_KEY || '').trim();
+    if (envKey) return envKey;
+
+    let stdout;
+    try {
+      ({ stdout } = await this._run(['config', 'get', '--reveal', '--', 'bridge.key']));
+    } catch (e) {
+      // A failed read is not the same as "no key configured". Callers must
+      // abort rather than silently opening an unauthenticated legacy session.
+      throw new Error(`Could not read bridge.key from the Companion CLI: ${e.message}`);
+    }
+
+    // Older CLI builds colorize every get, including --reveal. Strip ANSI so
+    // the key is the key, not the key plus escape sequences.
+    const clean = stripAnsi(stdout).trim();
+    if (!clean) {
+      throw new Error('The Companion CLI returned an empty bridge.key response.');
+    }
+    const p = clean.split('=');
+    const value = p.length > 1 ? p.slice(1).join('=').trim() : clean;
+    if (value === '<unset>') return '';
+    if (value === '<set>') {
+      throw new Error(
+        'The Companion CLI did not reveal bridge.key. Update the CLI so the IDE can authenticate to the bridge.'
+      );
+    }
+    return value;
+  }
+
   async setConfig(key, value) {
     if (!isConfigKey(key)) {
       return { success: false, error: `invalid config key: ${key}` };
     }
     const v = String(value ?? '');
     if (v.length > 4096) return { success: false, error: 'config value is too long' };
-    try { await this._run(['config', 'set', '--', key, v]); return { success: true }; }
+    // --stdin keeps a bridge key out of argv (visible to other local users via
+    // ps/procfs). The CLI reads exactly one value and then saves it 0600.
+    try { await this._run(['config', 'set', '--stdin', '--', key], null, null, 'other', null, v); return { success: true }; }
     catch (err) { return { success: false, error: err.message }; }
   }
 
