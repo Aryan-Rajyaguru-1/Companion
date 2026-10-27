@@ -32,6 +32,24 @@
 // remote OTA through the relay is unaffected.
 #define OTA_PASSWORD    "CHANGE_ME_OTA_PASSWORD"
 
+// LAN bridge authentication key. MUST be unique and at least 8 characters.
+// The bridge refuses to start its TCP server without it (fail closed), so a
+// LAN client cannot send control commands or raw UART bytes without proving
+// knowledge of this key. LAN OTA still starts when OTA_PASSWORD is configured,
+// so a missing key is recoverable over WiFi (or USB) rather than a brick.
+// Generate one with:
+//
+//   openssl rand -hex 32
+//
+// Then configure the same value on the laptop. Pipe it on stdin so the secret
+// is not exposed in the process list:
+//
+//   printf '%s' "$BRIDGE_KEY" | companion config set bridge.key --stdin
+//
+// or set COMPANION_BRIDGE_KEY in the environment. In relay mode the LAN TCP
+// server is not started; the hub's DEVICE_TOKEN protects that transport.
+#define BRIDGE_KEY      "CHANGE_ME_BRIDGE_KEY"
+
 // ── Remote relay (optional) ──────────────────────────────────────
 // Default (0): the bridge hosts its usual TCP server on TCP_PORT and the IDE
 // connects to it directly — the normal local workflow, unchanged.

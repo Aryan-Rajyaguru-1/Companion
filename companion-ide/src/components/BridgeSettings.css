@@ -44,6 +44,25 @@
   font-size: 13px;
 }
 
+.bs-key-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.bs-key-row input { flex: 1; }
+
+.bs-key-row .btn { white-space: nowrap; }
+
+.bs-key-status {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.bs-key-status.set   { color: var(--green); }
+.bs-key-status.unset { color: var(--yellow); }
+.bs-key-status.unknown { color: var(--text-dim); }
+
 .bs-hint {
   font-size: 11px;
   color: var(--text-dim);

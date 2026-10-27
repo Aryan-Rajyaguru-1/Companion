@@ -177,11 +177,13 @@ cd companion-cli && go mod tidy && go build -o companion .
 ./companion config init && ./companion board update-index
 
 # 3. Flash esp32_bridge.ino to your ESP32 WROOM
+#    Add AP_SSID/AP_PASS and a unique BRIDGE_KEY to config.local.h first.
 
 # 4. Run IDE
 cd ../companion-ide && npm install && npm run dev
 
-# 5. Set AP_SSID/AP_PASS in config.local.h and flash. Join that AP, then Upload.
+# 5. Set AP_SSID/AP_PASS and BRIDGE_KEY in config.local.h and flash. Join that
+#    AP (or use STA mode), set the same bridge key in the CLI, then Upload.
 #    There is no default AP password: the sketch refuses an open or placeholder AP.
 ```
 
@@ -204,6 +206,70 @@ cd ../companion-ide && npm install && npm run dev
   sequencing); SWD is not supported.
 - Full notes: the header comment of
   `companion-ide/esp32-bridge-firmware/esp32_bridge/esp32_bridge.ino`.
+
+### Bridge security (LAN authentication)
+
+The LAN bridge requires a **per-device shared key**. Before it accepts a
+control command or forwards a single UART byte, the firmware sends a fresh
+32-byte nonce and requires `HMAC-SHA256(BRIDGE_KEY, nonce)`. A missing, short,
+or placeholder key disables the LAN TCP server entirely (fail closed).
+
+Set it up once:
+
+1. Generate a key and keep it out of git:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. Put the **same** value in `config.local.h`, then reflash the bridge:
+
+   ```c
+   #define BRIDGE_KEY "paste-the-generated-value"
+   ```
+
+3. Configure the laptop. Store it in the owner-only CLI config without
+   putting it in argv or shell history:
+
+   ```bash
+   read -rsp 'Bridge key: ' BRIDGE_KEY; echo
+   printf '%s' "$BRIDGE_KEY" | companion config set bridge.key --stdin
+   unset BRIDGE_KEY
+   ```
+
+   `--stdin` also keeps the key out of the process list. The IDE uses the same
+   path. To inject it without writing a file instead:
+
+   ```bash
+   export COMPANION_BRIDGE_KEY='paste-the-generated-value'
+   ```
+
+4. Reconnect from the IDE. **Bridge Settings** shows only `<set>` / `<unset>`;
+   the renderer never receives the secret. The Electron main process reads it
+   from the CLI when it opens a LAN connection.
+
+`companion config get bridge.key` and `companion config dump` print `<set>` or
+`<unset>`, never the value. `companion config get bridge.key --reveal` is the
+deliberate machine-readable disclosure path and prints the raw key without
+color codes. The key lives in `~/.companion-cli/config.yaml` (mode `0600`).
+
+**Upgrading an existing bridge:** a firmware build without `BRIDGE_KEY` now
+refuses its LAN TCP server. This is not a brick — when `OTA_PASSWORD` is set,
+the LAN OTA/mDNS recovery service still starts, so you can flash a corrected
+firmware with `companion ota upload <bridge-ip>` (or by USB). Add the key,
+reflash, and configure the laptop before the next LAN upload.
+
+**Why a local proxy?** `esptool` (`socket://`) and `avrdude` (`net:`) cannot
+perform the HMAC handshake themselves. For ESP/AVR uploads the CLI starts a
+temporary proxy bound to `127.0.0.1`, authenticates each upstream connection,
+and then pipes bytes unchanged. The relay path is different: `RELAY_MODE_REMOTE`
+does not start the LAN server and does not use `BRIDGE_KEY`; the hub's
+`DEVICE_TOKEN` and per-device secret authenticate that transport.
+
+**Daemon API compatibility:** `/api/v1/upload` and `/api/v1/serial` treat an
+omitted `bridgeMode` as `local`. Relay-aware clients must send `remote`
+explicitly. A loopback host is not inferred to be a relay — that would bypass
+authentication for an SSH-forwarded LAN bridge.
 
 ## New in this version
 - Multi-file tabs (open multiple .ino/.cpp/.h files)

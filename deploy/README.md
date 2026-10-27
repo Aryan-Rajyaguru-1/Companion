@@ -196,6 +196,8 @@ nothing changes at the target end:
    // Leave DEVICE_ID commented out; the bridge derives companion-bridge-<MAC>.
    // #define DEVICE_ID      "companion-bridge-01"
    #define DEVICE_TOKEN      "<COMPANION_RELAY_DEVICES_TOKEN>"
+   // Do NOT set BRIDGE_KEY in relay mode: it does not start the LAN TCP
+   // server, and the hub's DEVICE_TOKEN/per-device secret authenticate the link.
    ```
 
    `RELAY_MODE_REMOTE` is off by default: without it the bridge keeps its usual
@@ -471,6 +473,11 @@ first flash.
   other.
 - **No password, no OTA.** The relay authenticates the *transport*; if you also
   want ArduinoOTA password checking on the device, configure it in the sketch.
+- **LAN and relay use different credentials.** The bridge's LAN TCP server
+  requires the `BRIDGE_KEY` HMAC handshake and refuses to start without it.
+  `RELAY_MODE_REMOTE` does not start that server; the hub's `DEVICE_TOKEN` and
+  per-device secret authenticate the relay link. Never copy a hub token into
+  `BRIDGE_KEY` or vice versa.
 - **MD5 is a corruption check, not a signature.** The relay reuses the
   ArduinoOTA data phase (`Update.setMD5`) so a board can receive LAN and relay
   pushes through the same state machine. TLS and the per-device secret protect

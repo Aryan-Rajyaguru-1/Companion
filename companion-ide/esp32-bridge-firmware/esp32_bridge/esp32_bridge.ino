@@ -31,6 +31,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
+#include <mbedtls/md.h>
 
 // ── WiFi configuration (overridable) ──────────────────────────
 // config.local.h (this folder) is git-ignored. The tracked, sanitized
@@ -81,6 +82,18 @@
 #endif
 #ifndef OTA_PASSWORD
   #define OTA_PASSWORD    ""   // MUST be set (8+ chars) to enable LAN OTA
+#endif
+
+// ── Bridge authentication (LAN mode) ──────────────────────────
+// Per-device shared secret. A LAN client must prove knowledge of this key
+// with an HMAC-SHA256 challenge-response before the firmware accepts control
+// commands or forwards raw UART bytes. Without it the LAN TCP server stays
+// OFF (fail closed) while LAN OTA remains available for recovery.
+//
+// Relay mode (RELAY_MODE_REMOTE=1) does not start the LAN TCP server; the
+// hub's DEVICE_TOKEN and per-device secret protect that transport instead.
+#ifndef BRIDGE_KEY
+  #define BRIDGE_KEY      ""   // MUST be set (8+ chars) for LAN mode
 #endif
 // A credential is usable only when it is long enough and not a copied
 // placeholder. This deliberately recognizes the old public AP default
@@ -159,17 +172,14 @@ char otaHostname[32] = OTA_HOSTNAME_DEFAULT;
 // The relay pipe: bytes from the hub are control commands and UART data in
 // the SAME stream the LAN TCP client delivers — the parser is byte-wise and
 // passes non-magic bytes straight to the target, so nothing changes.
-static void bridgeOnRelayText(const String &t) {
-  // push_start/status frames don't apply to a transparent bridge; ignore.
-  (void)t;
-}
-static void bridgeOnRelayBinary(WebsocketsMessage &msg) {
-  const uint8_t *p = (const uint8_t *)msg.c_str();
-  size_t n = msg.length();
-  for (size_t i = 0; i < n; i++) {
-    pumpTcpByte(p[i]); // same parser: control frames parsed, UART passes through
-  }
-}
+//
+// These callbacks are captureless lambdas in the config below, not named
+// functions: Arduino's prototype generator emits prototypes for .ino
+// functions BEFORE the sketch's includes, where WebsocketsMessage does not
+// exist yet. The generated prototype then breaks the build. Lambdas are not
+// auto-prototyped, and this forward declaration lets them call the parser.
+void pumpTcpByte(uint8_t b);
+
 static const char *bridgeFwVersion() { return FW_VERSION; }
 static bool bridgeNeverPushing() { return false; } // the bridge is never an OTA target here
 
@@ -195,8 +205,15 @@ static void resolveRelayDeviceId() {
 static const RelayLinkConfig bridgeRelayLink = {
   bridgeFwVersion,
   bridgeNeverPushing,   // the watchdog never stands down — always on
-  bridgeOnRelayText,
-  bridgeOnRelayBinary,
+  // push_start/status frames don't apply to a transparent bridge; ignore.
+  [](const String &t) { (void)t; },
+  [](WebsocketsMessage &msg) {
+    const uint8_t *p = (const uint8_t *)msg.c_str();
+    size_t n = msg.length();
+    for (size_t i = 0; i < n; i++) {
+      pumpTcpByte(p[i]); // same parser: control frames parsed, UART passes through
+    }
+  },
 };
 void resolveOtaHostname() {
   if (strcmp(OTA_HOSTNAME, OTA_HOSTNAME_DEFAULT) != 0) {
@@ -237,6 +254,18 @@ void resolveOtaHostname() {
 #define CMD_SET_BAUD        0x10   // + 4 bytes uint32 big-endian
 #define CMD_SET_PROFILE     0x11   // + 1 byte profile index
 #define CMD_QUERY           0x20
+// Authentication (LAN mode only). The client sends AUTH_BEGIN, the bridge
+// replies with a fresh 32-byte nonce, and the client returns
+// HMAC-SHA256(BRIDGE_KEY, nonce). No control command or raw UART byte is
+// accepted before AUTH_OK.
+#define CMD_AUTH_BEGIN      0x30   // client → bridge
+#define CMD_AUTH_RESPONSE   0x31   // client → bridge + 32-byte HMAC
+#define CMD_AUTH_CHALLENGE  0x32   // bridge → client + 32-byte nonce
+#define CMD_AUTH_OK         0x33   // bridge → client
+#define CMD_AUTH_FAIL       0x34   // bridge → client
+#define AUTH_NONCE_LEN      32
+#define AUTH_PROBE_WINDOW_MS 5000  // close a client that never authenticates
+#define AUTH_FAIL_HOLD_MS    500   // let the client read AUTH_FAIL before close
 
 // ── MCU Reset Profiles ────────────────────────────────────────
 struct MCUProfile {
@@ -266,27 +295,50 @@ uint8_t    buf[BUF_SIZE];
 // only special at a frame boundary (parser idle); inside the payload
 // or between split reads, raw 0xEF 0xBE bytes pass through untouched.
 // Incomplete reads are buffered here until the full command arrives.
-#define CTRL_FRAME_MAX  8   // longest command: magic(2)+SET_BAUD(1+4)
+#define CTRL_FRAME_MAX  40  // longest command: magic(2)+AUTH_RESPONSE(1+32)
 uint8_t  ctrlBuf[CTRL_FRAME_MAX];
 uint8_t  ctrlLen = 0;       // bytes buffered in ctrlBuf (0 = idle)
 
+// ── LAN authentication state ─────────────────────────────────
+// lanAuthRequired is set only when the LAN TCP server is enabled (i.e. the
+// bridge is not in relay mode and BRIDGE_KEY is configured). Relay mode keeps
+// the historical unauthenticated pipe: the hub already authenticates the
+// device and the remote client.
+bool     lanAuthRequired  = false;
+bool     lanAuthenticated = false;
+bool     lanBridgeEnabled = false;
+bool     authChallengeSent = false;
+bool     authFailed        = false; // terminal for this connection
+uint8_t  authNonce[AUTH_NONCE_LEN];
+uint32_t authDeadline  = 0;
+uint32_t authFailureAt = 0;
+
 // Forward declarations (Arduino generates prototypes, but be explicit).
 int handleControl(uint8_t* payload, int available);
-void pumpTcpByte(uint8_t b);
 int ctrlFrameLength(uint8_t cmd);
+static void sendAuthChallenge();
+static void verifyAuthResponse(uint8_t* payload, int available);
 
 // Total payload bytes (cmd byte + args) a command needs.
 // Returns 0 only if cmd byte not yet known (never called that way).
 int ctrlFrameLength(uint8_t cmd) {
   switch (cmd) {
-    case CMD_SET_BAUD:    return 5; // cmd + 4-byte big-endian baud
-    case CMD_SET_PROFILE: return 2; // cmd + 1-byte index
+    case CMD_SET_BAUD:      return 5;  // cmd + 4-byte big-endian baud
+    case CMD_SET_PROFILE:   return 2;  // cmd + 1-byte index
+    case CMD_AUTH_RESPONSE: return 1 + AUTH_NONCE_LEN; // cmd + HMAC
     case CMD_ENTER_BOOT:
     case CMD_RESET:
     case CMD_RELEASE:
     case CMD_QUERY:
-    default:              return 1; // single-byte commands; unknown too
+    case CMD_AUTH_BEGIN:
+    default:                return 1;  // single-byte commands; unknown too
   }
+}
+
+// True while a LAN client still has to authenticate. Relay mode leaves
+// lanAuthRequired false, so the transparent relay pipe is unchanged.
+static bool authBlocksRaw() {
+  return lanAuthRequired && !lanAuthenticated;
 }
 
 // Feed one TCP byte through the frame parser.
@@ -294,12 +346,16 @@ void pumpTcpByte(uint8_t b) {
   if (ctrlLen == 0) {
     // Frame boundary: only here is CTRL_A potentially magic.
     if (b == CTRL_A) { ctrlBuf[0] = b; ctrlLen = 1; return; }
+    if (authBlocksRaw()) return; // no raw UART bytes before authentication
     Serial2.write(b);
     return;
   }
   if (ctrlLen == 1) {
     // Held a lone CTRL_A; this byte decides.
     if (b == CTRL_B) { ctrlBuf[1] = b; ctrlLen = 2; return; }
+    // Before authentication, discard the held byte even if the frame turns
+    // out to be a false alarm. It must never reach the target.
+    if (authBlocksRaw()) { ctrlLen = 0; return; }
     Serial2.write(CTRL_A); // false alarm — flush held byte
     if (b == CTRL_A) { ctrlBuf[0] = b; ctrlLen = 1; } // re-hold, stay armed
     else { ctrlLen = 0; Serial2.write(b); }
@@ -307,9 +363,9 @@ void pumpTcpByte(uint8_t b) {
   }
   // Inside a frame: accumulate (never scan for magic here).
   if (ctrlLen >= CTRL_FRAME_MAX) {
-    // Should be unreachable (longest frame is 7 bytes); fail safe by
-    // flushing buffered bytes raw and restarting from this byte.
-    Serial2.write(ctrlBuf, ctrlLen);
+    // Should be unreachable (longest frame is 2 + 34 = 36 bytes); fail safe by
+    // dropping pre-auth bytes and restarting from this byte.
+    if (!authBlocksRaw()) Serial2.write(ctrlBuf, ctrlLen);
     ctrlLen = 0;
     pumpTcpByte(b);
     return;
@@ -412,16 +468,33 @@ void setup() {
   relayBegin(bridgeRelayLink); // secret + callbacks + dial the hub
   Serial.println("  → relay link up: flashing through the hub (no LAN server)\n");
 #else
-  tcpServer.begin();
-  Serial.printf("  TCP server listening on port %d...\n\n", TCP_PORT);
+  // LAN bridge security: the TCP server accepts control commands and raw
+  // target bytes only after a successful HMAC challenge-response. A bridge
+  // without BRIDGE_KEY does NOT start the server (fail closed); LAN OTA below
+  // still starts when OTA_PASSWORD is configured, so the device can be
+  // reflashed over WiFi instead of becoming unreachable.
+  lanAuthRequired = credentialConfigured(BRIDGE_KEY);
+  lanBridgeEnabled = lanAuthRequired;
+
+  if (lanBridgeEnabled) {
+    tcpServer.begin();
+    Serial.printf("  TCP server listening on port %d (HMAC-SHA256 auth)...\n\n", TCP_PORT);
+  } else {
+    Serial.println("  ⚠ LAN bridge TCP server DISABLED: BRIDGE_KEY is not set.");
+    Serial.println("    Add a unique BRIDGE_KEY (8+ chars) to config.local.h and");
+    Serial.println("    reflash. Relay mode uses DEVICE_TOKEN instead.");
+    Serial.println();
+  }
 
   // Start mDNS — broadcast this ESP32 as "<hostname>.local" on the network
   if (!MDNS.begin(otaHostname)) {
     Serial.println("  ⚠ mDNS init failed");
   } else {
     Serial.printf("  ✓ mDNS started → %s.local\n", otaHostname);
-    MDNS.addService("http", "tcp", 3333);
-    Serial.println("     → IDE can connect to <hostname>.local:3333\n");
+    if (lanBridgeEnabled) {
+      MDNS.addService("http", "tcp", 3333);
+      Serial.println("     → IDE can connect to <hostname>.local:3333\n");
+    }
   }
 #endif // RELAY_MODE_REMOTE / LAN server
 
@@ -494,6 +567,9 @@ void loop() {
   }
   if (avail > 0) bridgeWriteToClient(buf, avail);
 #else
+  // No LAN server when BRIDGE_KEY is missing. Keep OTA responsive above.
+  if (!lanBridgeEnabled) return;
+
   // Accept new client if none connected
   if (!tcpClient || !tcpClient.connected()) {
     WiFiClient candidate = tcpServer.accept();
@@ -501,10 +577,21 @@ void loop() {
       tcpClient = candidate;
       tcpClient.setNoDelay(true);
       ctrlLen = 0; // fresh frame boundary for the new connection
+      // Fresh authentication session: new nonce, no inherited approval.
+      lanAuthenticated = false;
+      authChallengeSent = false;
+      authFailed = false;
+      authFailureAt = 0;
+      authDeadline = millis() + AUTH_PROBE_WINDOW_MS;
+      for (size_t i = 0; i < AUTH_NONCE_LEN; i++) {
+        authNonce[i] = (uint8_t)esp_random();
+      }
       Serial.printf("\n✓ IDE connected from: %s:%d\n",
                     tcpClient.remoteIP().toString().c_str(),
                     tcpClient.remotePort());
-      Serial.println("  → Ready to receive upload commands\n");
+      Serial.println(lanAuthRequired
+        ? "  → Awaiting HMAC authentication\n"
+        : "  → Ready to receive upload commands\n");
     }
   }
 
@@ -518,10 +605,33 @@ void loop() {
       Serial.println("[bridge] client disconnected — releasing target pins");
       pinsRelease();
       clientWasConnected = false;
+      lanAuthenticated = false;
+      authChallengeSent = false;
+      authFailed = false;
+      authDeadline = 0;
+      authFailureAt = 0;
     }
     return;
   }
   clientWasConnected = true;
+
+  // Close clients that fail authentication or never start the handshake.
+  // AUTH_FAIL is sent immediately; the short hold lets the peer read it.
+  if (authBlocksRaw()) {
+    if (authFailed && (millis() - authFailureAt) > AUTH_FAIL_HOLD_MS) {
+      Serial.println("[AUTH] Closing client after failed authentication");
+      tcpClient.stop();
+      authFailureAt = 0;
+      authDeadline = 0;
+      return;
+    }
+    if (authDeadline && (int32_t)(millis() - authDeadline) >= 0) {
+      Serial.println("[AUTH] Closing client: authentication timeout");
+      tcpClient.stop();
+      authDeadline = 0;
+      return;
+    }
+  }
 
   // ── TCP → UART (control frames parsed at frame boundary only) ──
   // Byte-wise state machine backed by ctrlBuf/ctrlLen: the magic pair
@@ -538,12 +648,97 @@ void loop() {
   }
 
   // ── UART → TCP ───────────────────────────────────────────────
+  // Do not leak target output to an unauthenticated LAN client. The HMAC
+  // handshake only uses TCP, so drop target bytes until AUTH_OK.
   int avail = 0;
   while (Serial2.available() && avail < BUF_SIZE) {
     buf[avail++] = (uint8_t)Serial2.read();
   }
-  if (avail > 0) bridgeWriteToClient(buf, avail);
+  if (avail > 0 && !authBlocksRaw()) bridgeWriteToClient(buf, avail);
 #endif // RELAY_MODE_REMOTE
+}
+
+// ── LAN authentication helpers ────────────────────────────────
+// HMAC-SHA256(BRIDGE_KEY, nonce). mbedTLS is part of the ESP32 Arduino core.
+static bool hmacSha256(const uint8_t* key, size_t keyLen,
+                       const uint8_t* data, size_t dataLen,
+                       uint8_t out[AUTH_NONCE_LEN]) {
+  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (info == nullptr) return false;
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  bool ok = mbedtls_md_setup(&ctx, info, 1) == 0 &&
+            mbedtls_md_hmac_starts(&ctx, key, keyLen) == 0 &&
+            mbedtls_md_hmac_update(&ctx, data, dataLen) == 0 &&
+            mbedtls_md_hmac_finish(&ctx, out) == 0;
+  mbedtls_md_free(&ctx);
+  return ok;
+}
+
+// Constant-time comparison for authentication tags. Do not replace with
+// memcmp: tag comparison must not leak how many leading bytes matched.
+static bool constantTimeEqual(const uint8_t* a, const uint8_t* b, size_t n) {
+  uint8_t diff = 0;
+  for (size_t i = 0; i < n; i++) diff |= (uint8_t)(a[i] ^ b[i]);
+  return diff == 0;
+}
+
+static void sendAuthFrame(uint8_t cmd, const uint8_t* payload, size_t n) {
+  uint8_t hdr[3] = {CTRL_A, CTRL_B, cmd};
+  bridgeWriteToClient(hdr, sizeof(hdr));
+  if (n > 0) bridgeWriteToClient(payload, n);
+}
+
+// Mark this connection's authentication as permanently failed. No second
+// attempt is accepted: a peer cannot keep guessing, rotate the nonce, or
+// extend the handshake window on the same TCP connection.
+static void failAuth() {
+  authFailed = true;
+  authChallengeSent = false;
+  authFailureAt = millis();
+  authDeadline = 0;
+  sendAuthFrame(CMD_AUTH_FAIL, nullptr, 0);
+}
+
+// Send a fresh challenge. Only the FIRST AUTH_BEGIN gets a nonce: repeated
+// begins used to rotate the nonce and push the deadline forward forever, so an
+// unauthenticated peer could hold a connection open indefinitely.
+static void sendAuthChallenge() {
+  if (authFailed || authChallengeSent) return;
+  for (size_t i = 0; i < AUTH_NONCE_LEN; i++) {
+    authNonce[i] = (uint8_t)esp_random();
+  }
+  authChallengeSent = true;
+  authDeadline = millis() + AUTH_PROBE_WINDOW_MS;
+  sendAuthFrame(CMD_AUTH_CHALLENGE, authNonce, AUTH_NONCE_LEN);
+  Serial.println("[AUTH] Challenge sent");
+}
+
+static void verifyAuthResponse(uint8_t* payload, int available) {
+  if (authFailed) return; // failure is terminal for this connection
+  if (!authChallengeSent || available < 1 + AUTH_NONCE_LEN) {
+    Serial.println("[AUTH] Response without a live challenge");
+    failAuth();
+    return;
+  }
+
+  uint8_t expected[AUTH_NONCE_LEN];
+  const uint8_t* key = (const uint8_t*)BRIDGE_KEY;
+  size_t keyLen = strlen(BRIDGE_KEY);
+  if (!hmacSha256(key, keyLen, authNonce, AUTH_NONCE_LEN, expected) ||
+      !constantTimeEqual(expected, payload + 1, AUTH_NONCE_LEN)) {
+    Serial.println("[AUTH] Rejected: bad bridge key");
+    failAuth();
+    return;
+  }
+
+  lanAuthenticated = true;
+  authChallengeSent = false;
+  authFailed = false;
+  authDeadline = 0;
+  authFailureAt = 0;
+  sendAuthFrame(CMD_AUTH_OK, nullptr, 0);
+  Serial.println("[AUTH] Client authenticated");
 }
 
 // ── Control command handler ───────────────────────────────────
@@ -552,6 +747,27 @@ void loop() {
 // signature; returns number of payload bytes consumed.
 int handleControl(uint8_t* payload, int available) {
   if (available < 1) return 0;
+
+  // LAN gate: before authentication only the handshake is accepted. Every
+  // other command is dropped (and never reaches the target).
+  if (lanAuthRequired) {
+    if (!lanAuthenticated) {
+      if (payload[0] == CMD_AUTH_BEGIN) {
+        sendAuthChallenge();
+        return 1;
+      }
+      if (payload[0] == CMD_AUTH_RESPONSE) {
+        verifyAuthResponse(payload, available);
+        return 1 + AUTH_NONCE_LEN;
+      }
+      Serial.printf("[AUTH] Ignored cmd 0x%02X before authentication\n", payload[0]);
+      return ctrlFrameLength(payload[0]);
+    }
+    // A repeated handshake after success is harmless but unnecessary.
+    if (payload[0] == CMD_AUTH_BEGIN || payload[0] == CMD_AUTH_RESPONSE) {
+      return ctrlFrameLength(payload[0]);
+    }
+  }
 
   switch (payload[0]) {
 

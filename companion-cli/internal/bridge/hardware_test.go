@@ -9,6 +9,7 @@
 package bridge
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -17,7 +18,7 @@ const hwHost = "192.168.4.1"
 const hwPort = 3333
 
 func TestHWWirelessControlPlane(t *testing.T) {
-	c := New(hwHost, hwPort)
+	c := New(hwHost, hwPort, os.Getenv("COMPANION_BRIDGE_KEY"))
 	if err := c.Connect(); err != nil {
 		t.Fatalf("connect: %v", err)
 	}

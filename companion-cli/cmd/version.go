@@ -58,7 +58,7 @@ Examples:
 
 			printInfo(fmt.Sprintf("Pinging bridge at %s:%d…", colorBold(host), port))
 
-			info, err := bridge.Ping(host, port)
+			info, err := bridge.Ping(host, port, config.BridgeKey(cfg))
 			if err != nil {
 				printError(fmt.Sprintf("Bridge unreachable: %v", err))
 				printStep("Check that the ESP32 bridge is powered and on the same WiFi network.")

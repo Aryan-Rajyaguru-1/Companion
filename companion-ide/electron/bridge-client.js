@@ -11,9 +11,10 @@
  * Also provides a persistent serial-monitor connection (separate session).
  */
 
-const net  = require('net');
-const fs   = require('fs');
-const path = require('path');
+const net    = require('net');
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 // ── Control protocol constants (must match ESP32 firmware) ────
@@ -25,6 +26,12 @@ const CMD_RELEASE       = 0x03;
 const CMD_SET_BAUD      = 0x10;
 const CMD_SET_PROFILE   = 0x11;
 const CMD_QUERY         = 0x20;
+const CMD_AUTH_BEGIN    = 0x30;
+const CMD_AUTH_RESPONSE = 0x31;
+const CMD_AUTH_CHALLENGE= 0x32;
+const CMD_AUTH_OK       = 0x33;
+const CMD_AUTH_FAIL     = 0x34;
+const AUTH_NONCE_LEN    = 32;
 
 const MCU_PROFILES = { generic: 0, esp32: 1, esp8266: 1, avr: 2, arduino: 2, stm32: 3 };
 
@@ -66,17 +73,219 @@ function baudBuffer(baud) {
   return b;
 }
 
+// ── Authentication (must match esp32_bridge.ino) ──────────────
+// Reads exactly N bytes from a socket without leaking listeners. The reader
+// stays attached only for the handshake; callers detach (authenticateSocket
+// does it in a finally block) before their own data handling starts.
+function makeSocketReader(sock) {
+  let buf = Buffer.alloc(0);
+  let waiter = null;
+  let failure = null;
+
+  const fail = (err) => {
+    if (!failure) failure = err;
+    if (waiter) {
+      const w = waiter;
+      waiter = null;
+      clearTimeout(w.timer);
+      w.reject(failure);
+    }
+  };
+  const onData = (d) => {
+    buf = Buffer.concat([buf, d]);
+    if (waiter && buf.length >= waiter.n) {
+      const w = waiter;
+      waiter = null;
+      clearTimeout(w.timer);
+      const out = buf.subarray(0, w.n);
+      buf = buf.subarray(w.n);
+      w.resolve(out);
+    }
+  };
+  const onClose = () => fail(new Error('Bridge closed the connection during authentication'));
+  const onError = (e) => fail(new Error(`Bridge connection failed during authentication: ${e.message}`));
+
+  sock.on('data', onData);
+  sock.on('close', onClose);
+  sock.on('error', onError);
+
+  return {
+    readExact(n, timeoutMs) {
+      if (failure) return Promise.reject(failure);
+      if (buf.length >= n) {
+        const out = buf.subarray(0, n);
+        buf = buf.subarray(n);
+        return Promise.resolve(out);
+      }
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (waiter && waiter.timer === timer) waiter = null;
+          const err = new Error(`Timed out after ${timeoutMs}ms waiting for the bridge`);
+          err.code = 'ETIMEDOUT';
+          reject(err);
+        }, timeoutMs);
+        waiter = { n, resolve, reject, timer };
+      });
+    },
+    drain() {
+      const out = buf;
+      buf = Buffer.alloc(0);
+      return out;
+    },
+    detach() {
+      sock.off('data', onData);
+      sock.off('close', onClose);
+      sock.off('error', onError);
+      if (waiter) {
+        const w = waiter;
+        waiter = null;
+        clearTimeout(w.timer);
+        w.reject(failure || new Error('Authentication reader detached'));
+      }
+    },
+  };
+}
+
+// Probe the bridge for HMAC authentication. A configured key is fail-closed:
+// missing/unknown challenges and rejected keys are errors. Without a key,
+// legacy firmware that never answers remains usable.
+async function authenticateSocket(sock, bridgeKey, timeoutMs) {
+  const key = String(bridgeKey || '');
+  const reader = makeSocketReader(sock);
+  try {
+    sock.write(ctrl(CMD_AUTH_BEGIN));
+
+    let header;
+    try {
+      header = await reader.readExact(3, timeoutMs);
+    } catch (e) {
+      // Only a timeout proves legacy firmware ignored the probe. A closed or
+      // failed socket is not legacy firmware and must fail closed even when no
+      // key is configured.
+      if (!key && e.code === 'ETIMEDOUT') {
+        return { authenticated: false, extra: reader.drain() };
+      }
+      if (!key) {
+        throw new Error(`Bridge connection failed during authentication (${e.message}).`);
+      }
+      throw new Error(
+        `Bridge did not answer the authentication challenge (${e.message}). ` +
+        'Reflash the bridge firmware, or clear bridge.key to allow legacy unauthenticated mode.'
+      );
+    }
+
+    if (header[0] !== CTRL_A || header[1] !== CTRL_B || header[2] !== CMD_AUTH_CHALLENGE) {
+      const extra = Buffer.concat([header, reader.drain()]);
+      if (key) {
+        throw new Error(
+          'Bridge did not answer the authentication challenge. ' +
+          'Reflash the bridge firmware, or clear bridge.key to allow legacy unauthenticated mode.'
+        );
+      }
+      return { authenticated: false, extra };
+    }
+
+    if (!key) {
+      throw new Error(
+        'The bridge requires a key, but none is configured. ' +
+        'Set bridge.key (or COMPANION_BRIDGE_KEY) to the BRIDGE_KEY compiled into the firmware.'
+      );
+    }
+
+    const nonce = await reader.readExact(AUTH_NONCE_LEN, timeoutMs);
+    const tag = crypto.createHmac('sha256', key).update(nonce).digest();
+    sock.write(Buffer.concat([ctrl(CMD_AUTH_RESPONSE), tag]));
+
+    const status = await reader.readExact(3, timeoutMs);
+    if (status[0] !== CTRL_A || status[1] !== CTRL_B) {
+      throw new Error('Unexpected authentication reply from the bridge.');
+    }
+    if (status[2] === CMD_AUTH_FAIL) {
+      throw new Error('The bridge rejected the bridge key — it must match BRIDGE_KEY in the firmware.');
+    }
+    if (status[2] !== CMD_AUTH_OK) {
+      throw new Error(`Unexpected authentication status 0x${status[2].toString(16)}.`);
+    }
+    return { authenticated: true, extra: reader.drain() };
+  } finally {
+    reader.detach();
+  }
+}
+
+// Loopback proxy for esptool (socket://) and avrdude (net:), neither of which
+// can perform the HMAC handshake. Each local connection authenticates a fresh
+// upstream connection and then pipes raw bytes transparently.
+function startLocalProxy(host, port, key) {
+  if (!String(key || '')) {
+    return Promise.reject(new Error('An authenticated bridge proxy requires a bridge key.'));
+  }
+  return new Promise((resolve, reject) => {
+    const connections = new Set();
+    const server = net.createServer((local) => {
+      connections.add(local);
+      const remote = new net.Socket();
+      remote.setNoDelay(true);
+      connections.add(remote);
+
+      const cleanup = () => { connections.delete(local); connections.delete(remote); };
+      local.on('close', () => {
+        cleanup();
+        if (!remote.destroyed) remote.destroy();
+      });
+      remote.on('close', () => {
+        cleanup();
+        if (!local.destroyed) local.destroy();
+      });
+      local.on('error', () => remote.destroy());
+      remote.on('error', () => local.destroy());
+
+      remote.connect(port, host, async () => {
+        try {
+          await authenticateSocket(remote, key, 5000);
+        } catch {
+          local.destroy();
+          remote.destroy();
+          return;
+        }
+        if (local.destroyed || remote.destroyed) {
+          local.destroy();
+          remote.destroy();
+          return;
+        }
+        local.pipe(remote);
+        remote.pipe(local);
+      });
+    });
+
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      resolve({
+        port: server.address().port,
+        close: () => new Promise((done) => {
+          for (const s of connections) s.destroy();
+          connections.clear();
+          server.close(() => done());
+        }),
+      });
+    });
+  });
+}
+
 // ── BridgeClient class ─────────────────────────────────────────
 class BridgeClient {
   constructor() {
-    this._serialSock   = null;
-    this._onSerialData = null;
+    this._serialSock    = null;
+    // A socket is pending until authentication succeeds. Keeping it separate
+    // from _serialSock lets disconnect destroy an in-flight connection without
+    // exposing pre-auth frames to the monitor.
+    this._serialPending = null;
+    this._onSerialData  = null;
   }
 
   // ══════════════════════════════════════════════════════════════
   // Serial monitor  (persistent bidirectional connection)
   // ══════════════════════════════════════════════════════════════
-  async connectSerial(host, port, onData) {
+  async connectSerial(host, port, onData, bridgeKey = '') {
     // Destroy any previous in-flight socket — re-connecting without this
     // leaked the old connection and duplicated 'data' event handlers.
     this.disconnectSerial();
@@ -86,28 +295,60 @@ class BridgeClient {
 
     return new Promise((resolve) => {
       let settled = false;
+      let timer = null;
       const settle = (result) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolve(result);
       };
 
-      this._onSerialData = onData;
       const sock = new net.Socket();
       sock.setNoDelay(true);
+      const pending = {
+        sock,
+        cancel: () => settle({ success: false, error: 'Connection cancelled' }),
+      };
+      this._serialPending = pending;
+      this._onSerialData = onData;
 
       // Firewalled/dropped-SYN hosts previously left the renderer stuck in
       // "Connecting…" for the full OS TCP timeout (~2 min).
       const CONNECT_TIMEOUT_MS = 8000;
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
+        if (this._serialPending === pending) {
+          this._serialPending = null;
+          this._onSerialData = null;
+        }
         sock.destroy();
         settle({ success: false, error: `Connection timed out after ${CONNECT_TIMEOUT_MS / 1000}s` });
       }, CONNECT_TIMEOUT_MS);
 
-      sock.connect(port, host, () => {
-        this._serialSock = sock;
-        settle({ success: true });
+      sock.connect(port, host, async () => {
+        try {
+          const auth = await authenticateSocket(sock, bridgeKey, bridgeKey ? 5000 : 500);
+          // A disconnect or a newer connect may have superseded this socket
+          // while the handshake was in flight. Never resurrect it over the
+          // current session.
+          if (this._serialPending !== pending) {
+            sock.destroy();
+            return;
+          }
+          this._serialPending = null;
+          this._serialSock = sock;
+          settle({ success: true });
+          // Legacy firmware can emit target bytes while we probe for auth.
+          if (this._serialSock === sock && auth.extra && auth.extra.length > 0) {
+            onData?.(auth.extra.toString());
+          }
+        } catch (e) {
+          sock.destroy();
+          if (this._serialPending === pending) {
+            this._serialPending = null;
+            this._onSerialData = null;
+          }
+          settle({ success: false, error: e.message });
+        }
       });
 
       sock.on('data', (chunk) => {
@@ -117,14 +358,26 @@ class BridgeClient {
       });
 
       sock.on('error', (err) => {
-        if (this._serialSock === sock) this._serialSock = null;
+        if (this._serialPending === pending) {
+          this._serialPending = null;
+          this._onSerialData = null;
+        }
+        if (this._serialSock === sock) {
+          this._serialSock = null;
+          this._onSerialData = null;
+        }
         settle({ success: false, error: err.message });
       });
 
-      // Only the socket that is still current may clear the field. The old
-      // unconditional handler ran after a reconnect and nulled the NEW socket,
-      // leaving send() silently doing nothing.
+      // Only a socket that is still pending/current may clear the fields. The
+      // old unconditional handler ran after a reconnect and nulled the NEW
+      // socket, leaving send() silently doing nothing.
       sock.on('close', () => {
+        if (this._serialPending === pending) {
+          this._serialPending = null;
+          this._onSerialData = null;
+          settle({ success: false, error: 'Connection closed' });
+        }
         if (this._serialSock === sock) {
           this._serialSock = null;
           this._onSerialData = null;
@@ -137,6 +390,12 @@ class BridgeClient {
     // Drop queued bytes on the way out too, so a later connect cannot inherit
     // them even if it skips its own reset.
     resetSTM32RX();
+    const pending = this._serialPending;
+    this._serialPending = null;
+    if (pending) {
+      pending.sock.destroy();
+      pending.cancel();
+    }
     if (this._serialSock) {
       this._serialSock.destroy();
       this._serialSock = null;
@@ -153,24 +412,38 @@ class BridgeClient {
   // ══════════════════════════════════════════════════════════════
   // Query bridge status
   // ══════════════════════════════════════════════════════════════
-  async query(host, port) {
+  async query(host, port, bridgeKey = '') {
     return new Promise((resolve) => {
       const sock = new net.Socket();
       let response = '';
       let settled = false;
-      const settle = (result) => { if (settled) return; settled = true; resolve(result); };
+      let authenticated = false;
+      const settle = (result) => { if (settled) return; settled = true; sock.destroy(); resolve(result); };
+      // Keep a listener attached for the whole session so bytes cannot be
+      // dropped between the auth reader detaching and the query starting,
+      // but ignore handshake frames. Also ignore bytes captured during the
+      // legacy probe: they are target UART output, not a status reply, and
+      // treating a boot log as the answer skipped CMD_QUERY entirely.
+      const onData = (d) => {
+        if (!authenticated) return;
+        response += d.toString();
+        if (response.includes('\n')) settle({ success: true, info: response.trim() });
+      };
+      sock.on('data', onData);
 
-      sock.setTimeout(3000);
-      sock.connect(port, host, () => {
+      sock.connect(port, host, async () => {
+        try {
+          await authenticateSocket(sock, bridgeKey, bridgeKey ? 5000 : 500);
+          authenticated = true;
+        } catch (e) {
+          settle({ success: false, error: e.message });
+          return;
+        }
+        sock.setTimeout(3000);
         sock.write(ctrl(CMD_QUERY));
       });
 
-      sock.on('data', (d) => {
-        response += d.toString();
-        if (response.includes('\n')) { sock.destroy(); settle({ success: true, info: response.trim() }); }
-      });
-
-      sock.on('timeout', () => { sock.destroy(); settle({ success: false, error: 'Timeout — is the bridge online?' }); });
+      sock.on('timeout', () => settle({ success: false, error: 'Timeout — is the bridge online?' }));
       sock.on('error', (e) => settle({ success: false, error: e.message }));
       sock.on('close', () => settle({ success: false, error: 'Bridge closed the connection' }));
     });
@@ -179,7 +452,7 @@ class BridgeClient {
   // ══════════════════════════════════════════════════════════════
   // Upload firmware (dispatcher)
   // ══════════════════════════════════════════════════════════════
-  async uploadFirmware({ host, port, baud = 115200, mcu = 'generic', avrMcu = 'atmega328p', binaryPath, onProgress }) {
+  async uploadFirmware({ host, port, baud = 115200, mcu = 'generic', avrMcu = 'atmega328p', binaryPath, bridgeKey = '', onProgress }) {
     let stat;
     try {
       stat = await fs.promises.stat(binaryPath);
@@ -203,15 +476,15 @@ class BridgeClient {
     const key = String(mcu || 'generic').toLowerCase();
     try {
       if (key === 'esp32' || key === 'esp8266') {
-        return await this._uploadESP(host, port, baud, mcu, binaryPath, guardedProgress);
+        return await this._uploadESP(host, port, baud, mcu, binaryPath, guardedProgress, bridgeKey);
       }
       if (key === 'stm32') {
-        return await this._uploadSTM32(host, port, baud, binaryPath, guardedProgress);
+        return await this._uploadSTM32(host, port, baud, binaryPath, guardedProgress, bridgeKey);
       }
       if (key === 'avr' || key === 'arduino') {
-        return await this._uploadAVR(host, port, baud, avrMcu, binaryPath, guardedProgress);
+        return await this._uploadAVR(host, port, baud, avrMcu, binaryPath, guardedProgress, bridgeKey);
       }
-      return await this._uploadGeneric(host, port, baud, binaryPath, guardedProgress);
+      return await this._uploadGeneric(host, port, baud, binaryPath, guardedProgress, bridgeKey);
     } catch (e) {
       return { success: false, error: e?.message || String(e) };
     }
@@ -220,19 +493,36 @@ class BridgeClient {
   // ══════════════════════════════════════════════════════════════
   // ESP32 / ESP8266  — delegates to esptool
   // ══════════════════════════════════════════════════════════════
-  async _uploadESP(host, port, baud, chip, binaryPath, onProgress) {
+  async _uploadESP(host, port, baud, chip, binaryPath, onProgress, bridgeKey = '') {
     try { await fs.promises.access(binaryPath, fs.constants.R_OK); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
-    // Step 1: open a control socket, assert bootloader, then keep it open
-    // until esptool has fully connected and is running.  Closing it too
-    // early (the old bug) means the bridge accepts esptool as a brand-new
-    // client with no bootloader sequence, and the ESP32 ROM times out.
+    // Step 1: open a control socket, authenticate, assert bootloader, then
+    // keep it open until esptool has fully connected and is running. Closing
+    // it too early (the old bug) means the bridge accepts esptool as a
+    // brand-new client with no bootloader sequence, and the ESP32 ROM times
+    // out.
     let ctrlSock = null;
+    let ctrlError = null;
     const ctrlReady = await new Promise((resolve) => {
+      let settled = false;
+      const finish = (ok, err) => {
+        if (settled) return;
+        settled = true;
+        if (err) ctrlError = err;
+        resolve(ok);
+      };
       const sock = new net.Socket();
       ctrlSock = sock;
       sock.setNoDelay(true);
 
       sock.connect(port, host, async () => {
+        try {
+          await authenticateSocket(sock, bridgeKey, bridgeKey ? 5000 : 500);
+        } catch (e) {
+          sock.destroy();
+          ctrlSock = null;
+          finish(false, e.message);
+          return;
+        }
         sock.write(ctrl(CMD_SET_PROFILE, MCU_PROFILES[chip.toLowerCase()] || 1));
         await delay(50);
         sock.write(Buffer.concat([ctrl(CMD_SET_BAUD), baudBuffer(baud)]));
@@ -241,14 +531,28 @@ class BridgeClient {
         // Give the target's ROM time to enter bootloader (GPIO0/BOOT0 must
         // be stable before EN rises; 200 ms is the safe minimum for ESP32).
         await delay(200);
-        resolve(true);
+        finish(true);
       });
-      sock.on('error', () => { ctrlSock = null; resolve(false); });
-      sock.on('close', () => { ctrlSock = null; resolve(false); });
+      sock.on('error', (e) => { ctrlSock = null; finish(false, `Bridge: ${e.message}`); });
+      sock.on('close', () => { ctrlSock = null; finish(false, 'Bridge closed the connection'); });
     });
 
     if (!ctrlReady) {
-      onProgress?.('⚠ Could not reach bridge for bootloader entry — attempting upload anyway\n');
+      onProgress?.(`⚠ ${ctrlError}\n`);
+      return { success: false, error: ctrlError };
+    }
+
+    // esptool cannot perform the HMAC handshake, so a keyed bridge is exposed
+    // as a loopback socket. The proxy authenticates each upstream connection.
+    let proxy = null;
+    if (bridgeKey) {
+      try {
+        proxy = await startLocalProxy(host, port, bridgeKey);
+        onProgress?.(`» Authenticated bridge proxy on 127.0.0.1:${proxy.port}\n`);
+      } catch (e) {
+        if (ctrlSock) { ctrlSock.destroy(); ctrlSock = null; }
+        return { success: false, error: `Could not start authenticated bridge proxy: ${e.message}` };
+      }
     }
 
     // Step 2: spawn esptool.  The bridge firmware serves one client at a
@@ -256,8 +560,22 @@ class BridgeClient {
     // we release it, so we destroy it as soon as esptool has started and
     // the output indicates it is connecting.
     return new Promise((resolve) => {
+      let settled = false;
+      const finish = async (result) => {
+        if (settled) return;
+        settled = true;
+        if (ctrlSock) { ctrlSock.destroy(); ctrlSock = null; }
+        if (proxy) {
+          try { await proxy.close(); } catch {}
+          proxy = null;
+        }
+        resolve(result);
+      };
+
       const python  = process.platform === 'win32' ? 'python' : 'python3';
-      const sockUrl = `socket://${host}:${port}`;
+      const sockUrl = proxy
+        ? `socket://127.0.0.1:${proxy.port}`
+        : `socket://${host}:${port}`;
       const args = [
         '-m', 'esptool',
         '--chip',   chip,
@@ -299,21 +617,18 @@ class BridgeClient {
       proc.stderr.on('data', handleOutput);
 
       proc.on('close', (code) => {
-        // Always clean up control socket on exit
-        if (ctrlSock) { ctrlSock.destroy(); ctrlSock = null; }
-        resolve(code === 0
+        finish(code === 0
           ? { success: true }
           : { success: false, error: 'esptool exited with errors. See output above.' });
       });
 
       proc.on('error', () => {
-        if (ctrlSock) { ctrlSock.destroy(); ctrlSock = null; }
         // Platform-correct hint: Windows has no python3, and testers were
         // being told to run a command their machine cannot execute.
         const hint = process.platform === 'win32'
           ? 'py -m pip install esptool'
           : 'python3 -m pip install esptool';
-        resolve({
+        finish({
           success: false,
           error: `esptool not found. Install it with:\n  ${hint}`,
         });
@@ -324,9 +639,10 @@ class BridgeClient {
   // ══════════════════════════════════════════════════════════════
   // STM32  — native UART bootloader (AN3155)
   // ══════════════════════════════════════════════════════════════
-  async _uploadSTM32(host, port, baud, binaryPath, onProgress) {
+  async _uploadSTM32(host, port, baud, binaryPath, onProgress, bridgeKey = '') {
     let fw;
     try { fw = await fs.promises.readFile(binaryPath); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
+    resetSTM32RX();
 
     return new Promise((resolve) => {
       let settled = false;
@@ -336,6 +652,11 @@ class BridgeClient {
 
       sock.connect(port, host, async () => {
         try {
+          const auth = await authenticateSocket(sock, bridgeKey, bridgeKey ? 5000 : 500);
+          if (auth.extra && auth.extra.length > 0) {
+            stm32RX = Buffer.concat([auth.extra, stm32RX]);
+          }
+
           // Configure bridge
           sock.write(ctrl(CMD_SET_PROFILE, MCU_PROFILES.stm32));
           await delay(50);
@@ -398,31 +719,72 @@ class BridgeClient {
   // ══════════════════════════════════════════════════════════════
   // AVR / Arduino  — delegates to avrdude
   // ══════════════════════════════════════════════════════════════
-  async _uploadAVR(host, port, baud, avrMcu, binaryPath, onProgress) {
+  async _uploadAVR(host, port, baud, avrMcu, binaryPath, onProgress, bridgeKey = '') {
     try { await fs.promises.access(binaryPath, fs.constants.R_OK); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
-    // Enter bootloader via bridge, then release for avrdude
-    await new Promise((resolve) => {
+    // Enter bootloader via bridge, then release for avrdude.
+    let ctrlError = null;
+    const ctrlReady = await new Promise((resolve) => {
       let settled = false;
-      const settle = () => { if (settled) return; settled = true; resolve(); };
+      const finish = (ok, err) => {
+        if (settled) return;
+        settled = true;
+        if (err) ctrlError = err;
+        resolve(ok);
+      };
       const sock = new net.Socket();
       sock.connect(port, host, async () => {
+        try {
+          await authenticateSocket(sock, bridgeKey, bridgeKey ? 5000 : 500);
+        } catch (e) {
+          sock.destroy();
+          finish(false, e.message);
+          return;
+        }
         sock.write(ctrl(CMD_SET_PROFILE, MCU_PROFILES.avr));
         await delay(50);
         sock.write(ctrl(CMD_ENTER_BOOT));
         await delay(200);
         sock.destroy();
-        settle();
+        finish(true);
       });
-      sock.on('error', settle);
-      sock.on('close', settle);
+      sock.on('error', (e) => finish(false, `Bridge: ${e.message}`));
+      sock.on('close', () => finish(false, 'Bridge closed the connection'));
     });
+    if (!ctrlReady) {
+      onProgress?.(`⚠ ${ctrlError}\n`);
+      return { success: false, error: ctrlError };
+    }
+
+    // avrdude cannot perform the HMAC handshake; the loopback proxy does it.
+    let proxy = null;
+    if (bridgeKey) {
+      try {
+        proxy = await startLocalProxy(host, port, bridgeKey);
+        onProgress?.(`» Authenticated bridge proxy on 127.0.0.1:${proxy.port}\n`);
+      } catch (e) {
+        return { success: false, error: `Could not start authenticated bridge proxy: ${e.message}` };
+      }
+    }
 
     return new Promise((resolve) => {
+      let settled = false;
+      const finish = async (result) => {
+        if (settled) return;
+        settled = true;
+        if (proxy) {
+          try { await proxy.close(); } catch {}
+          proxy = null;
+        }
+        resolve(result);
+      };
+
       const ext = path.extname(binaryPath).toLowerCase();
       const fmt = ext === '.hex' ? 'i' : 'r';
       // avrdude network protocol syntax is "net:host:port" — "socket://" is
       // esptool-only and made avrdude fail with "can't open device".
-      const sockUrl = `net:${host}:${port}`;
+      const sockUrl = proxy
+        ? `net:127.0.0.1:${proxy.port}`
+        : `net:${host}:${port}`;
       const args = [
         '-p', avrMcu,
         '-c', 'arduino',
@@ -439,13 +801,13 @@ class BridgeClient {
       proc.stderr.on('data', (d) => onProgress?.(d.toString()));
 
       proc.on('close', (code) => {
-        resolve(code === 0
+        finish(code === 0
           ? { success: true }
           : { success: false, error: 'avrdude failed. See output above.' });
       });
 
       proc.on('error', () => {
-        resolve({ success: false, error: 'avrdude not found. Install Arduino IDE to get avrdude in PATH.' });
+        finish({ success: false, error: 'avrdude not found. Install Arduino IDE to get avrdude in PATH.' });
       });
     });
   }
@@ -453,15 +815,29 @@ class BridgeClient {
   // ══════════════════════════════════════════════════════════════
   // Generic  — raw binary stream for custom bootloaders
   // ══════════════════════════════════════════════════════════════
-  async _uploadGeneric(host, port, baud, binaryPath, onProgress) {
+  async _uploadGeneric(host, port, baud, binaryPath, onProgress, bridgeKey = '') {
     let fw;
     try { fw = await fs.promises.readFile(binaryPath); } catch (e) { return { success: false, error: `Cannot read binary: ${e?.message || e}` }; }
 
     return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
       const sock = new net.Socket();
       sock.setNoDelay(true);
 
       sock.connect(port, host, async () => {
+        try {
+          await authenticateSocket(sock, bridgeKey, bridgeKey ? 5000 : 500);
+        } catch (e) {
+          sock.destroy();
+          finish({ success: false, error: e.message });
+          return;
+        }
+
         sock.write(Buffer.concat([ctrl(CMD_SET_BAUD), baudBuffer(baud)]));
         await delay(100);
         sock.write(ctrl(CMD_ENTER_BOOT));
@@ -482,11 +858,11 @@ class BridgeClient {
         sock.write(ctrl(CMD_RESET));
         await delay(200);
         sock.destroy();
-        resolve({ success: true });
+        finish({ success: true });
       });
 
-      sock.on('error', (e) => resolve({ success: false, error: e.message }));
-      sock.on('close', () => resolve({ success: false, error: 'Bridge closed the connection' }));
+      sock.on('error', (e) => finish({ success: false, error: e.message }));
+      sock.on('close', () => finish({ success: false, error: 'Bridge closed the connection' }));
     });
   }
 }
@@ -593,3 +969,6 @@ async function stm32WriteMemory(sock, address, data) {
 
 module.exports = BridgeClient;
 module.exports.avrMcuForFqbn = avrMcuForFqbn;
+// Test hook only: the upload paths use this internally, but exporting it lets
+// the protocol suite exercise the loopback auth/pipe without esptool/avrdude.
+module.exports.startLocalProxy = startLocalProxy;

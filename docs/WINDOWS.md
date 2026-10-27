@@ -104,6 +104,15 @@ under *Other devices* with a warning triangle.
 5. **Wiring.** Bridge `GPIO17→target RX`, `GPIO16→target TX`, `GND→GND`, plus the
    reset/boot lines. **Never feed 5 V into the ESP32** — classic 5 V AVR targets
    need a level shifter (see `esp32_bridge.ino`'s header comment).
+6. **Bridge key.** LAN connections now require the `BRIDGE_KEY` compiled into
+   the bridge. Generate one with `openssl rand -hex 32`, put the same value in
+   `config.local.h`, and store it by piping the value to
+   `.\companion.exe config set bridge.key --stdin` (or set
+   `COMPANION_BRIDGE_KEY`). Piping the value on stdin keeps it out of the
+   process list; avoid passing it as a command argument. A bridge without a
+   valid key does not open TCP 3333; it keeps LAN OTA available when
+   `OTA_PASSWORD` is set, so a missing key is recoverable rather than a brick.
+   See the main README's **Bridge security** section.
 
 Sanity check that the bridge is alive and reachable:
 

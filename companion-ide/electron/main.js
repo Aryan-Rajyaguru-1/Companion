@@ -32,6 +32,18 @@ const companionCLI = new CompanionCLI();
 const bridgeClient = new BridgeClient();
 let lastUpdateStatus = null;
 
+// Read the bridge secret at the last possible moment, but never turn a failed
+// read into an empty key: that would silently downgrade a keyed bridge to the
+// legacy unauthenticated protocol. Every LAN path uses this helper and returns
+// its error before opening a socket.
+async function readBridgeKey() {
+  try {
+    return { key: await companionCLI.getBridgeKey() };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
 // Renderer navigation is not part of the app's feature set: the UI is a
 // single loaded page. Blocking navigation prevents an XSS or a hostile sketch
 // preview from turning the window into a browser for attacker-controlled
@@ -514,8 +526,10 @@ function registerIPC() {
     if (!binaryPath || !fs.existsSync(binaryPath)) {
       return { success: false, error: `Binary not found: ${binaryPath}` };
     }
+    const { key: bridgeKey, error } = await readBridgeKey();
+    if (error) return { success: false, error };
     emit(`» Uploading wirelessly to ${host}:${port} [${mcu}]...\n`);
-    return bridgeClient.uploadFirmware({ host, port, baud, mcu, avrMcu: BridgeClient.avrMcuForFqbn(fqbn), binaryPath, onProgress: emit });
+    return bridgeClient.uploadFirmware({ host, port, baud, mcu, avrMcu: BridgeClient.avrMcuForFqbn(fqbn), binaryPath, bridgeKey, onProgress: emit });
   });
 
   // USB upload: flash prebuilt binary over a local serial port.
@@ -549,12 +563,14 @@ function registerIPC() {
   ipcMain.handle('arduino:upload', async (_, { sketchDir, fqbn, mcu, host, port, baud, verbose }) => {
     if (isDenied(sketchDir)) return denyPath(sketchDir);
     if (!FQBN_RE.test(String(fqbn || ''))) return { success: false, error: `Invalid FQBN: ${fqbn}` };
+    const { key: bridgeKey, error } = await readBridgeKey();
+    if (error) return { success: false, error };
     emit(`» Compiling for wireless upload...\n`);
     const compile = await companionCLI.compile(sketchDir, fqbn, emit, true, verbose);
     if (!compile.success) return { success: false, error: compile.error || 'Compile failed' };
     if (!compile.binaryPath) return { success: false, error: 'Binary not found after compile' };
     emit(`\n» Uploading wirelessly to ${host}:${port} [${mcu}]...\n`);
-    return bridgeClient.uploadFirmware({ host, port, baud, mcu, avrMcu: BridgeClient.avrMcuForFqbn(fqbn), binaryPath: compile.binaryPath, onProgress: emit });
+    return bridgeClient.uploadFirmware({ host, port, baud, mcu, avrMcu: BridgeClient.avrMcuForFqbn(fqbn), binaryPath: compile.binaryPath, bridgeKey, onProgress: emit });
   });
 
   // Boards
@@ -624,17 +640,24 @@ function registerIPC() {
   });
 
   // Bridge
-  ipcMain.handle('bridge:connect-serial', async (_, { host, port }) =>
-    bridgeClient.connectSerial(host, port, data => {
+  ipcMain.handle('bridge:connect-serial', async (_, { host, port }) => {
+    const { key: bridgeKey, error } = await readBridgeKey();
+    if (error) return { success: false, error };
+    return bridgeClient.connectSerial(host, port, data => {
       mainWindow?.webContents.send('serial:data', data);
       // P5 #11: also feed a detached serial-monitor window if one is open.
       if (monitorWindow && !monitorWindow.isDestroyed()) {
         monitorWindow.webContents.send('serial:data', data);
       }
-    }));
+    }, bridgeKey);
+  });
   ipcMain.handle('bridge:disconnect-serial', () => { bridgeClient.disconnectSerial(); return { success: true }; });
   ipcMain.handle('bridge:send',  (_, data) => { bridgeClient.send(data); });
-  ipcMain.handle('bridge:query', (_, cfg)  => bridgeClient.query(cfg.host, cfg.port));
+  ipcMain.handle('bridge:query', async (_, cfg) => {
+    const { key: bridgeKey, error } = await readBridgeKey();
+    if (error) return { success: false, error };
+    return bridgeClient.query(cfg.host, cfg.port, bridgeKey);
+  });
 
   // P5 #11: tear-off the serial monitor into its own window. Single instance —
   // a second request just focuses the existing window.

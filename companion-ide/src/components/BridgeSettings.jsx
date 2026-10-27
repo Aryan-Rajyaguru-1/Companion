@@ -28,6 +28,12 @@ export default function BridgeSettings({
   const [discovering,  setDiscovering]  = useState(false);
   const [discovered,   setDiscovered]   = useState([]);
   const [discoverError,setDiscoverError]= useState(null);
+  // The existing key is never fetched into the renderer. We only show whether
+  // one is configured; a newly typed key is written straight through the CLI.
+  const [keyStatus,  setKeyStatus]  = useState('unknown');
+  const [keyDraft,   setKeyDraft]   = useState('');
+  const [keySaving,  setKeySaving]  = useState(false);
+  const [keyError,   setKeyError]   = useState(null);
 
   const handleDiscover = async () => {
     setDiscovering(true);
@@ -52,7 +58,67 @@ export default function BridgeSettings({
 
   useEffect(() => { onOpen?.(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
 
-  const handleSave = () => {
+  const loadKeyStatus = async () => {
+    try {
+      const value = await window.electronAPI?.companionConfigGet?.('bridge.key');
+      setKeyStatus(value === '<set>' ? 'set' : value === '<unset>' ? 'unset' : 'unknown');
+    } catch {
+      setKeyStatus('unknown');
+    }
+  };
+
+  useEffect(() => {
+    loadKeyStatus(); /* eslint-disable-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const saveKey = async () => {
+    // Pasting a key often carries a trailing newline/space. The CLI rejects
+    // surrounding whitespace in bridge.key, so trim the draft before saving.
+    const value = keyDraft.trim();
+    if (!value) {
+      setKeyError('Enter the BRIDGE_KEY from the bridge firmware.');
+      return false;
+    }
+    setKeySaving(true);
+    setKeyError(null);
+    try {
+      const r = await window.electronAPI?.companionConfigSet?.('bridge.key', value);
+      if (r?.success) {
+        setKeyDraft('');
+        // Re-read the effective value: COMPANION_BRIDGE_KEY can override the
+        // file and keeps the status "set" even after the saved key is cleared.
+        await loadKeyStatus();
+        return true;
+      }
+      setKeyError(r?.error || 'Could not save the bridge key.');
+    } catch (e) {
+      setKeyError(e?.message || 'Could not save the bridge key.');
+    } finally {
+      setKeySaving(false);
+    }
+    return false;
+  };
+
+  const clearKey = async () => {
+    setKeySaving(true);
+    setKeyError(null);
+    try {
+      const r = await window.electronAPI?.companionConfigSet?.('bridge.key', '');
+      if (r?.success) {
+        setKeyDraft('');
+        await loadKeyStatus();
+      } else {
+        setKeyError(r?.error || 'Could not clear the bridge key.');
+      }
+    } catch (e) {
+      setKeyError(e?.message || 'Could not clear the bridge key.');
+    } finally {
+      setKeySaving(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (keyDraft.trim() && !(await saveKey())) return;
     onHostChange(localHost);
     onPortChange(Number(localPort));
     onMCUChange(localMCU);
@@ -163,6 +229,62 @@ export default function BridgeSettings({
                 <div className="bs-hint">Click a device to use its IP as the Bridge Address (also the OTA target).</div>
               </div>
             )}
+          </div>
+        </section>
+
+        {/* ── Bridge authentication ───────────────────────────── */}
+        <section className="bs-section">
+          <div className="bs-section-title">Bridge Security — LAN Authentication</div>
+          <div className="bs-row">
+            <div className="bs-field bs-field-grow">
+              <label>Bridge Key</label>
+              <div className="bs-key-row">
+                <input
+                  type="password"
+                  value={keyDraft}
+                  onChange={e => setKeyDraft(e.target.value)}
+                  placeholder={keyStatus === 'set'
+                    ? 'Key is set — enter a new key to replace it'
+                    : 'Paste the BRIDGE_KEY from config.local.h'}
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  onKeyDown={e => { if (e.key === 'Enter') saveKey(); }}
+                />
+                <button
+                  className="btn"
+                  onClick={saveKey}
+                  disabled={keySaving || !keyDraft.trim()}
+                >
+                  {keySaving ? 'Saving…' : 'Save key'}
+                </button>
+                <button
+                  className="btn"
+                  onClick={clearKey}
+                  disabled={keySaving || keyStatus !== 'set'}
+                  title="Remove the saved bridge key from this computer"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="bs-hint">
+                Status:{' '}
+                <span className={`bs-key-status ${keyStatus}`}>
+                  {keyStatus === 'set' ? '✓ configured' : keyStatus === 'unset' ? '⚠ not configured' : 'unknown'}
+                </span>
+                {' '}The key must match <code>BRIDGE_KEY</code> compiled into the bridge.
+                It is stored in the CLI's owner-only config; the IDE renderer never
+                reads it back. A bridge without a key disables its LAN TCP server
+                but keeps LAN OTA recovery available.
+                <br />
+                Generate one with <code>openssl rand -hex 32</code>.{' '}
+                <code>COMPANION_BRIDGE_KEY</code> overrides the saved value.
+              </div>
+              {keyError && (
+                <div className="bs-ping-result fail">
+                  <><span className="status-dot disconnected" />✗ {keyError}</>
+                </div>
+              )}
+            </div>
           </div>
         </section>
 

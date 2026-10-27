@@ -420,16 +420,31 @@ Examples:
 					colorBold(host), port, colorTeal(mcu)))
 			}
 
+			// LAN bridge sessions authenticate. Relay mode is already protected
+			// by the hub/device secret and must keep its raw loopback pipe, so
+			// it skips the probe rather than waiting out the legacy timeout.
+			bridgeKey := ""
+			bridgeNoAuth := false
+			if serialPort == "" {
+				if bridgeMode == "local" {
+					bridgeKey = config.BridgeKey(cfg)
+				} else {
+					bridgeNoAuth = true
+				}
+			}
+
 			ul := uploader.New(cfg, func(s string) { fmt.Println(s) })
 			if err := ul.Upload(uploader.Options{
-				BinaryPath: binaryPath,
-				MCU:        mcu,
-				Host:       host,
-				Port:       port,
-				SerialPort: serialPort,
-				Baud:       baud,
-				FQBN:       fqbn,
-				Verbose:    globalFlags.Verbose || cfg.Upload.Verbose,
+				BinaryPath:   binaryPath,
+				MCU:          mcu,
+				Host:         host,
+				Port:         port,
+				SerialPort:   serialPort,
+				Baud:         baud,
+				FQBN:         fqbn,
+				BridgeKey:    bridgeKey,
+				BridgeNoAuth: bridgeNoAuth,
+				Verbose:      globalFlags.Verbose || cfg.Upload.Verbose,
 			}); err != nil {
 				printError("Upload failed: " + err.Error())
 				return fmt.Errorf("upload failed")

@@ -2,7 +2,12 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/companion-ide/companion-cli/internal/config"
 )
@@ -246,5 +252,230 @@ func TestGenerateTokenShape(t *testing.T) {
 	}
 	if len(a) < 32 {
 		t.Errorf("token too short: %d chars", len(a))
+	}
+}
+
+// startAuthDaemonBridge accepts one daemon serial connection, requires the
+// same challenge-response as the firmware, records the SET_BAUD frame, and
+// then holds the connection open. It intentionally does not echo bytes: the
+// daemon owns the reader goroutine, so the test only needs the handshake and
+// control frame.
+func startAuthDaemonBridge(t *testing.T, key string) (string, int, <-chan uint32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	bauds := make(chan uint32, 1)
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+		hdr := make([]byte, 3)
+		if _, err := io.ReadFull(conn, hdr); err != nil {
+			t.Errorf("read AUTH_BEGIN: %v", err)
+			return
+		}
+		if !bytes.Equal(hdr, []byte{0xEF, 0xBE, 0x30}) {
+			t.Errorf("first frame = % x, want AUTH_BEGIN", hdr)
+			return
+		}
+
+		nonce := bytes.Repeat([]byte{0x5a}, 32)
+		if _, err := conn.Write(append([]byte{0xEF, 0xBE, 0x32}, nonce...)); err != nil {
+			t.Errorf("write challenge: %v", err)
+			return
+		}
+		response := make([]byte, 3+32)
+		if _, err := io.ReadFull(conn, response); err != nil {
+			t.Errorf("read AUTH_RESPONSE: %v", err)
+			return
+		}
+		mac := hmac.New(sha256.New, []byte(key))
+		mac.Write(nonce)
+		if !bytes.Equal(response[:3], []byte{0xEF, 0xBE, 0x31}) ||
+			!hmac.Equal(response[3:], mac.Sum(nil)) {
+			t.Errorf("bad authentication response")
+			_, _ = conn.Write([]byte{0xEF, 0xBE, 0x34})
+			return
+		}
+		if _, err := conn.Write([]byte{0xEF, 0xBE, 0x33}); err != nil {
+			t.Errorf("write AUTH_OK: %v", err)
+			return
+		}
+
+		frame := make([]byte, 7)
+		if _, err := io.ReadFull(conn, frame); err != nil {
+			t.Errorf("read SET_BAUD: %v", err)
+			return
+		}
+		if !bytes.Equal(frame[:3], []byte{0xEF, 0xBE, 0x10}) {
+			t.Errorf("control frame = % x, want SET_BAUD", frame)
+			return
+		}
+		bauds <- binary.BigEndian.Uint32(frame[3:])
+		// Keep the socket open until the daemon disconnects.
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	return "127.0.0.1", addr.Port, bauds
+}
+
+// startLegacyDaemonBridge expects the raw SET_BAUD frame with no preceding
+// authentication probe. It stands in for a relay-local socket whose transport
+// is already protected by the relay hub.
+func startLegacyDaemonBridge(t *testing.T) (string, int, <-chan uint32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	bauds := make(chan uint32, 1)
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+		frame := make([]byte, 7)
+		if _, err := io.ReadFull(conn, frame); err != nil {
+			t.Errorf("read SET_BAUD: %v", err)
+			return
+		}
+		if !bytes.Equal(frame[:3], []byte{0xEF, 0xBE, 0x10}) {
+			t.Errorf("control frame = % x, want SET_BAUD", frame)
+			return
+		}
+		bauds <- binary.BigEndian.Uint32(frame[3:])
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	return "127.0.0.1", addr.Port, bauds
+}
+
+func TestDaemonSerialAuthenticatesLANBridge(t *testing.T) {
+	const key = "daemon-test-bridge-key"
+	t.Setenv("COMPANION_BRIDGE_KEY", key)
+	host, port, bauds := startAuthDaemonBridge(t, key)
+	d := testDaemon(t)
+	t.Cleanup(d.serialDisconnect)
+
+	body, _ := json.Marshal(map[string]any{
+		"action": "connect", "host": host, "port": port, "baud": 115200,
+		"bridgeMode": "local",
+	})
+	rec := doReq(t, d, http.MethodPost, "/serial", d.token, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/serial status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("/serial body = %s", rec.Body.String())
+	}
+
+	select {
+	case got := <-bauds:
+		if got != 115200 {
+			t.Fatalf("SET_BAUD = %d, want 115200", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received an authenticated SET_BAUD")
+	}
+}
+
+func TestDaemonSerialRemoteModeSkipsBridgeAuthProbe(t *testing.T) {
+	t.Setenv("COMPANION_BRIDGE_KEY", "configured-lan-key")
+	host, port, bauds := startLegacyDaemonBridge(t)
+	d := testDaemon(t)
+	t.Cleanup(d.serialDisconnect)
+
+	body, _ := json.Marshal(map[string]any{
+		"action": "connect", "host": host, "port": port, "baud": 9600,
+		"bridgeMode": "remote",
+	})
+	rec := doReq(t, d, http.MethodPost, "/serial", d.token, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/serial status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case got := <-bauds:
+		if got != 9600 {
+			t.Fatalf("SET_BAUD = %d, want 9600", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay-local bridge never received SET_BAUD")
+	}
+}
+
+func TestDaemonSerialDialFailureKeepsBridgeTimeoutCode(t *testing.T) {
+	// Reserve and release a loopback port so the dial is refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	d := testDaemon(t)
+	body, _ := json.Marshal(map[string]any{
+		"action": "connect", "host": "127.0.0.1", "port": port,
+		"bridgeMode": "local",
+	})
+	rec := doReq(t, d, http.MethodPost, "/serial", d.token, body)
+
+	var resp rpcResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.ErrCode != "BRIDGE_TIMEOUT" {
+		t.Fatalf("error = %+v, want BRIDGE_TIMEOUT", resp.Error)
+	}
+}
+
+func TestDaemonSerialRejectsUnknownBridgeMode(t *testing.T) {
+	d := testDaemon(t)
+	body, _ := json.Marshal(map[string]any{
+		"action": "connect", "host": "127.0.0.1", "port": 1, "bridgeMode": "bogus",
+	})
+	rec := doReq(t, d, http.MethodPost, "/serial", d.token, body)
+	var resp rpcResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Error == nil || resp.Error.Code != rpcInvalidParams {
+		t.Fatalf("error = %+v, want invalid params", resp.Error)
+	}
+}
+
+func TestBridgeAuthForMode(t *testing.T) {
+	t.Setenv("COMPANION_BRIDGE_KEY", "env-key")
+	d := testDaemon(t)
+
+	for _, mode := range []string{"", "local"} {
+		key, noAuth, err := d.bridgeAuthForMode(mode)
+		if err != nil || key != "env-key" || noAuth {
+			t.Fatalf("bridgeAuthForMode(%q) = %q, noAuth=%v, %v; want env-key and auth",
+				mode, key, noAuth, err)
+		}
+	}
+	key, noAuth, err := d.bridgeAuthForMode("remote")
+	if err != nil || key != "" || !noAuth {
+		t.Fatalf("bridgeAuthForMode(remote) = %q, noAuth=%v, %v; want empty and no-auth",
+			key, noAuth, err)
+	}
+	if _, _, err := d.bridgeAuthForMode("bogus"); err == nil {
+		t.Fatal("bridgeAuthForMode accepted an unknown mode")
 	}
 }

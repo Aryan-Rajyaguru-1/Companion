@@ -29,7 +29,13 @@ type Options struct {
 	SerialPort string // LOCAL serial device (e.g. /dev/ttyACM0) — USB mode
 	Baud       uint32
 	FQBN       string // used for AVR MCU part name resolution
-	Verbose    bool
+	// BridgeKey authenticates LAN bridge sessions. Remote relay uploads pass
+	// an empty key: the relay's raw loopback is already device-authenticated.
+	BridgeKey string
+	// BridgeNoAuth skips the LAN authentication probe. Relay uploads set this
+	// instead of waiting out the legacy-firmware timeout on their raw pipe.
+	BridgeNoAuth bool
+	Verbose      bool
 }
 
 type Uploader struct {
@@ -45,6 +51,15 @@ func (u *Uploader) log(msg string) {
 	if u.onOutput != nil {
 		u.onOutput(msg)
 	}
+}
+
+// newBridgeClient selects the transport authentication policy once so every
+// upload family agrees. Relay pipes skip the probe; LAN pipes use the key.
+func (opts Options) newBridgeClient() *bridge.Client {
+	if opts.BridgeNoAuth {
+		return bridge.NewNoAuth(opts.Host, opts.Port)
+	}
+	return bridge.New(opts.Host, opts.Port, opts.BridgeKey)
 }
 
 // Upload dispatches to the correct MCU-specific upload method.
@@ -354,7 +369,7 @@ func (b *syncBuffer) string() string {
 func (u *Uploader) uploadESP(opts Options) error {
 	// Step 1: Enter bootloader via bridge control protocol.
 	u.log("» Entering bootloader…")
-	bc := bridge.New(opts.Host, opts.Port)
+	bc := opts.newBridgeClient()
 	if err := bc.Connect(); err != nil {
 		return err
 	}
@@ -389,6 +404,17 @@ func (u *Uploader) uploadESP(opts Options) error {
 	}
 
 	socketURL := fmt.Sprintf("socket://%s:%d", opts.Host, opts.Port)
+	if opts.BridgeKey != "" && !opts.BridgeNoAuth {
+		proxy, err := bridge.StartLocalProxy(opts.Host, opts.Port, opts.BridgeKey, func(err error) {
+			u.log("  (bridge proxy) " + err.Error())
+		})
+		if err != nil {
+			return fmt.Errorf("starting authenticated bridge proxy: %w", err)
+		}
+		defer proxy.Close()
+		u.log(fmt.Sprintf("» Authenticated bridge proxy on %s", proxy.Addr()))
+		socketURL = "socket://" + proxy.Addr()
+	}
 	args := []string{
 		"-m", "esptool",
 		"--chip", chip,
@@ -467,7 +493,7 @@ func (u *Uploader) uploadSTM32(opts Options) error {
 		return err
 	}
 
-	bc := bridge.New(opts.Host, opts.Port)
+	bc := opts.newBridgeClient()
 	if err := bc.Connect(); err != nil {
 		return err
 	}
@@ -650,7 +676,7 @@ func (u *Uploader) uploadAVR(opts Options) error {
 
 	// Trigger bootloader window via bridge RST pulse
 	u.log("» Triggering AVR bootloader window…")
-	bc := bridge.New(opts.Host, opts.Port)
+	bc := opts.newBridgeClient()
 	if err := bc.Connect(); err != nil {
 		return err
 	}
@@ -683,6 +709,17 @@ func (u *Uploader) uploadAVR(opts Options) error {
 	// via the avrdude-serjtag/net programmer). "socket://" is esptool syntax
 	// and is not understood by avrdude.
 	socketURL := fmt.Sprintf("net:%s:%d", opts.Host, opts.Port)
+	if opts.BridgeKey != "" && !opts.BridgeNoAuth {
+		proxy, err := bridge.StartLocalProxy(opts.Host, opts.Port, opts.BridgeKey, func(err error) {
+			u.log("  (bridge proxy) " + err.Error())
+		})
+		if err != nil {
+			return fmt.Errorf("starting authenticated bridge proxy: %w", err)
+		}
+		defer proxy.Close()
+		u.log(fmt.Sprintf("» Authenticated bridge proxy on %s", proxy.Addr()))
+		socketURL = "net:" + proxy.Addr()
+	}
 	args := []string{
 		"-p", avrMCU,
 		"-c", "arduino",
@@ -757,7 +794,7 @@ func (u *Uploader) uploadGeneric(opts Options) error {
 		return err
 	}
 
-	bc := bridge.New(opts.Host, opts.Port)
+	bc := opts.newBridgeClient()
 	if err := bc.Connect(); err != nil {
 		return err
 	}

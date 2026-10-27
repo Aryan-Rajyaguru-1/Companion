@@ -138,6 +138,14 @@ paths:
                 baud: { type: integer, default: 115200 }
                 fqbn: { type: string }
                 verbose: { type: boolean }
+                bridgeMode:
+                  type: string
+                  enum: [local, remote]
+                  default: local
+                  description: >-
+                    Omitted means local, which authenticates with bridge.key.
+                    Relay-aware clients must send remote explicitly; remote
+                    targets a relay-local socket and uses no HMAC.
       responses:
         "200":
           description: Stream of upload progress events
@@ -165,6 +173,14 @@ paths:
                 host: { type: string }
                 port: { type: integer }
                 baud: { type: integer, default: 115200 }
+                bridgeMode:
+                  type: string
+                  enum: [local, remote]
+                  default: local
+                  description: >-
+                    Omitted means local, which authenticates with bridge.key.
+                    Relay-aware clients must send remote explicitly; remote
+                    targets a relay-local socket and uses no HMAC.
       responses:
         "200":
           description: Result
