@@ -140,10 +140,16 @@ if [ -f "$IDE_DIR/package.json" ]; then
        $IDE_DIR/esp32-bridge-firmware/esp32_bridge
   2. Start the IDE:
        cd $IDE_DIR && npm run dev
-  3. Set a unique AP_PASS (8+ chars) and your AP_SSID in
+  3. Set a unique AP_PASS (8+ chars), your AP_SSID, and a unique BRIDGE_KEY
+       (8+ chars) in
        $IDE_DIR/esp32-bridge-firmware/esp32_bridge/config.local.h
-     flash, join that WiFi, then hit Upload. There is no default AP password;
-     the sketch refuses an open or placeholder AP."
+     then flash and join that WiFi. There is no default AP password; the
+       sketch refuses an open or placeholder AP.
+  4. Store the same BRIDGE_KEY on the laptop. Piping it on stdin keeps it out
+       of the process list and shell history:
+       printf '%s' \"\$BRIDGE_KEY\" | $BIN config set bridge.key --stdin
+     A bridge without a key keeps LAN OTA but refuses LAN TCP. The IDE only
+       reports whether a key is set; it never reads the key back."
 else
   ok "No IDE checkout found — CLI-only setup complete"
   NEXT_STEPS="The IDE (Electron app) was not found next to this script.
