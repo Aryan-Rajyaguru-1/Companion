@@ -65,7 +65,7 @@ Examples:
 			printStep("Press Ctrl+C to exit")
 			fmt.Println()
 
-			bc := bridge.New(host, port)
+			bc := bridge.New(host, port, config.BridgeKey(cfg))
 			if err := bc.Connect(); err != nil {
 				return err
 			}

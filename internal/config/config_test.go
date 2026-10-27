@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,6 +11,29 @@ import (
 // inherit world-readable permissions.
 func TestSaveIsOwnerOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Save(testConfig(), path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config perms = %o, want 600", perm)
+	}
+}
+
+// Older Companion versions left config.yaml at 0644. Saving a bridge key must
+// tighten the existing file, not just the mode passed to a create-only write.
+func TestSaveTightensExistingConfigPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("bridge:\n  host: old.example\n"), 0o644); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("seed mode: %v", err)
+	}
+
 	if err := Save(testConfig(), path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -112,5 +136,108 @@ func TestEnsureDirsCreatesTree(t *testing.T) {
 		if err != nil || !info.IsDir() {
 			t.Errorf("expected directory %s to exist", d)
 		}
+	}
+}
+
+func TestBridgeKeyRedactionAndEnvOverride(t *testing.T) {
+	cfg := testConfig()
+	cfg.Bridge.Key = "saved-bridge-key"
+
+	got, err := GetValue(cfg, "bridge.key")
+	if err != nil {
+		t.Fatalf("GetValue(bridge.key): %v", err)
+	}
+	if got != "<set>" {
+		t.Fatalf("GetValue(bridge.key) = %q, want <set>", got)
+	}
+	if BridgeKey(cfg) != "saved-bridge-key" {
+		t.Fatalf("BridgeKey = %q, want stored key", BridgeKey(cfg))
+	}
+
+	t.Setenv("COMPANION_BRIDGE_KEY", "env-bridge-key")
+	if got := BridgeKey(cfg); got != "env-bridge-key" {
+		t.Fatalf("BridgeKey with env = %q, want env-bridge-key", got)
+	}
+	if got, _ := GetValue(cfg, "bridge.key"); got != "<set>" {
+		t.Fatalf("GetValue must stay redacted with env override, got %q", got)
+	}
+
+	// A blank environment variable must not hide a stored key.
+	t.Setenv("COMPANION_BRIDGE_KEY", "   ")
+	if got := BridgeKey(cfg); got != "saved-bridge-key" {
+		t.Fatalf("blank env BridgeKey = %q, want stored key", got)
+	}
+
+	cfg.Bridge.Key = ""
+	if got, _ := GetValue(cfg, "bridge.key"); got != "<unset>" {
+		t.Fatalf("GetValue with empty key = %q, want <unset>", got)
+	}
+	if BridgeKey(nil) != "" {
+		t.Fatalf("BridgeKey(nil) = %q, want empty", BridgeKey(nil))
+	}
+}
+
+func TestSetValueBridgeKeyValidation(t *testing.T) {
+	for _, value := range []string{
+		"short",
+		" leading-space",
+		"trailing-space ",
+		"CHANGE_ME",
+		"CHANGE_ME_please",
+		"YOUR_KEY_HERE",
+		"flashme!",
+		"line\nbreak",
+		"carriage\rreturn",
+		"nul\x00byte",
+		strings.Repeat("a", 4097),
+	} {
+		cfg := testConfig()
+		if err := SetValue(cfg, "bridge.key", value); err == nil {
+			t.Errorf("SetValue(bridge.key, %q) should fail", value)
+		}
+		if cfg.Bridge.Key != "" {
+			t.Errorf("rejected key %q mutated config to %q", value, cfg.Bridge.Key)
+		}
+	}
+
+	cfg := testConfig()
+	for _, value := range []string{"12345678", "0123456789abcdef0123456789abcdef"} {
+		if err := SetValue(cfg, "bridge.key", value); err != nil {
+			t.Errorf("SetValue(bridge.key, %q): %v", value, err)
+		}
+		if cfg.Bridge.Key != value {
+			t.Errorf("Bridge.Key = %q, want %q", cfg.Bridge.Key, value)
+		}
+	}
+
+	// Empty is the explicit clear/legacy path.
+	if err := SetValue(cfg, "bridge.key", ""); err != nil {
+		t.Fatalf("clearing bridge.key: %v", err)
+	}
+	if cfg.Bridge.Key != "" {
+		t.Fatalf("Bridge.Key = %q after clear", cfg.Bridge.Key)
+	}
+}
+
+func TestBridgeKeyRoundTripsThroughOwnerOnlyConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := testConfig()
+	cfg.Bridge.Key = "round-trip-bridge-key"
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, _, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.Bridge.Key; got != cfg.Bridge.Key {
+		t.Fatalf("loaded bridge key = %q, want %q", got, cfg.Bridge.Key)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config perms = %o, want 600", perm)
 	}
 }

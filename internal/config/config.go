@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/companion-ide/companion-cli/internal/atomicfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -98,6 +99,22 @@ type BridgeConfig struct {
 	Baud int `yaml:"baud"`
 	// Default target MCU family: esp32 | esp8266 | avr | stm32 | generic
 	MCU string `yaml:"mcu"`
+	// Key is the shared BRIDGE_KEY compiled into the ESP32 bridge firmware.
+	// It authenticates the LAN TCP session with HMAC-SHA256. Stored in this
+	// 0600 file; COMPANION_BRIDGE_KEY overrides it at runtime.
+	Key string `yaml:"key,omitempty"`
+}
+
+// BridgeKey returns the effective bridge authentication key. The environment
+// wins so CI and the IDE can inject it without writing a file.
+func BridgeKey(cfg *Config) string {
+	if v := strings.TrimSpace(os.Getenv("COMPANION_BRIDGE_KEY")); v != "" {
+		return v
+	}
+	if cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Bridge.Key)
 }
 
 type LibraryConfig struct {
@@ -200,9 +217,14 @@ func Save(cfg *Config, path string) error {
 	}
 
 	header := []byte("# Companion CLI configuration file\n# Edit manually or use: companion config set <key> <value>\n\n")
-	// Audit F006: 0600, not 0644. No secrets live here today, but a future
-	// field (API key, credential) must never inherit world-readable perms.
-	return os.WriteFile(path, append(header, data...), 0o600)
+	// The config now contains bridge.key. Write through atomicfile so an
+	// existing 0644 config is replaced by an owner-only 0600 file before any
+	// new bytes (including the secret) become visible, and a crash cannot
+	// leave a truncated config behind.
+	if err := atomicfile.WriteFile(path, append(header, data...), 0o600); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	return nil
 }
 
 // Init writes a default config to disk if it doesn't exist yet.
@@ -296,6 +318,13 @@ func GetValue(cfg *Config, key string) (string, error) {
 		return fmt.Sprintf("%d", cfg.Bridge.Baud), nil
 	case "bridge.mcu":
 		return cfg.Bridge.MCU, nil
+	case "bridge.key":
+		// Never print the secret by default. `config get --reveal` handles the
+		// explicit disclosure path; this value is safe to log.
+		if BridgeKey(cfg) != "" {
+			return "<set>", nil
+		}
+		return "<unset>", nil
 	// P2 Daemon
 	case "daemon.enabled":
 		return fmt.Sprintf("%v", cfg.Daemon.Enabled), nil
@@ -351,6 +380,27 @@ func SetValue(cfg *Config, key, value string) error {
 			return fmt.Errorf("mcu must be: esp32 | esp8266 | avr | stm32 | generic")
 		}
 		cfg.Bridge.MCU = value
+	case "bridge.key":
+		// An empty value clears the key (legacy mode). Otherwise mirror the
+		// firmware's minimum so a typo fails here instead of at the bridge.
+		if value != "" {
+			if len(value) > 4096 {
+				return fmt.Errorf("bridge.key must be at most 4096 bytes")
+			}
+			if value != strings.TrimSpace(value) {
+				return fmt.Errorf("bridge.key must not start or end with whitespace")
+			}
+			if strings.ContainsAny(value, "\x00\r\n") {
+				return fmt.Errorf("bridge.key must not contain NUL, CR, or LF")
+			}
+			if len(value) < 8 {
+				return fmt.Errorf("bridge.key must be at least 8 characters (use: openssl rand -hex 32)")
+			}
+			if strings.HasPrefix(value, "CHANGE_ME") || strings.HasPrefix(value, "YOUR_") || value == "flashme!" {
+				return fmt.Errorf("bridge.key is still a placeholder; generate a real key with: openssl rand -hex 32")
+			}
+		}
+		cfg.Bridge.Key = value
 	case "daemon.enabled":
 		cfg.Daemon.Enabled = value == "true"
 	case "daemon.port":
@@ -379,7 +429,7 @@ func SetValue(cfg *Config, key, value string) error {
 			"  compiler.warnings     compiler.verbose\n"+
 			"  upload.auto_verify\n"+
 			"  bridge.host           bridge.port\n"+
-			"  bridge.baud           bridge.mcu\n"+
+			"  bridge.baud           bridge.mcu            bridge.key\n"+
 			"  daemon.enabled        daemon.port\n"+
 			"  cache.enabled         cache.max_size_mb   cache.max_age_days\n"+
 			"  library.enable_unsafe_install",

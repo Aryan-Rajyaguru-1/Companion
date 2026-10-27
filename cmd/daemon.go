@@ -22,6 +22,7 @@ import (
 
 	"github.com/companion-ide/companion-cli/internal/atomicfile"
 	"github.com/companion-ide/companion-cli/internal/boards"
+	"github.com/companion-ide/companion-cli/internal/bridge"
 	"github.com/companion-ide/companion-cli/internal/compiler"
 	"github.com/companion-ide/companion-cli/internal/config"
 	cerrors "github.com/companion-ide/companion-cli/internal/errors"
@@ -94,7 +95,7 @@ type daemonServer struct {
 
 	// Serial monitor hub: one bridge connection, many SSE subscribers.
 	serialMu      sync.Mutex
-	serialConn    net.Conn
+	serialConn    *bridge.Client
 	serialClosed  bool
 	serialReaders map[chan serialFrame]struct{}
 }
@@ -565,6 +566,26 @@ type uploadStreamParams struct {
 	Baud       uint32 `json:"baud"`
 	FQBN       string `json:"fqbn"`
 	Verbose    bool   `json:"verbose"`
+	// BridgeMode selects LAN authentication. "local" (or omitted) uses the
+	// configured bridge.key; "remote" targets a `companion relay bridge`
+	// loopback socket, whose transport is protected by the relay hub and must
+	// not receive an HMAC probe.
+	BridgeMode string `json:"bridgeMode"`
+}
+
+// bridgeAuthForMode selects the bridge transport policy. Keeping the decision
+// explicit avoids silently downgrading a keyed LAN bridge when a caller is
+// actually talking to a relay loopback socket, and avoids making relay callers
+// wait out the legacy-firmware authentication timeout.
+func (d *daemonServer) bridgeAuthForMode(mode string) (key string, noAuth bool, err error) {
+	switch mode {
+	case "", "local":
+		return config.BridgeKey(d.cfg), false, nil
+	case "remote":
+		return "", true, nil
+	default:
+		return "", false, fmt.Errorf("bridgeMode must be \"local\" or \"remote\"")
+	}
 }
 
 // otaPushParams are the parameters for the ota.push RPC.
@@ -579,6 +600,11 @@ func (d *daemonServer) handleStreamUpload(w http.ResponseWriter, r *http.Request
 	var p uploadStreamParams
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeStreamErr(w, "invalid params")
+		return
+	}
+	bridgeKey, bridgeNoAuth, err := d.bridgeAuthForMode(p.BridgeMode)
+	if err != nil {
+		writeStreamErr(w, err.Error())
 		return
 	}
 
@@ -599,13 +625,15 @@ func (d *daemonServer) handleStreamUpload(w http.ResponseWriter, r *http.Request
 		sendEvent(streamEvent{Type: "output", Text: line})
 	})
 	if err := ul.Upload(uploader.Options{
-		BinaryPath: p.BinaryPath,
-		MCU:        p.MCU,
-		Host:       p.Host,
-		Port:       p.Port,
-		Baud:       p.Baud,
-		FQBN:       p.FQBN,
-		Verbose:    p.Verbose,
+		BinaryPath:   p.BinaryPath,
+		MCU:          p.MCU,
+		Host:         p.Host,
+		Port:         p.Port,
+		Baud:         p.Baud,
+		FQBN:         p.FQBN,
+		BridgeKey:    bridgeKey,
+		BridgeNoAuth: bridgeNoAuth,
+		Verbose:      p.Verbose,
 	}); err != nil {
 		sendEvent(streamEvent{Type: "done", Success: false, Error: err.Error()})
 		return
@@ -659,10 +687,11 @@ const (
 
 func (d *daemonServer) handleSerialControl(w http.ResponseWriter, r *http.Request) {
 	var p struct {
-		Action string `json:"action"` // connect | disconnect
-		Host   string `json:"host"`
-		Port   int    `json:"port"`
-		Baud   uint32 `json:"baud"`
+		Action     string `json:"action"` // connect | disconnect
+		Host       string `json:"host"`
+		Port       int    `json:"port"`
+		Baud       uint32 `json:"baud"`
+		BridgeMode string `json:"bridgeMode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeRPCError(w, nil, rpcParseError, "invalid params")
@@ -675,7 +704,12 @@ func (d *daemonServer) handleSerialControl(w http.ResponseWriter, r *http.Reques
 			writeRPCError(w, nil, rpcInvalidParams, "host and port required")
 			return
 		}
-		if err := d.serialConnect(p.Host, p.Port, p.Baud); err != nil {
+		bridgeKey, bridgeNoAuth, err := d.bridgeAuthForMode(p.BridgeMode)
+		if err != nil {
+			writeRPCError(w, nil, rpcInvalidParams, err.Error())
+			return
+		}
+		if err := d.serialConnect(p.Host, p.Port, p.Baud, bridgeKey, bridgeNoAuth); err != nil {
 			writeAppError(w, nil, err)
 			return
 		}
@@ -717,33 +751,49 @@ func (d *daemonServer) handleSerialSend(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
-func (d *daemonServer) serialConnect(host string, port int, baud uint32) error {
+func (d *daemonServer) serialConnect(host string, port int, baud uint32, bridgeKey string, bridgeNoAuth bool) error {
 	d.serialMu.Lock()
 	defer d.serialMu.Unlock()
 
-	// Replace any existing session.
+	// Replace any existing session. The reader for the old connection compares
+	// against d.serialConn before publishing, so its late error cannot mark the
+	// replacement session closed.
 	if d.serialConn != nil {
 		d.serialConn.Close()
 		d.serialConn = nil
+		d.serialClosed = true
+		d.notifySerialLocked(serialFrame{Closed: true})
 	}
-	d.serialClosed = false
 
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	conn, err := net.DialTimeout("tcp", addr, 8*time.Second)
-	if err != nil {
-		return cerrors.BridgeTimeout(host, port)
+	var conn *bridge.Client
+	if bridgeNoAuth {
+		conn = bridge.NewNoAuth(host, port)
+	} else {
+		conn = bridge.New(host, port, bridgeKey)
 	}
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
+	if err := conn.Connect(); err != nil {
+		d.serialClosed = true
+		d.notifySerialLocked(serialFrame{Closed: true})
+		// Preserve the daemon's existing BRIDGE_TIMEOUT classification for
+		// dial/network failures now that Connect wraps them in context.
+		// Authentication failures are returned as-is so the UI can explain
+		// the key mismatch instead of claiming the bridge is offline.
+		var opErr *net.OpError
+		if errors.As(err, &opErr) {
+			return cerrors.BridgeTimeout(host, port)
+		}
+		return err
+	}
+	if baud > 0 {
+		if err := conn.SetBaud(baud); err != nil {
+			conn.Close()
+			d.serialClosed = true
+			d.notifySerialLocked(serialFrame{Closed: true})
+			return err
+		}
 	}
 	d.serialConn = conn
-
-	// Configure baud via the bridge control protocol (matches esp32_bridge.ino:
-	// prefix 0xEF 0xBE, cmd 0x10, uint32 big-endian baud).
-	if baud > 0 {
-		conn.Write([]byte{0xEF, 0xBE, 0x10,
-			byte(baud >> 24), byte(baud >> 16), byte(baud >> 8), byte(baud)})
-	}
+	d.serialClosed = false
 
 	// Reader goroutine: broadcast chunks to all SSE subscribers.
 	go func() {
@@ -753,10 +803,10 @@ func (d *daemonServer) serialConnect(host string, port int, baud uint32) error {
 			if n > 0 {
 				frame := make([]byte, n)
 				copy(frame, buf[:n])
-				d.broadcastSerial(serialFrame{Data: frame})
+				d.broadcastSerialFrom(conn, serialFrame{Data: frame})
 			}
 			if err != nil {
-				d.broadcastSerial(serialFrame{Closed: true})
+				d.broadcastSerialFrom(conn, serialFrame{Closed: true})
 				return
 			}
 		}
@@ -764,12 +814,7 @@ func (d *daemonServer) serialConnect(host string, port int, baud uint32) error {
 	return nil
 }
 
-func (d *daemonServer) broadcastSerial(f serialFrame) {
-	d.serialMu.Lock()
-	defer d.serialMu.Unlock()
-	if f.Closed {
-		d.serialClosed = true
-	}
+func (d *daemonServer) notifySerialLocked(f serialFrame) {
 	for ch := range d.serialReaders {
 		select {
 		case ch <- f:
@@ -778,12 +823,29 @@ func (d *daemonServer) broadcastSerial(f serialFrame) {
 	}
 }
 
+// broadcastSerialFrom publishes only while conn is still the active session.
+// Without the identity check, a reconnect's old reader could deliver stale
+// bytes or a spurious "closed" event to the new session's subscribers.
+func (d *daemonServer) broadcastSerialFrom(conn *bridge.Client, f serialFrame) {
+	d.serialMu.Lock()
+	defer d.serialMu.Unlock()
+	if d.serialConn != conn {
+		return
+	}
+	if f.Closed {
+		d.serialClosed = true
+	}
+	d.notifySerialLocked(f)
+}
+
 func (d *daemonServer) serialDisconnect() {
 	d.serialMu.Lock()
 	defer d.serialMu.Unlock()
 	if d.serialConn != nil {
 		d.serialConn.Close()
 		d.serialConn = nil
+		d.serialClosed = true
+		d.notifySerialLocked(serialFrame{Closed: true})
 	}
 }
 
